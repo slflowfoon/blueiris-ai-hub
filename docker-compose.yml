@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+
+  web:
+    build: .
+    # Or use the pre-built image instead of building locally:
+    # image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: gunicorn --bind 0.0.0.0:5000 wsgi:app --workers 4 --threads 2
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      #- BASE_URL=https://example.com
+    restart: unless-stopped
+
+  worker:
+    build: .
+    # image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 worker.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+  mute_bot:
+    build: .
+    # image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 mute_bot.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped

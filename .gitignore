@@ -1,0 +1,19 @@
+# User data — contains API keys, Telegram tokens, camera configs
+data/
+app/data/
+
+# VERSION is injected into the container by Dockerfile — don't track the copy in app/
+app/VERSION
+
+# Logs
+logs/
+app/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Docker volumes
+/dev/shm/
