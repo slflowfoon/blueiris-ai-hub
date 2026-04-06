@@ -22,11 +22,11 @@ AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/)
 - A Telegram bot token and chat ID
 - Blue Iris running on Windows with `curl.exe` available
 
-### 1. Clone and start
+### 1. Download and start
 
 ```bash
-git clone https://github.com/slflowfoon/blueiris-ai-hub.git
-cd blueiris-ai-hub
+mkdir blueiris-ai-hub && cd blueiris-ai-hub
+curl -O https://raw.githubusercontent.com/slflowfoon/blueiris-ai-hub/main/docker-compose.yml
 docker compose up -d
 ```
 
