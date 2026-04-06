@@ -732,14 +732,6 @@ def webhook(config_id):
         request.files['image'].save(filename)
         app.logger.info(f"[{config['name']}] Webhook triggered. File: {original_filename}")
 
-        msg_id = send_telegram_blocking(
-            config['telegram_token'], config['chat_id'],
-            config.get('message_thread_id') or '',
-            filename, "Analysing... ⏳"
-        )
-        if msg_id:
-            config['initial_msg_id'] = msg_id
-
         q.enqueue(process_alert, filename, config)
 
     except Exception as e:
