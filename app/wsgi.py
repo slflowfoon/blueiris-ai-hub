@@ -608,10 +608,20 @@ def index():
 
 
 @app.route('/api/check-update')
-def check_update():
+def check_update_route():
     cached = r.get(UPDATE_CHECK_CACHE_KEY)
     if cached:
-        return jsonify(json.loads(cached))
+        try:
+            data = json.loads(cached)
+            if data.get("current_version") == CURRENT_VERSION:
+                return jsonify(data)
+        except Exception:
+            pass
+            
+    result = get_update_status()
+    
+    r.set(UPDATE_CHECK_CACHE_KEY, json.dumps(result), ex=UPDATE_CHECK_TTL)
+    return jsonify(result)
     try:
         resp = requests.get(
             f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
