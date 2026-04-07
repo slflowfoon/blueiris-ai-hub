@@ -44,17 +44,20 @@ except Exception:
 
 def check_update():
     if CURRENT_VERSION in ["main", "dev", "unknown"]:
-        return {"update_available": False, "latest_version": None}
+        return {
+            "update_available": False,
+            "latest_version": latest
+        }
 
     latest = get_latest_release()
     if not latest:
         return {"update_available": False, "latest_version": None}
 
     local_v = CURRENT_VERSION.lstrip('v')
-    remote_v = latest.lstrip('v')
+    remote_v = latest.lstrip('v') if latest else None
 
     return {
-        "update_available": remote_v != local_v,
+        "update_available": remote_v != local_v if remote_v else False,
         "latest_version": latest
     }
 
