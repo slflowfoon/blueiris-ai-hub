@@ -14,9 +14,10 @@ from PIL import Image
 from datetime import datetime, timedelta
 
 # --- LOGGING SETUP ---
-LOG_FILE = "/app/logs/system.log"
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
+LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
+if os.path.dirname(LOG_FILE):
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=1)
 handler.setFormatter(formatter)
@@ -29,7 +30,7 @@ redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
 
 # --- CONSTANTS ---
-DATA_DIR = "/app/data"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]

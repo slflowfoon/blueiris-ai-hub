@@ -10,6 +10,7 @@ def client():
     
     wsgi.app.config['TESTING'] = True
     wsgi.DB_FILE = db_path
+    wsgi.LOG_FILE = os.path.join(os.path.dirname(db_path), "test.log")
     
     with wsgi.app.test_client() as client:
         with wsgi.app.app_context():

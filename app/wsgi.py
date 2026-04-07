@@ -22,15 +22,16 @@ redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
 q = Queue(connection=r)
 
-DATA_DIR = "/app/data"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = os.path.join(DATA_DIR, "known_plates.json")
-TEMP_IMAGE_DIR = "/tmp_images"
-LOG_FILE = "/app/logs/system.log"
+TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
+LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+if os.path.dirname(LOG_FILE):
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 app.logger.setLevel(logging.INFO)
 

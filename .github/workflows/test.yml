@@ -16,4 +16,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
       - name: Run Pytest
-        run: PYTHONPATH=app pytest
+              run: |
+                mkdir -p ./test_data ./test_logs ./test_tmp
+                export PYTHONPATH=app
+                export DATA_DIR=./test_data
+                export LOG_FILE=./test_logs/system.log
+                export TEMP_IMAGE_DIR=./test_tmp
+                pytest
