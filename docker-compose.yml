@@ -31,6 +31,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
+    deploy:
+      replicas: 4  # Increase for more concurrent camera alerts (1 per simultaneous camera)
 
   mute_bot:
     image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
