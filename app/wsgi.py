@@ -120,7 +120,10 @@ def init_db():
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
             except sqlite3.OperationalError:
-                conn.execute(f"ALTER TABLE configs ADD COLUMN {col} {definition}")
+                try:
+                    conn.execute(f"ALTER TABLE configs ADD COLUMN {col} {definition}")
+                except sqlite3.OperationalError:
+                    pass  # Another worker added the column concurrently
 
 init_db()
 
