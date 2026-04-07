@@ -5,8 +5,7 @@ import sqlite3
 import redis
 import logging
 import requests
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash
 from tasks import process_alert
@@ -23,15 +22,16 @@ redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
 q = Queue(connection=r)
 
-DATA_DIR = "/app/data"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = os.path.join(DATA_DIR, "known_plates.json")
-TEMP_IMAGE_DIR = "/tmp_images"
-LOG_FILE = "/app/logs/system.log"
+TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
+LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+if os.path.dirname(LOG_FILE):
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 app.logger.setLevel(logging.INFO)
 
@@ -229,7 +229,7 @@ def send_telegram_blocking(token, chat_id, thread_id, img_path, caption):
 
 # --- HTML TEMPLATE ---
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 <head>
@@ -554,7 +554,7 @@ HTML_TEMPLATE = """
 <script>
 const colors = ['#00ffff','#00ff00','#ff00ff','#ffff00','#ff8800','#ff4444','#8888ff'];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
-function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*?)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
+function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*?)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
 const html=document.documentElement;
 function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('theme',t);document.getElementById('themeIcon').innerText=t==='dark'?'☀️':'🌙';}
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
