@@ -228,7 +228,7 @@ def send_telegram_blocking(token, chat_id, thread_id, img_path, caption):
 
 # --- HTML TEMPLATE ---
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 <head>

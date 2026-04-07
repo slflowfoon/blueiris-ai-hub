@@ -1,8 +1,11 @@
 [tool.ruff]
 line-length = 120
 
+[tool.ruff.lint]
 select = ["E", "F", "W"]
+ignore = ["W291", "W293"]
 
 [tool.ruff.lint.per-file-ignores]
-"app/wsgi.py" = ["E501"]
+"app/wsgi.py" = ["E501", "W605"]
 "app/tasks.py" = ["E501"]
+"app/mute_bot.py" = ["E501"]
