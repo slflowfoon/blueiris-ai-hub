@@ -1,0 +1,14 @@
+name: Cleanup Old Images
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Run every Sunday at midnight
+jobs:
+  delete-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'blueiris-ai-hub'
+          package-type: 'container'
+          min-versions-to-keep: 5 # Keeps the 5 most recent images
+          delete-only-untagged-versions: 'true'

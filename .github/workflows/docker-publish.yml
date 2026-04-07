@@ -40,7 +40,26 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Build and push
+      - name: Build image locally for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true 
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:temp_scan_target
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:temp_scan_target
+          format: 'table'
+          exit-code: '1' 
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Build and push to registry
         uses: docker/build-push-action@v5
         with:
           context: .

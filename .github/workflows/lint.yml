@@ -1,0 +1,11 @@
+name: Lint Code
+on: [push, pull_request]
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for Python errors
+        uses: astral-sh/ruff-action@v1
+        with:
+          args: "check --select E,F" # E=Syntax/Style, F=Logic/Undefined Names
