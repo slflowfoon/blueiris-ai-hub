@@ -553,7 +553,7 @@ HTML_TEMPLATE = r"""
 <script>
 const colors = ['#00ffff','#00ff00','#ff00ff','#ffff00','#ff8800','#ff4444','#8888ff'];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
-function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*?)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
+function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*?)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
 const html=document.documentElement;
 function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('theme',t);document.getElementById('themeIcon').innerText=t==='dark'?'☀️':'🌙';}
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
