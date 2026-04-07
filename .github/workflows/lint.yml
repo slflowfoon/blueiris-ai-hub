@@ -8,4 +8,4 @@ jobs:
       - name: Check for Python errors
         uses: astral-sh/ruff-action@v1
         with:
-          args: "check --select E,F" # E=Syntax/Style, F=Logic/Undefined Names
+          args: "check"

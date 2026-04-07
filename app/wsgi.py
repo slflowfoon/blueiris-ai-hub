@@ -5,8 +5,7 @@ import sqlite3
 import redis
 import logging
 import requests
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash
 from tasks import process_alert

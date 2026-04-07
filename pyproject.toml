@@ -1,0 +1,8 @@
+[tool.ruff]
+line-length = 120
+
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/wsgi.py" = ["E501"]
+"app/tasks.py" = ["E501"]

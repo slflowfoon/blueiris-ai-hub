@@ -676,7 +676,8 @@ def trigger_bi_recovery(config, tag):
         resp = requests.post(url, headers={'X-Recovery-Token': token}, timeout=60)
         if resp.status_code == 200:
             logging.info(f"{tag} BI recovery OK — waiting 15s for BI to restart...")
-            import time as _t; _t.sleep(15)
+            import time as _t
+            _t.sleep(15)
             return True
         logging.error(f"{tag} BI recovery returned {resp.status_code}: {resp.text[:100]}")
     except Exception as e:

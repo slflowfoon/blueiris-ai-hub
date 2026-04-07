@@ -3,4 +3,6 @@ requests
 gunicorn
 redis
 rq
-pillow
+pillow>=12.1.1
+wheel>=0.46.2
+jaraco.context>=6.1.0
