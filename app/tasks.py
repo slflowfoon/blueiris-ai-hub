@@ -531,7 +531,7 @@ def bi_wait_for_export_ready(sess, base_url, sid, export_id, tag, timeout=180):
     return None
 
 
-def bi_export_and_download(base_url, user, password, trigger_filename, output_path, tag, verbose=False, delete_after=True):
+def bi_export_and_download(base_url, user, password, trigger_filename, output_path, tag, verbose=False, delete_after=True, config=None):
     sess = requests.Session()
     sid = bi_login(sess, base_url, user, password, tag)
     if not sid:
@@ -588,13 +588,48 @@ def bi_export_and_download(base_url, user, password, trigger_filename, output_pa
         downloaded = False
         dl_start = time.time()
         attempt = 0
+        consecutive_503s = 0
+        recovery_attempted = False
+
         while time.time() - dl_start < 120:
             attempt += 1
             elapsed = time.time() - dl_start
             try:
                 with sess.get(mp4_url, stream=True, timeout=60) as dl:
-                    logging.info(f"{tag} [TIMING] attempt={attempt} elapsed={elapsed:.1f}s status={dl.status_code} Content-Length={dl.headers.get('Content-Length','?')}")
-                    if dl.status_code in (503, 404):
+                    cl = int(dl.headers.get('Content-Length', '0') or '0')
+                    logging.info(f"{tag} [TIMING] attempt={attempt} elapsed={elapsed:.1f}s status={dl.status_code} Content-Length={cl}")
+
+                    if dl.status_code == 503 and cl == 0:
+                        consecutive_503s += 1
+                        # Stuck encoder: 30 consecutive empty 503s (~60s) with no progress
+                        if consecutive_503s >= 30 and not recovery_attempted and config:
+                            recovery_attempted = True
+                            if trigger_bi_recovery(config, tag):
+                                sess2 = requests.Session()
+                                sid2 = bi_login(sess2, base_url, user, password, tag)
+                                if sid2:
+                                    sess = sess2
+                                    sid = sid2
+                                    er2 = sess.post(
+                                        f"{base_url.rstrip('/')}/json?_export",
+                                        json={'cmd': 'export', 'path': final_path,
+                                              'startms': int(offset), 'msec': int(duration),
+                                              'format': 1, 'audio': False, 'session': sid2},
+                                        timeout=10
+                                    )
+                                    new_id = er2.json().get('data', {}).get('path', '').strip().replace('@', '').replace('.mp4', '')
+                                    if new_id:
+                                        new_clipboard = bi_wait_for_export_ready(sess, base_url, sid2, new_id, tag)
+                                        if new_clipboard:
+                                            mp4_url = f"{base_url.rstrip('/')}/clips/{new_clipboard.lstrip('/')}?dl=1&session={sid2}"
+                                            export_id = new_id
+                                            consecutive_503s = 0
+                                            logging.info(f"{tag} Re-export after recovery ready: {mp4_url}")
+                        time.sleep(2)
+                        continue
+
+                    consecutive_503s = 0
+                    if dl.status_code == 404:
                         time.sleep(2)
                         continue
                     dl.raise_for_status()
@@ -623,6 +658,30 @@ def bi_export_and_download(base_url, user, password, trigger_filename, output_pa
     except Exception as e:
         logging.error(f"{tag} Export/download error: {e}")
         return False
+
+
+# =============================================================================
+# BI encoder recovery
+# =============================================================================
+
+def trigger_bi_recovery(config, tag):
+    """POST to bi_restart_url to recover a stuck Blue Iris encoder."""
+    url = (config.get('bi_restart_url') or '').strip()
+    token = (config.get('bi_restart_token') or '').strip()
+    if not url:
+        logging.warning(f"{tag} Stuck encoder detected but no bi_restart_url configured.")
+        return False
+    try:
+        logging.warning(f"{tag} Stuck encoder detected — calling recovery endpoint: {url}")
+        resp = requests.post(url, headers={'X-Recovery-Token': token}, timeout=60)
+        if resp.status_code == 200:
+            logging.info(f"{tag} BI recovery OK — waiting 15s for BI to restart...")
+            import time as _t; _t.sleep(15)
+            return True
+        logging.error(f"{tag} BI recovery returned {resp.status_code}: {resp.text[:100]}")
+    except Exception as e:
+        logging.error(f"{tag} BI recovery error: {e}")
+    return False
 
 
 # =============================================================================
@@ -676,7 +735,8 @@ def process_alert(image_path, config):
 
                 success = bi_export_and_download(
                     config['bi_url'], config['bi_user'], config['bi_pass'],
-                    config['trigger_filename'], raw_mp4, tag, verbose, delete_after
+                    config['trigger_filename'], raw_mp4, tag, verbose, delete_after,
+                    config=config
                 )
 
                 if success:
