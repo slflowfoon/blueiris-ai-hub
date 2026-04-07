@@ -46,6 +46,8 @@ Open the web UI and click **+ New Configuration**. Fill in:
 | AI Prompt | What to ask the AI about each alert image |
 | Blue Iris URL | e.g. `http://192.168.1.100:81` (required for video) |
 | BI Username / Password | Blue Iris credentials (required for video) |
+| Recovery URL | URL of the `bi_recovery.py` endpoint on your Windows host (optional — enables automated encoder restart) |
+| Recovery Token | Secret token matching `BI_RECOVERY_SECRET` on the Windows host |
 
 ### 3. Configure Blue Iris
 
@@ -83,6 +85,46 @@ Each alert tries AI providers in order until one succeeds:
 2. **Grok** (`grok-2-vision-1212`) — optional, add key in configuration
 3. **Groq** (`llama-3.2-11b-vision-preview`) — optional, add key in configuration
 
+## BI Encoder Recovery
+
+Blue Iris's video export encoder can deadlock after extended uptime (typically 3+ weeks), causing all clip exports to return persistent `503` errors. The hub detects this automatically (30 consecutive empty 503 responses) and can trigger a remote restart of the Blue Iris Windows service.
+
+### Setup
+
+**On your Windows machine**, run `bi_recovery.py` as a startup task:
+
+1. Download [`bi_recovery.py`](app/bi_recovery.py) to your Blue Iris machine
+2. Set a strong secret token:
+   ```powershell
+   $env:BI_RECOVERY_SECRET = "your-secret-here"
+   ```
+3. Register it as a Task Scheduler startup task (run as Administrator):
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File register_bi_recovery.ps1
+   ```
+   Or start it manually:
+   ```powershell
+   $env:BI_RECOVERY_SECRET = "your-secret-here"
+   python bi_recovery.py
+   ```
+   The endpoint listens on port `9090` by default (override with `BI_RECOVERY_PORT`).
+
+**In the hub UI**, edit each camera configuration and set:
+- **Recovery URL** — `http://<windows-ip>:9090/restart-bi`
+- **Recovery Token** — the same secret you set in `BI_RECOVERY_SECRET`
+
+### How it works
+
+If the hub sees 30 consecutive `503` responses with empty `Content-Length` during a video download (~60 seconds), it:
+
+1. POSTs to the recovery endpoint on your Windows machine
+2. The Windows service is force-stopped and restarted (~13 seconds)
+3. The hub re-logs into Blue Iris, re-exports the clip, and retries the download
+
+Configs without a Recovery URL set skip this step and fall back to the existing retry behaviour.
+
+> **Tip:** Also set up a weekly scheduled restart as a preventive measure — this stops the encoder reaching the deadlock state in the first place.
+
 ## Updating
 
 When a new version is released, the web UI shows an update banner. Run:
@@ -101,4 +143,4 @@ docker compose up -d
 | `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
 | `redis` | Job queue and state store (mutes, caption modes, API key rotation) |
 
-Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → "Analysing..." sent to Telegram → job queued → worker analyses with AI → caption updated → video fetched and sent (if enabled).
+Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) clip exported from BI, analysed with AI, caption updated and photo replaced with video clip.

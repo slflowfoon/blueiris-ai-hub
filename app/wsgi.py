@@ -75,7 +75,9 @@ def init_db():
                 delete_after_send INTEGER DEFAULT 1,
                 message_thread_id TEXT,
                 grok_api_key TEXT,
-                groq_api_key TEXT
+                groq_api_key TEXT,
+                bi_restart_url TEXT,
+                bi_restart_token TEXT
             )
         """)
         # Migrations for existing installs
@@ -88,6 +90,8 @@ def init_db():
             ("message_thread_id", "TEXT"),
             ("grok_api_key", "TEXT"),
             ("groq_api_key", "TEXT"),
+            ("bi_restart_url", "TEXT"),
+            ("bi_restart_token", "TEXT"),
         ]:
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
@@ -424,7 +428,14 @@ HTML_TEMPLATE = """
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')">👁️</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')</button></div></div>
+                    </div>
+                    <hr>
+                    <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
+                    <div class="row">
+                        <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" name="bi_restart_token" id="add_bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_restart_token')">&#128065;&#65039;</button></div></div>
+                    </div>
                     </div>
                 </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Save</button></div>
@@ -474,7 +485,14 @@ HTML_TEMPLATE = """
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" id="edit_grok_key" name="grok_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')">👁️</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')</button></div></div>
+                    </div>
+                    <hr>
+                    <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
+                    <div class="row">
+                        <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" id="edit_bi_restart_url" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" id="edit_bi_restart_token" name="bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_restart_token')">&#128065;&#65039;</button></div></div>
+                    </div>
                     </div>
                 </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Update</button></div>
@@ -509,7 +527,9 @@ function openEditModal(c){
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
     document.getElementById('edit_grok_key').value=c.grok_api_key||'';
     document.getElementById('edit_groq_key').value=c.groq_api_key||'';
-    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_grok_key','edit_groq_key'].forEach(id=>document.getElementById(id).type='password');
+    document.getElementById('edit_bi_restart_url').value=c.bi_restart_url||'';
+    document.getElementById('edit_bi_restart_token').value=c.bi_restart_token||'';
+    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_grok_key','edit_groq_key','edit_bi_restart_token'].forEach(id=>document.getElementById(id).type='password');
     document.getElementById('editForm').action='/edit/'+c.id;
     new bootstrap.Modal(document.getElementById('editModal')).show();
 }
@@ -593,8 +613,9 @@ def add_config():
         conn = get_db_connection()
         conn.execute(
             'INSERT INTO configs (id,name,gemini_key,telegram_token,chat_id,prompt,bi_url,bi_user,bi_pass,'
-            'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key,'
+            'bi_restart_url,bi_restart_token) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (str(uuid.uuid4()), request.form['name'], request.form['gemini_key'],
              request.form['telegram_token'], request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -603,7 +624,9 @@ def add_config():
              1 if 'delete_after_send' in request.form else 0,
              request.form.get('message_thread_id') or None,
              request.form.get('grok_api_key') or None,
-             request.form.get('groq_api_key') or None)
+             request.form.get('groq_api_key') or None,
+             request.form.get('bi_restart_url') or None,
+             request.form.get('bi_restart_token') or None)
         )
         conn.commit()
         conn.close()
@@ -620,7 +643,7 @@ def edit_config(id):
         conn.execute(
             'UPDATE configs SET name=?,gemini_key=?,telegram_token=?,chat_id=?,prompt=?,bi_url=?,bi_user=?,'
             'bi_pass=?,send_video=?,verbose_logging=?,delete_after_send=?,message_thread_id=?,'
-            'grok_api_key=?,groq_api_key=? WHERE id=?',
+            'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=? WHERE id=?',
             (request.form['name'], request.form['gemini_key'], request.form['telegram_token'],
              request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -630,6 +653,8 @@ def edit_config(id):
              request.form.get('message_thread_id') or None,
              request.form.get('grok_api_key') or None,
              request.form.get('groq_api_key') or None,
+             request.form.get('bi_restart_url') or None,
+             request.form.get('bi_restart_token') or None,
              id)
         )
         conn.commit()
