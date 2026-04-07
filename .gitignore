@@ -17,3 +17,4 @@ __pycache__/
 
 # Docker volumes
 /dev/shm/
+CLAUDE.md
