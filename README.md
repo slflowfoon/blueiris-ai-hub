@@ -6,7 +6,8 @@ AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/)
 
 - **AI vision analysis** — Gemini 2.5/2.0 Flash with automatic API key rotation and fallback to Grok / Groq
 - **Video clips** — exports the alert clip from Blue Iris, analyses it with Gemini, and replaces the still photo in Telegram with the video
-- **Telegram notifications** — instant alerts with AI-generated captions; captions are updated in-place when video analysis completes
+- **Telegram notifications** — AI-generated captions sent with each alert; captions are updated in-place when video analysis completes
+- **Instant notify** — optional per-camera mode that sends the photo immediately with a fallback caption, then updates it once AI analysis completes (guarantees delivery even when Gemini is slow)
 - **Auto-mute** — silences a camera automatically after 5 triggers in 10 minutes (prevents spam)
 - **Caption modes** — switch to `hilarious`, `witty`, or `rude` captions via Telegram bot commands
 - **Known plates** — teach the AI to recognise and label your vehicles by number plate
@@ -46,6 +47,7 @@ Open the web UI and click **+ New Configuration**. Fill in:
 | AI Prompt | What to ask the AI about each alert image |
 | Blue Iris URL | e.g. `http://192.168.1.100:81` (required for video) |
 | BI Username / Password | Blue Iris credentials (required for video) |
+| Instant notify | Send photo immediately with "Motion detected.", update caption when AI responds (optional) |
 | Recovery URL | URL of the `bi_recovery.py` endpoint on your Windows host (optional — enables automated encoder restart) |
 | Recovery Token | Secret token matching `BI_RECOVERY_SECRET` on the Windows host |
 

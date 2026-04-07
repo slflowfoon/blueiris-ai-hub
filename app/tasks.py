@@ -707,23 +707,44 @@ def process_alert(image_path, config):
         current_time = datetime.now().strftime("%I:%M %p")
         prompt = f"Current time: {current_time}. {build_prompt(config)}"
 
-        # Analyse still image first, then send with real caption
         encoded = optimize_image(image_path)
-        ai_text = None
-        if encoded:
-            ai_text = analyze_image_gemini(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_grok(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_groq(config, encoded, prompt)
+        instant_notify = config.get('instant_notify') == 1
 
-        still_caption = ai_text or "Motion detected."
+        if instant_notify:
+            # Send immediately, then analyse and update caption
+            if config.get('initial_msg_id'):
+                config['last_msg_id'] = config['initial_msg_id']
+            else:
+                send_telegram(config, image_path, "Motion detected.")
 
-        # Send photo with real caption (no placeholder)
-        if config.get('initial_msg_id'):
-            config['last_msg_id'] = config['initial_msg_id']
+            ai_text = None
+            if encoded:
+                ai_text = analyze_image_gemini(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_grok(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_groq(config, encoded, prompt)
+
+            if ai_text:
+                update_telegram_caption(config, ai_text)
+
+            still_caption = ai_text or "Motion detected."
         else:
-            send_telegram(config, image_path, still_caption)
+            # Default: analyse first, send with real caption
+            ai_text = None
+            if encoded:
+                ai_text = analyze_image_gemini(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_grok(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_groq(config, encoded, prompt)
+
+            still_caption = ai_text or "Motion detected."
+
+            if config.get('initial_msg_id'):
+                config['last_msg_id'] = config['initial_msg_id']
+            else:
+                send_telegram(config, image_path, still_caption)
 
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):

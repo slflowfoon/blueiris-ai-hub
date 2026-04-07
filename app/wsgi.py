@@ -77,7 +77,8 @@ def init_db():
                 grok_api_key TEXT,
                 groq_api_key TEXT,
                 bi_restart_url TEXT,
-                bi_restart_token TEXT
+                bi_restart_token TEXT,
+                instant_notify INTEGER DEFAULT 0
             )
         """)
         # Migrations for existing installs
@@ -92,6 +93,7 @@ def init_db():
             ("groq_api_key", "TEXT"),
             ("bi_restart_url", "TEXT"),
             ("bi_restart_token", "TEXT"),
+            ("instant_notify", "INTEGER DEFAULT 0"),
         ]:
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
@@ -279,6 +281,7 @@ HTML_TEMPLATE = """
                             <div class="form-text mt-1">Replace <code>&lt;AlertsFolder&gt;</code> with your Blue Iris alerts path (e.g. <code>D:\Alerts</code> — found in Blue Iris &rarr; Global settings &rarr; Storage tab).</div>
                             <div class="mt-3 d-flex gap-2 flex-wrap">
                                 {% if config.send_video %}<span class="badge bg-info text-dark">🎞️ Video enabled</span>{% endif %}
+                                {% if config.instant_notify %}<span class="badge bg-success">⚡ Instant notify</span>{% endif %}
                                 {% if config.message_thread_id %}<span class="badge bg-secondary">🧵 Thread {{ config.message_thread_id }}</span>{% endif %}
                                 {% if config.grok_api_key %}<span class="badge bg-warning text-dark">Grok ✓</span>{% endif %}
                                 {% if config.groq_api_key %}<span class="badge bg-warning text-dark">Groq ✓</span>{% endif %}
@@ -417,6 +420,7 @@ HTML_TEMPLATE = """
                         <div class="col-md-6 mb-3">
                             <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="add_send_video"><label class="form-check-label" for="add_send_video">Fetch &amp; send video clip</label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="add_delete_after_send" checked><label class="form-check-label" for="add_delete_after_send">Delete clip from BI after send</label></div>
+                            <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="add_instant_notify"><label class="form-check-label" for="add_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="add_verbose_logging"><label class="form-check-label" for="add_verbose_logging">Verbose logging</label></div>
                         </div>
                     </div>
@@ -474,6 +478,7 @@ HTML_TEMPLATE = """
                         <div class="col-md-6 mb-3">
                             <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="edit_send_video"><label class="form-check-label" for="edit_send_video">Fetch &amp; send video clip</label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="edit_delete_after_send"><label class="form-check-label" for="edit_delete_after_send">Delete clip from BI after send</label></div>
+                            <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="edit_instant_notify"><label class="form-check-label" for="edit_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="edit_verbose_logging"><label class="form-check-label" for="edit_verbose_logging">Verbose logging</label></div>
                         </div>
                     </div>
@@ -524,6 +529,7 @@ function openEditModal(c){
     document.getElementById('edit_bi_pass').value=c.bi_pass||'';
     document.getElementById('edit_send_video').checked=c.send_video===1;
     document.getElementById('edit_delete_after_send').checked=c.delete_after_send===1;
+    document.getElementById('edit_instant_notify').checked=c.instant_notify===1;
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
     document.getElementById('edit_grok_key').value=c.grok_api_key||'';
     document.getElementById('edit_groq_key').value=c.groq_api_key||'';
@@ -614,8 +620,8 @@ def add_config():
         conn.execute(
             'INSERT INTO configs (id,name,gemini_key,telegram_token,chat_id,prompt,bi_url,bi_user,bi_pass,'
             'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key,'
-            'bi_restart_url,bi_restart_token) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'bi_restart_url,bi_restart_token,instant_notify) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (str(uuid.uuid4()), request.form['name'], request.form['gemini_key'],
              request.form['telegram_token'], request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -626,7 +632,8 @@ def add_config():
              request.form.get('grok_api_key') or None,
              request.form.get('groq_api_key') or None,
              request.form.get('bi_restart_url') or None,
-             request.form.get('bi_restart_token') or None)
+             request.form.get('bi_restart_token') or None,
+             1 if 'instant_notify' in request.form else 0)
         )
         conn.commit()
         conn.close()
@@ -643,7 +650,7 @@ def edit_config(id):
         conn.execute(
             'UPDATE configs SET name=?,gemini_key=?,telegram_token=?,chat_id=?,prompt=?,bi_url=?,bi_user=?,'
             'bi_pass=?,send_video=?,verbose_logging=?,delete_after_send=?,message_thread_id=?,'
-            'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=? WHERE id=?',
+            'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=?,instant_notify=? WHERE id=?',
             (request.form['name'], request.form['gemini_key'], request.form['telegram_token'],
              request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -655,6 +662,7 @@ def edit_config(id):
              request.form.get('groq_api_key') or None,
              request.form.get('bi_restart_url') or None,
              request.form.get('bi_restart_token') or None,
+             1 if 'instant_notify' in request.form else 0,
              id)
         )
         conn.commit()
