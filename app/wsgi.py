@@ -42,9 +42,28 @@ try:
 except Exception:
     CURRENT_VERSION = "unknown"
 
+def check_update():
+    if CURRENT_VERSION in ["main", "dev", "unknown"]:
+        return {
+            "update_available": False,
+            "latest_version": latest
+        }
+
+    latest = get_latest_release()
+    if not latest:
+        return {"update_available": False, "latest_version": None}
+
+    local_v = CURRENT_VERSION.lstrip('v')
+    remote_v = latest.lstrip('v') if latest else None
+
+    return {
+        "update_available": remote_v != local_v if remote_v else False,
+        "latest_version": latest
+    }
+
 GITHUB_REPO = "slflowfoon/blueiris-ai-hub"
 UPDATE_CHECK_CACHE_KEY = "update_check"
-UPDATE_CHECK_TTL = 3600  # 1 hour
+UPDATE_CHECK_TTL = 900
 
 
 # --- DATABASE ---
