@@ -42,32 +42,47 @@ try:
 except Exception:
     CURRENT_VERSION = "unknown"
 
-def check_update():
-    latest = get_latest_release()
-    
+def get_update_status():
+    """Logic to fetch latest release from GitHub and compare versions."""
+    latest = None
+    release_url = ""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            latest = data["tag_name"].lstrip("v")
+            release_url = data.get("html_url", "")
+    except Exception as e:
+        app.logger.error(f"Update check failed: {e}")
+        return {"update_available": False, "latest_version": None}
+
     if not latest or CURRENT_VERSION in ["main", "dev", "unknown"]:
-        return {"update_available": False, "latest_version": latest}
+        return {
+            "update_available": False, 
+            "latest_version": latest, 
+            "current_version": CURRENT_VERSION,
+            "release_url": release_url
+        }
 
     try:
         def parse_version(v):
             return tuple(map(int, v.lstrip('v').split('.')))
-
         local_v = parse_version(CURRENT_VERSION)
         remote_v = parse_version(latest)
-
         update_needed = remote_v > local_v
     except Exception:
         update_needed = latest.lstrip('v') != CURRENT_VERSION.lstrip('v')
 
     return {
         "update_available": update_needed,
-        "latest_version": latest
+        "latest_version": latest,
+        "current_version": CURRENT_VERSION,
+        "release_url": release_url
     }
-
-GITHUB_REPO = "slflowfoon/blueiris-ai-hub"
-UPDATE_CHECK_CACHE_KEY = "update_check"
-UPDATE_CHECK_TTL = 900
-
 
 # --- DATABASE ---
 
@@ -252,7 +267,7 @@ HTML_TEMPLATE = """
         v<span id="update-version"></span> is available on
         <a id="update-link" href="#" target="_blank" rel="noopener">GitHub</a>.
         Run <code>docker compose pull && docker compose up -d</code> to update.
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <button type="button" id="dismiss-update" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -572,10 +587,18 @@ document.addEventListener('DOMContentLoaded',()=>{
     colorizeLogs();
     // Check for updates (cached server-side for 1 hour)
     fetch('/api/check-update').then(r=>r.json()).then(d=>{
-        if(d.update_available){
-            document.getElementById('update-version').textContent=d.latest_version;
-            document.getElementById('update-link').href=d.release_url||'https://github.com/slflowfoon/blueiris-ai-hub/releases';
+        const dismissedVersion = localStorage.getItem('dismissedUpdate');
+        
+        // Only show if update is available AND it hasn't been dismissed yet
+        if(d.update_available && dismissedVersion !== d.latest_version){
+            document.getElementById('update-version').textContent = d.latest_version;
+            document.getElementById('update-link').href = d.release_url || 'https://github.com/slflowfoon/blueiris-ai-hub/releases';
             document.getElementById('update-banner').classList.remove('d-none');
+
+            // Save dismissal to localStorage when the 'X' is clicked
+            document.getElementById('dismiss-update').addEventListener('click', () => {
+                localStorage.setItem('dismissedUpdate', d.latest_version);
+            });
         }
     }).catch(()=>{});
 });
@@ -611,7 +634,8 @@ def index():
 
 
 @app.route('/api/check-update')
-def check_update_route():
+def check_update_api():
+    """Flask route that uses Redis caching and calls get_update_status."""
     cached = r.get(UPDATE_CHECK_CACHE_KEY)
     if cached:
         try:
@@ -623,27 +647,6 @@ def check_update_route():
             
     result = get_update_status()
     
-    r.set(UPDATE_CHECK_CACHE_KEY, json.dumps(result), ex=UPDATE_CHECK_TTL)
-    return jsonify(result)
-    try:
-        resp = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            headers={"Accept": "application/vnd.github+json"},
-            timeout=5
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            latest = data["tag_name"].lstrip("v")
-            result = {
-                "current_version": CURRENT_VERSION,
-                "latest_version": latest,
-                "update_available": latest != CURRENT_VERSION,
-                "release_url": data.get("html_url", ""),
-            }
-        else:
-            result = {"update_available": False}
-    except Exception:
-        result = {"update_available": False}
     r.set(UPDATE_CHECK_CACHE_KEY, json.dumps(result), ex=UPDATE_CHECK_TTL)
     return jsonify(result)
 
