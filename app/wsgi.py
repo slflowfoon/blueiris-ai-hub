@@ -43,21 +43,24 @@ except Exception:
     CURRENT_VERSION = "unknown"
 
 def check_update():
-    if CURRENT_VERSION in ["main", "dev", "unknown"]:
-        return {
-            "update_available": False,
-            "latest_version": latest
-        }
-
     latest = get_latest_release()
-    if not latest:
-        return {"update_available": False, "latest_version": None}
+    
+    if not latest or CURRENT_VERSION in ["main", "dev", "unknown"]:
+        return {"update_available": False, "latest_version": latest}
 
-    local_v = CURRENT_VERSION.lstrip('v')
-    remote_v = latest.lstrip('v') if latest else None
+    try:
+        def parse_version(v):
+            return tuple(map(int, v.lstrip('v').split('.')))
+
+        local_v = parse_version(CURRENT_VERSION)
+        remote_v = parse_version(latest)
+
+        update_needed = remote_v > local_v
+    except Exception:
+        update_needed = latest.lstrip('v') != CURRENT_VERSION.lstrip('v')
 
     return {
-        "update_available": remote_v != local_v if remote_v else False,
+        "update_available": update_needed,
         "latest_version": latest
     }
 
