@@ -238,7 +238,7 @@ HTML_TEMPLATE = """
 
         <!-- Configurations tab -->
         <div class="tab-pane fade show active" id="configs-pane">
-            <div class="p-3 mb-3 bg-light border rounded">
+            <div class="p-3 mb-3 bg-body-tertiary border rounded">
                 <strong>Blue Iris Setup — On Alert action (per camera):</strong>
                 <ol class="mb-0 mt-2 ps-3">
                     <li>In Blue Iris, open camera settings and go to the <strong>Alerts</strong> tab.</li>
