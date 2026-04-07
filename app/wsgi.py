@@ -42,6 +42,10 @@ try:
 except Exception:
     CURRENT_VERSION = "unknown"
 
+GITHUB_REPO = "slflowfoon/blueiris-ai-hub"
+UPDATE_CHECK_CACHE_KEY = "hub_update_check"
+UPDATE_CHECK_TTL = 900 
+
 def get_update_status():
     """Logic to fetch latest release from GitHub and compare versions."""
     latest = None
