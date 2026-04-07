@@ -225,6 +225,8 @@ HTML_TEMPLATE = """
         .last-seen { font-size: 0.85em; color: var(--bs-secondary-color); }
         body, .card, .webhook-box, .modal-content { transition: background-color 0.3s, color 0.3s; }
         .mute-badge { font-size: 0.75em; }
+        .modal-footer .btn { border-radius: 6px; padding: 8px 20px; font-weight: 500; }
+        .input-group-text, .input-group .btn { border-color: var(--bs-border-color); }
     </style>
 </head>
 <body>
@@ -454,16 +456,15 @@ HTML_TEMPLATE = """
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')">👁️</button></div></div>
                     </div>
                     <hr>
                     <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" name="bi_restart_token" id="add_bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_restart_token')">&#128065;&#65039;</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" name="bi_restart_token" id="add_bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_restart_token')">👁️</button></div></div>
                     </div>
                     </div>
-                </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Save</button></div>
             </form>
         </div>
@@ -512,7 +513,7 @@ HTML_TEMPLATE = """
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" id="edit_grok_key" name="grok_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')">👁️</button></div></div>
                     </div>
                     <hr>
                     <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -521,7 +522,6 @@ HTML_TEMPLATE = """
                         <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" id="edit_bi_restart_token" name="bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_restart_token')">&#128065;&#65039;</button></div></div>
                     </div>
                     </div>
-                </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Update</button></div>
             </form>
         </div>
