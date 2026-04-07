@@ -1,7 +1,7 @@
 import pytest
 import os
 import tempfile
-from app import wsgi
+import wsgi
 
 @pytest.fixture
 def client():

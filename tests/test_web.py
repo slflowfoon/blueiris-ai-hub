@@ -10,3 +10,4 @@ def test_api_check_update(client):
     assert response.status_code == 200
     data = response.get_json()
     assert "update_available" in data
+    
