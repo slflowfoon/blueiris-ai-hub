@@ -1,25 +1,32 @@
 name: Python Tests
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
+          
       - name: Run Pytest
-              run: |
-                mkdir -p ./test_data ./test_logs ./test_tmp
-                export PYTHONPATH=app
-                export DATA_DIR=./test_data
-                export LOG_FILE=./test_logs/system.log
-                export TEMP_IMAGE_DIR=./test_tmp
-                pytest
+        run: |
+          mkdir -p ./test_data ./test_logs ./test_tmp
+          export PYTHONPATH=app
+          export DATA_DIR=./test_data
+          export LOG_FILE=./test_logs/system.log
+          export TEMP_IMAGE_DIR=./test_tmp
+          pytest
