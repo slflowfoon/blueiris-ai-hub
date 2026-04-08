@@ -27,7 +27,7 @@ from logging.handlers import RotatingFileHandler
 # Configuration
 # =============================================================================
 
-LOG_FILE  = "/app/logs/bi_monitor.log"
+LOG_FILE  = os.getenv("LOG_FILE", "/app/logs/bi_monitor.log")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 REQUEST_QUEUE          = "bi:requests"
