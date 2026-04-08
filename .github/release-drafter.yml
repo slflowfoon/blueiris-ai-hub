@@ -2,6 +2,12 @@ name: Release Drafter
 on:
   push:
     branches: [main]
+
+permissions:
+  contents: read 
+  pull-requests: read 
+  releases: write
+
 jobs:
   update_release_draft:
     runs-on: ubuntu-latest
