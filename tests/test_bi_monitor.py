@@ -8,6 +8,7 @@ Run inside the hub container:
 import json
 import time
 import threading
+import sys
 import uuid
 
 import fakeredis
@@ -24,7 +25,6 @@ def _make_fake_redis(*args, **kwargs):
 # Monkeypatch redis.from_url before the module is loaded
 _redis_module.from_url = _make_fake_redis
 
-import sys
 # Ensure bi_monitor is imported fresh
 if "bi_monitor" in sys.modules:
     del sys.modules["bi_monitor"]
