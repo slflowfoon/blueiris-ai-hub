@@ -48,7 +48,7 @@ services:
 
   bi_monitor:
     image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
-    command: python3 app/bi_monitor.py
+    command: python3 bi_monitor.py
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
