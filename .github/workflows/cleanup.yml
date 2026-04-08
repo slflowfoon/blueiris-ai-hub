@@ -5,6 +5,9 @@ on:
 jobs:
   delete-versions:
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
     steps:
       - uses: actions/delete-package-versions@v5
         with:
