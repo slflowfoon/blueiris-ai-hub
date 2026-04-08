@@ -462,8 +462,13 @@ def replace_telegram_media(config, media_path, caption):
 # Blue Iris helpers (unchanged from v1)
 # =============================================================================
 
-def md5_hex(s):
-    return hashlib.md5(s.encode("utf-8")).hexdigest()
+def _bi_protocol_hash(s: str) -> str:
+    """
+    Compute the MD5 hex digest required by the Blue Iris JSON API.
+    NOTE: MD5 is used here only for protocol interoperability with 
+    Blue Iris, not for internal password storage or cryptographic security.
+    """
+    return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def bi_login(sess, base_url, user, password, tag):
@@ -472,7 +477,7 @@ def bi_login(sess, base_url, user, password, tag):
         r1 = sess.post(json_url, json={"cmd": "login"}, timeout=10)
         r1.raise_for_status()
         sid = r1.json().get("session")
-        resp = md5_hex(f"{user}:{sid}:{password}")
+        resp = _bi_protocol_hash(f"{user}:{sid}:{password}")
         r2 = sess.post(json_url, json={"cmd": "login", "session": sid, "response": resp}, timeout=10)
         r2.raise_for_status()
         if r2.json().get("result") != "success":
