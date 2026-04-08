@@ -1,38 +1,24 @@
 """
-Tests for bi_monitor.py using fakeredis.
+Tests for bi_monitor.py.
 
-Run inside the hub container:
-  docker exec <worker> python -m pytest tests/test_bi_monitor.py -v
+Requires a real Redis instance — CI provides one via the services: redis: block.
+Run locally with:
+  REDIS_URL=redis://localhost:6379/0 PYTHONPATH=app pytest tests/test_bi_monitor.py -v
 """
 
 import json
-import time
-import threading
+import os
 import sys
+import threading
+import time
 import uuid
 
-import fakeredis
+import redis
 
-# Patch redis before importing bi_monitor
-import redis as _redis_module
-_fake_server = fakeredis.FakeServer()
+# bi_monitor lives in app/ — PYTHONPATH=app is set in CI
+import bi_monitor
 
-
-def _make_fake_redis(*args, **kwargs):
-    return fakeredis.FakeRedis(server=_fake_server)
-
-
-# Monkeypatch redis.from_url before the module is loaded
-_redis_module.from_url = _make_fake_redis
-
-# Ensure bi_monitor is imported fresh
-if "bi_monitor" in sys.modules:
-    del sys.modules["bi_monitor"]
-
-import bi_monitor  # noqa: E402
-
-# Replace the module-level redis instance with our fake
-bi_monitor.r = fakeredis.FakeRedis(server=_fake_server)
+# Use the same Redis the module uses so helpers and the module share state
 _r = bi_monitor.r
 
 
@@ -72,6 +58,9 @@ def _pop_result(request_id, timeout=2):
 # =============================================================================
 
 class TestStaleRequestGuard:
+    def setup_method(self):
+        _r.delete("bi:requests")
+
     def test_stale_request_is_skipped(self):
         """A request older than STALE_REQUEST_AGE should be rejected immediately."""
         req = _push_request(queued_at=time.time() - (bi_monitor.STALE_REQUEST_AGE + 60))
@@ -84,11 +73,7 @@ class TestStaleRequestGuard:
     def test_fresh_request_passes_guard(self, monkeypatch):
         """A fresh request should proceed to _do_export (which we stub)."""
         req = _push_request()
-
-        def _fake_do_export(r, tag):
-            return True
-
-        monkeypatch.setattr(bi_monitor, "_do_export", _fake_do_export)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: True)
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result is not None
@@ -96,6 +81,9 @@ class TestStaleRequestGuard:
 
 
 class TestResultProtocol:
+    def setup_method(self):
+        _r.delete("bi:requests")
+
     def test_result_key_has_ttl(self, monkeypatch):
         """Result key must have a TTL so it self-cleans if worker dies."""
         req = _push_request()
@@ -126,7 +114,6 @@ class TestResultProtocol:
 
     def test_malformed_json_does_not_crash(self):
         """Malformed payload must be silently dropped with no result key."""
-        # Should not raise
         bi_monitor._process_request(b"not json {{{")
 
 
@@ -135,20 +122,7 @@ class TestSessionCache:
         bi_monitor._session_cache.clear()
 
     def test_session_stored_after_login(self, monkeypatch):
-        import requests as _requests
-
-        fake_sess = _requests.Session()
-
-        def _fake_login(sess, base_url, user, password, tag):
-            return "fake-sid-123"
-
-        monkeypatch.setattr(bi_monitor, "bi_login", _fake_login)
-
-        # Patch status ping to indicate stale (force fresh login path)
-        import unittest.mock as mock
-        with mock.patch.object(fake_sess, "post", side_effect=Exception("no server")):
-            pass  # cache is empty, will always take fresh path
-
+        monkeypatch.setattr(bi_monitor, "bi_login", lambda sess, base_url, user, password, tag: "fake-sid-123")
         sess, sid = bi_monitor._get_session("http://bi:81", "admin", "pw", "[T]")
         assert sid == "fake-sid-123"
         assert ("http://bi:81", "admin") in bi_monitor._session_cache
@@ -157,7 +131,6 @@ class TestSessionCache:
         """Second call must reuse cached session without calling bi_login again."""
         import unittest.mock as mock
 
-        # Pre-populate cache with a session whose ping succeeds
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
@@ -170,7 +143,7 @@ class TestSessionCache:
 
         sess, sid = bi_monitor._get_session("http://bi:81", "admin", "pw", "[T]")
         assert sid == "cached-sid"
-        assert login_calls == []  # bi_login was NOT called
+        assert login_calls == []
 
     def test_invalidate_removes_entry(self):
         bi_monitor._session_cache[("http://bi:81", "admin")] = ("sess", "sid")
@@ -180,9 +153,8 @@ class TestSessionCache:
 
 class TestRunMonitorLoop:
     def setup_method(self):
-        # Flush any items left in the queue by previous tests that called
-        # _push_request() but dispatched via _process_request() directly
         _r.delete("bi:requests")
+        bi_monitor._session_cache.clear()
 
     def test_processes_queued_request(self, monkeypatch):
         """run_monitor must pop and process a queued request then return on next empty poll."""
@@ -193,18 +165,9 @@ class TestRunMonitorLoop:
             processed.append(json.loads(raw))
 
         monkeypatch.setattr(bi_monitor, "_process_request", _fake_process)
-
-        # Override BLPOP_BLOCK_TIMEOUT to 1s so the loop exits quickly
         monkeypatch.setattr(bi_monitor, "BLPOP_BLOCK_TIMEOUT", 1)
 
-        # Run in a thread, stop after 2s
-        def _run():
-            try:
-                bi_monitor.run_monitor()
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_run, daemon=True)
+        t = threading.Thread(target=bi_monitor.run_monitor, daemon=True)
         t.start()
         t.join(timeout=4)
 
