@@ -260,7 +260,10 @@ def _do_export(req, tag):
             try:
                 with sess.get(mp4_url, stream=True, timeout=60) as dl:
                     cl = int(dl.headers.get("Content-Length", "0") or "0")
-                    logging.info(f"{tag} attempt={attempt} elapsed={elapsed:.1f}s status={dl.status_code} Content-Length={cl}")
+                    logging.info(
+                        f"{tag} attempt={attempt} elapsed={elapsed:.1f}s"
+                        f" status={dl.status_code} Content-Length={cl}"
+                    )
 
                     if dl.status_code == 503 and cl == 0:
                         consecutive_503s += 1
@@ -280,11 +283,15 @@ def _do_export(req, tag):
                                               "format": 1, "audio": False, "session": sid2},
                                         timeout=10,
                                     )
-                                    new_id = er2.json().get("data", {}).get("path", "").strip().replace("@", "").replace(".mp4", "")
+                                    _raw = er2.json().get("data", {}).get("path", "")
+                                    new_id = _raw.strip().replace("@", "").replace(".mp4", "")
                                     if new_id:
                                         new_clipboard = bi_wait_for_export_ready(sess, bi_url, sid2, new_id, tag)
                                         if new_clipboard:
-                                            mp4_url = f"{bi_url.rstrip('/')}/clips/{new_clipboard.lstrip('/')}?dl=1&session={sid2}"
+                                            mp4_url = (
+                                                f"{bi_url.rstrip('/')}/clips/"
+                                                f"{new_clipboard.lstrip('/')}?dl=1&session={sid2}"
+                                            )
                                             export_id = new_id
                                             consecutive_503s = 0
                                             logging.info(f"{tag} Re-export after recovery ready: {mp4_url}")

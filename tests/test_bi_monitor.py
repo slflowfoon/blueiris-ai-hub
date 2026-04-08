@@ -11,7 +11,6 @@ import threading
 import uuid
 
 import fakeredis
-import pytest
 
 # Patch redis before importing bi_monitor
 import redis as _redis_module
@@ -25,7 +24,8 @@ def _make_fake_redis(*args, **kwargs):
 # Monkeypatch redis.from_url before the module is loaded
 _redis_module.from_url = _make_fake_redis
 
-import importlib, sys
+import importlib
+import sys
 # Ensure bi_monitor is imported fresh
 if "bi_monitor" in sys.modules:
     del sys.modules["bi_monitor"]
