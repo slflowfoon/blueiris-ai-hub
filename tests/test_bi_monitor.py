@@ -24,7 +24,6 @@ def _make_fake_redis(*args, **kwargs):
 # Monkeypatch redis.from_url before the module is loaded
 _redis_module.from_url = _make_fake_redis
 
-import importlib
 import sys
 # Ensure bi_monitor is imported fresh
 if "bi_monitor" in sys.modules:
@@ -156,7 +155,6 @@ class TestSessionCache:
 
     def test_session_reused_on_second_call(self, monkeypatch):
         """Second call must reuse cached session without calling bi_login again."""
-        import requests as _requests
         import unittest.mock as mock
 
         # Pre-populate cache with a session whose ping succeeds
