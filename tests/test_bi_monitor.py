@@ -11,7 +11,6 @@ import threading
 import time
 import uuid
 
-import redis
 
 # bi_monitor lives in app/ — PYTHONPATH=app is set in CI
 import bi_monitor
