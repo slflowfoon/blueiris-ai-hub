@@ -70,7 +70,7 @@ class TestStaleRequestGuard:
     def test_fresh_request_passes_guard(self, monkeypatch):
         """A fresh request should proceed to _do_export (which we stub)."""
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: True)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: (True, None))
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result is not None
@@ -84,14 +84,14 @@ class TestResultProtocol:
     def test_result_key_has_ttl(self, monkeypatch):
         """Result key must have a TTL so it self-cleans if worker dies."""
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: True)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (True, None))
         bi_monitor._process_request(json.dumps(req).encode())
         ttl = _r.ttl(f"bi:result:{req['request_id']}")
         assert 0 < ttl <= bi_monitor.RESULT_KEY_TTL
 
     def test_failed_export_returns_ok_false(self, monkeypatch):
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: False)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (False, "export failed"))
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result["ok"] is False
