@@ -33,7 +33,7 @@ r = redis.from_url(redis_url)
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 AUTO_MUTE_WINDOW_MINUTES = 10
@@ -320,7 +320,7 @@ def analyze_image_grok(config, encoded_image, prompt):
         resp = requests.post(
             "https://api.x.ai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": "grok-2-vision-1212", "max_tokens": 200, "messages": [{"role": "user", "content": [
+            json={"model": "grok-4-0709", "max_tokens": 200, "messages": [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
             ]}]},
@@ -344,7 +344,7 @@ def analyze_image_groq(config, encoded_image, prompt):
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": "llama-3.2-11b-vision-preview", "max_tokens": 200, "messages": [{"role": "user", "content": [
+            json={"model": "meta-llama/llama-4-scout-17b-16e-instruct", "max_tokens": 200, "messages": [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
             ]}]},
