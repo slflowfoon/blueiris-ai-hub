@@ -86,6 +86,25 @@ jobs:
           build-args: |
             APP_VERSION=${{ steps.meta.outputs.version }}
 
+      - name: Smoke test container entrypoints
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:temp_scan_target
+          
+          echo "Verifying Tasks Logic..."
+          docker run --rm $IMAGE python3 -c "import tasks; print('Tasks OK')"
+          
+          echo "Verifying Web (WSGI)..."
+          docker run --rm $IMAGE python3 -c "import wsgi; print('WSGI OK')"
+          
+          echo "Verifying Worker..."
+          docker run --rm $IMAGE python3 -c "import worker; print('Worker OK')"
+          
+          echo "Verifying Mute Bot..."
+          docker run --rm $IMAGE python3 -c "import mute_bot; print('Mute Bot OK')"
+          
+          echo "Verifying BI Monitor..."
+          docker run --rm $IMAGE python3 -c "import bi_monitor; print('BI Monitor OK')"
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
