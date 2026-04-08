@@ -22,6 +22,8 @@ CAPTION_STYLES = ["hilarious", "witty", "rude"]
 CAPTION_DEFAULT_MINUTES = 60
 POLL_INTERVAL = 3
 
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
