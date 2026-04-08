@@ -459,235 +459,43 @@ def replace_telegram_media(config, media_path, caption):
 
 
 # =============================================================================
-# Blue Iris helpers (unchanged from v1)
+# Blue Iris helpers
 # =============================================================================
 
-def _bi_protocol_hash(s: str) -> str:
+def request_bi_export(config, output_path, tag, timeout=300):
     """
-    Compute the MD5 hex digest required by the Blue Iris JSON API.
-    NOTE: MD5 is used here only for protocol interoperability with 
-    Blue Iris, not for internal password storage or cryptographic security.
+    Queue a BI export request to the bi_monitor service and block until done.
+    Returns True on success, False on failure (worker should fall back to photo).
     """
-    return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
+    import uuid as _uuid
+    request_id = str(_uuid.uuid4())
+    payload = json.dumps({
+        "request_id":       request_id,
+        "config_name":      config.get("name", "?"),
+        "bi_url":           config["bi_url"],
+        "bi_user":          config["bi_user"],
+        "bi_pass":          config["bi_pass"],
+        "trigger_filename": config["trigger_filename"],
+        "output_path":      output_path,
+        "bi_restart_url":   config.get("bi_restart_url", ""),
+        "bi_restart_token": config.get("bi_restart_token", ""),
+        "verbose":          config.get("verbose_logging") == 1,
+        "delete_after":     config.get("delete_after_send") == 1,
+        "queued_at":        __import__("time").time(),
+    })
+    r.rpush("bi:requests", payload)
+    logging.info(f"{tag} BI export request queued (id={request_id})")
 
-
-def bi_login(sess, base_url, user, password, tag):
-    try:
-        json_url = urljoin(base_url.rstrip("/") + "/", "json")
-        r1 = sess.post(json_url, json={"cmd": "login"}, timeout=10)
-        r1.raise_for_status()
-        sid = r1.json().get("session")
-        resp = _bi_protocol_hash(f"{user}:{sid}:{password}")
-        r2 = sess.post(json_url, json={"cmd": "login", "session": sid, "response": resp}, timeout=10)
-        r2.raise_for_status()
-        if r2.json().get("result") != "success":
-            logging.error(f"{tag} BI login failed")
-            return None
-        return sid
-    except Exception as e:
-        logging.error(f"{tag} BI login error: {e}")
-        return None
-
-
-def bi_find_alert_details(sess, base_url, sid, trigger_filename, tag, verbose=False):
-    try:
-        json_url = urljoin(base_url.rstrip("/") + "/", "json")
-        r = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-        if verbose:
-            logging.info(f"{tag} VERBOSE alert list: {json.dumps(data)}")
-        for alert in data:
-            if alert.get("file") == trigger_filename:
-                logging.info(f"{tag} Alert match: {alert.get('clip')}")
-                return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
-        logging.warning(f"{tag} No alert found for: {trigger_filename}")
-    except Exception as e:
-        logging.error(f"{tag} BI alert list error: {e}")
-    return None, 0, 0
-
-
-def bi_delete_clip(sess, base_url, sid, clip_id, tag):
-    try:
-        clean = clip_id.replace("@", "")
-        json_url = urljoin(base_url.rstrip("/") + "/", "json")
-        r = sess.post(json_url, json={"cmd": "delclip", "path": f"@{clean}", "session": sid}, timeout=10)
-        if r.json().get("result") == "success":
-            logging.info(f"{tag} Deleted clip @{clean}")
-            return True
-    except Exception as e:
-        logging.error(f"{tag} Delete clip error: {e}")
-    return False
-
-
-def bi_wait_for_export_ready(sess, base_url, sid, export_id, tag, timeout=180):
-    json_url = urljoin(base_url.rstrip("/") + "/", "json")
-    start = time.time()
-    logging.info(f"{tag} Polling BI clipboard for export @{export_id}...")
-    while time.time() - start < timeout:
-        try:
-            r = sess.post(json_url, json={"cmd": "cliplist", "camera": "Index", "view": "new.clipboard", "session": sid}, timeout=10)
-            if r.status_code == 200:
-                for clip in r.json().get("data", []):
-                    if export_id in clip.get("path", ""):
-                        return clip.get("file")
-        except Exception:
-            pass
-        time.sleep(2)
-    return None
-
-
-def bi_export_and_download(base_url, user, password, trigger_filename, output_path, tag, verbose=False, delete_after=True, config=None):
-    sess = requests.Session()
-    sid = bi_login(sess, base_url, user, password, tag)
-    if not sid:
+    result_key = f"bi:result:{request_id}"
+    item = r.blpop(result_key, timeout=timeout)
+    if item is None:
+        logging.error(f"{tag} BI monitor timed out after {timeout}s -- falling back to photo")
         return False
-
-    clip_path, offset, duration = bi_find_alert_details(sess, base_url, sid, trigger_filename, tag, verbose)
-    if not clip_path:
-        logging.error(f"{tag} Cannot export: alert not found")
-        return False
-
-    final_path = clip_path if clip_path.startswith("@") else f"@{clip_path}"
-    if not final_path.endswith(".bvr"):
-        final_path += ".bvr"
-
-    try:
-        export_url = urljoin(base_url.rstrip("/") + "/", "json?_export")
-        payload = {"cmd": "export", "path": final_path, "startms": int(offset),
-                   "msec": int(duration), "format": 1, "audio": False, "session": sid}
-        if verbose:
-            logging.info(f"{tag} VERBOSE export payload: {json.dumps(payload)}")
-        r = sess.post(export_url, json=payload, timeout=10)
-        if r.json().get("result") != "success":
-            logging.error(f"{tag} Export failed: {r.json()}")
-            return False
-
-        export_id = r.json().get("data", {}).get("path", "").strip().replace("@", "").replace(".mp4", "")
-        clipboard_path = bi_wait_for_export_ready(sess, base_url, sid, export_id, tag)
-        if not clipboard_path:
-            logging.error(f"{tag} Export timed out")
-            bi_delete_clip(sess, base_url, sid, export_id, tag)
-            return False
-
-        mp4_url = f"{base_url.rstrip('/')}/clips/{clipboard_path.lstrip('/')}?dl=1&session={sid}"
-        logging.info(f"{tag} [TIMING] Clipboard ready — attempting download immediately. URL={mp4_url}")
-
-        # --- TEMPORARY DIAGNOSTIC LOGGING ---
-        # Log clipprocess from status to see if BI signals encoding state
-        try:
-            json_url = urljoin(base_url.rstrip("/") + "/", "json")
-            st = sess.post(json_url, json={"cmd": "status", "session": sid}, timeout=10)
-            clipprocess = st.json().get("data", {}).get("clipprocess", "?")
-            logging.info(f"{tag} [TIMING] BI status.clipprocess={clipprocess!r}")
-        except Exception as e:
-            logging.warning(f"{tag} [TIMING] status check error: {e}")
-
-        # Try HEAD first to see what BI returns before we attempt a full download
-        try:
-            head = sess.head(mp4_url, timeout=10)
-            logging.info(f"{tag} [TIMING] HEAD status={head.status_code} Content-Length={head.headers.get('Content-Length','?')} headers={dict(head.headers)}")
-        except Exception as e:
-            logging.warning(f"{tag} [TIMING] HEAD error: {e}")
-        # --- END TEMPORARY DIAGNOSTIC LOGGING ---
-
-        downloaded = False
-        dl_start = time.time()
-        attempt = 0
-        consecutive_503s = 0
-        recovery_attempted = False
-
-        while time.time() - dl_start < 120:
-            attempt += 1
-            elapsed = time.time() - dl_start
-            try:
-                with sess.get(mp4_url, stream=True, timeout=60) as dl:
-                    cl = int(dl.headers.get('Content-Length', '0') or '0')
-                    logging.info(f"{tag} [TIMING] attempt={attempt} elapsed={elapsed:.1f}s status={dl.status_code} Content-Length={cl}")
-
-                    if dl.status_code == 503 and cl == 0:
-                        consecutive_503s += 1
-                        # Stuck encoder: 30 consecutive empty 503s (~60s) with no progress
-                        if consecutive_503s >= 30 and not recovery_attempted and config:
-                            recovery_attempted = True
-                            if trigger_bi_recovery(config, tag):
-                                sess2 = requests.Session()
-                                sid2 = bi_login(sess2, base_url, user, password, tag)
-                                if sid2:
-                                    sess = sess2
-                                    sid = sid2
-                                    er2 = sess.post(
-                                        f"{base_url.rstrip('/')}/json?_export",
-                                        json={'cmd': 'export', 'path': final_path,
-                                              'startms': int(offset), 'msec': int(duration),
-                                              'format': 1, 'audio': False, 'session': sid2},
-                                        timeout=10
-                                    )
-                                    new_id = er2.json().get('data', {}).get('path', '').strip().replace('@', '').replace('.mp4', '')
-                                    if new_id:
-                                        new_clipboard = bi_wait_for_export_ready(sess, base_url, sid2, new_id, tag)
-                                        if new_clipboard:
-                                            mp4_url = f"{base_url.rstrip('/')}/clips/{new_clipboard.lstrip('/')}?dl=1&session={sid2}"
-                                            export_id = new_id
-                                            consecutive_503s = 0
-                                            logging.info(f"{tag} Re-export after recovery ready: {mp4_url}")
-                        time.sleep(2)
-                        continue
-
-                    consecutive_503s = 0
-                    if dl.status_code == 404:
-                        time.sleep(2)
-                        continue
-                    dl.raise_for_status()
-                    with open(output_path, 'wb') as f:
-                        for chunk in dl.iter_content(8192):
-                            f.write(chunk)
-                    size = os.path.getsize(output_path)
-                    logging.info(f"{tag} [TIMING] Download complete at elapsed={elapsed:.1f}s size={size}")
-                    if size > 1024:
-                        downloaded = True
-                        break
-                    time.sleep(2)
-            except Exception as e:
-                logging.warning(f"{tag} [TIMING] attempt={attempt} elapsed={elapsed:.1f}s error: {e}")
-                time.sleep(2)
-
-        if not downloaded:
-            logging.error(f"{tag} Download failed after retries")
-            bi_delete_clip(sess, base_url, sid, export_id, tag)
-            return False
-
-        if delete_after:
-            bi_delete_clip(sess, base_url, sid, export_id, tag)
+    result = json.loads(item[1])
+    if result.get("ok"):
+        logging.info(f"{tag} BI monitor returned success")
         return True
-
-    except Exception as e:
-        logging.error(f"{tag} Export/download error: {e}")
-        return False
-
-
-# =============================================================================
-# BI encoder recovery
-# =============================================================================
-
-def trigger_bi_recovery(config, tag):
-    """POST to bi_restart_url to recover a stuck Blue Iris encoder."""
-    url = (config.get('bi_restart_url') or '').strip()
-    token = (config.get('bi_restart_token') or '').strip()
-    if not url:
-        logging.warning(f"{tag} Stuck encoder detected but no bi_restart_url configured.")
-        return False
-    try:
-        logging.warning(f"{tag} Stuck encoder detected — calling recovery endpoint: {url}")
-        resp = requests.post(url, headers={'X-Recovery-Token': token}, timeout=60)
-        if resp.status_code == 200:
-            logging.info(f"{tag} BI recovery OK — waiting 15s for BI to restart...")
-            import time as _t
-            _t.sleep(15)
-            return True
-        logging.error(f"{tag} BI recovery returned {resp.status_code}: {resp.text[:100]}")
-    except Exception as e:
-        logging.error(f"{tag} BI recovery error: {e}")
+    logging.error(f"{tag} BI monitor returned failure: {result.get('error', 'unknown')}")
     return False
 
 
@@ -758,14 +566,7 @@ def process_alert(image_path, config):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
                 raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
                 optimised_mp4 = image_path.replace(".jpg", ".mp4")
-                verbose = config.get('verbose_logging') == 1
-                delete_after = config.get('delete_after_send') == 1
-
-                success = bi_export_and_download(
-                    config['bi_url'], config['bi_user'], config['bi_pass'],
-                    config['trigger_filename'], raw_mp4, tag, verbose, delete_after,
-                    config=config
-                )
+                success = request_bi_export(config, raw_mp4, tag)
 
                 if success:
                     # Replace photo with video immediately (using still caption for now)
