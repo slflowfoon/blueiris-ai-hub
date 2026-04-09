@@ -651,4 +651,3 @@ def process_alert(image_path, config):
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
-            
