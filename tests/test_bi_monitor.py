@@ -172,8 +172,9 @@ class TestRunMonitorLoop:
         assert processed[0]["request_id"] == req["request_id"]
 
 
+
 class TestPreResolvedClip:
-    #45 -- monitor must use pre-resolved clip_path from payload and skip alertlist lookup.
+    """#45 -- monitor must use pre-resolved clip_path from payload and skip alertlist lookup."""
 
     def setup_method(self):
         _r.delete("bi:requests")
@@ -186,17 +187,22 @@ class TestPreResolvedClip:
             bi_monitor, "bi_find_alert_details",
             lambda *a, **kw: alertlist_calls.append(1) or ("@clip/foo.mp4", 0, 10000),
         )
-
         import unittest.mock as mock
+
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
-            status_code=200, json=lambda: {"result": "success"},
+            status_code=200,
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
         )
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "1000"}
         fake_dl.iter_content = lambda chunk_size=0: [b"x" * 1000]
+        fake_dl.__enter__ = lambda s: fake_dl
+        fake_dl.__exit__ = mock.MagicMock(return_value=False)
         fake_sess.get.return_value = fake_dl
+
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
         req = {
@@ -233,16 +239,19 @@ class TestPersistent404FastFail:
 
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
-            status_code=200, json=lambda: {"result": "success"},
+            status_code=200,
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
         )
         not_found = mock.MagicMock(status_code=404)
         not_found.headers = {}
+        not_found.__enter__ = lambda s: not_found
+        not_found.__exit__ = mock.MagicMock(return_value=False)
         fake_sess.get.return_value = not_found
+
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
-        monkeypatch.setattr(
-            bi_monitor, "bi_find_alert_details",
-            lambda *a, **kw: ("@clip/foo.mp4", 0, 10000),
-        )
+        monkeypatch.setattr(bi_monitor, "bi_find_alert_details",
+                            lambda *a, **kw: ("@clip/foo.mp4", 0, 10000))
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
         monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
 
