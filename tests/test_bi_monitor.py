@@ -193,7 +193,7 @@ class TestPreResolvedClip:
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
         )
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "2000"}  # Must be > 1000
@@ -203,7 +203,8 @@ class TestPreResolvedClip:
         fake_sess.get.return_value = fake_dl
 
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
+        # FIXED: Use new function name
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
         req = {
@@ -243,7 +244,7 @@ class TestPersistent404FastFail:
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
         )
         not_found = mock.MagicMock(status_code=404)
         not_found.headers = {}
@@ -254,7 +255,8 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
         monkeypatch.setattr(bi_monitor, "bi_find_alert_details",
                             lambda *a, **kw: ("@clip/foo.mp4", 0, 10000))
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
+        # FIXED: Use new function name
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
         monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
 
