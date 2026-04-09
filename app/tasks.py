@@ -565,7 +565,8 @@ def request_bi_export(config, output_path, tag, timeout=300):
 # =============================================================================
 
 def process_alert(image_path, config):
-    tag = f"[{config['name']}]"
+    req_id = config.get('request_id', 'legacy')
+    tag = f"[{config['name']}][{req_id}]"
     try:
         logging.info(f"{tag} Processing alert...")
 
