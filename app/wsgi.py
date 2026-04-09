@@ -807,7 +807,7 @@ def webhook(config_id):
         request.files['image'].save(filename)
         app.logger.info(f"[{config['name']}] Webhook triggered. File: {original_filename}")
 
-        q.enqueue(process_alert, filename, config)
+        q.enqueue(process_alert, filename, config, job_timeout=600)
 
     except Exception as e:
         app.logger.error(f"Error processing webhook: {e}")
