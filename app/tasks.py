@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-    
+
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=1)
 handler.setFormatter(formatter)
@@ -47,7 +47,7 @@ CAPTION_PROMPTS = {
     "hilarious": (
         "The CCTV has detected motion. Describe what's happening in a single outrageously "
         "funny sentence (max 145 characters). Be dramatic and absurd — narrate it like a "
-        "nature documentary gone completely wrong. Include vehicles, people, or deliveries you can see."
+        "nature documentary gone completely wrong. Include vehicles, people, or deliveries."
     ),
     "witty": (
         "The CCTV has detected motion. Describe what's happening in a single witty, sardonic "
@@ -148,7 +148,7 @@ def send_auto_mute_notification(config):
     cam_name = config.get('name', 'Camera')
     req_id = config.get('request_id', 'legacy')
     tag = f"[{cam_name}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     thread_id = config.get('message_thread_id') or ''
@@ -182,7 +182,7 @@ def analyze_image_gemini(config, encoded_image, prompt):
     config_id = config['id']
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
 
     for attempt in range(len(keys) * len(GEMINI_MODELS)):
@@ -225,7 +225,7 @@ def analyze_video_gemini(config, video_path, prompt):
     config_id = config['id']
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
 
     for ki in range(len(keys)):
@@ -324,10 +324,10 @@ def analyze_image_grok(config, encoded_image, prompt):
     api_key = config.get('grok_api_key') or ''
     if not api_key:
         return None
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     try:
         logging.info(f"{tag} Trying Grok fallback...")
         resp = requests.post(
@@ -351,10 +351,10 @@ def analyze_image_groq(config, encoded_image, prompt):
     api_key = config.get('groq_api_key') or ''
     if not api_key:
         return None
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     try:
         logging.info(f"{tag} Trying Groq fallback...")
         resp = requests.post(
@@ -422,7 +422,7 @@ def _tg_thread(config):
 def send_telegram(config, img_path, caption):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     thread_id = _tg_thread(config)
@@ -445,10 +445,10 @@ def send_telegram(config, img_path, caption):
 def update_telegram_caption(config, text):
     if 'last_msg_id' not in config:
         return
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'caption': text}
@@ -461,7 +461,7 @@ def update_telegram_caption(config, text):
 def replace_telegram_media(config, media_path, caption):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     if 'last_msg_id' not in config:
         return
     token = config['telegram_token']
@@ -493,14 +493,7 @@ def _bi_protocol_hash(s: str) -> str:
 
 
 def _parse_offset_ms(filename):
-    """Extract ms offset from a BI alert filename.
-
-    BI filenames follow the pattern:
-        Camera.YYYYMMDD_HHMMSS.OFFSET_MS.SEGMENT-FRAME.ext
-    e.g. FrontDoor.20260409_160000.533514.3-1.jpg → 533514
-
-    Returns the integer offset, or None if the filename doesn't match.
-    """
+    """Extract ms offset from a BI alert filename."""
     m = re.match(r'^.+\.\d{8}_\d{6}\.(\d+)\.\d+-\d+\.\w+$', filename)
     return int(m.group(1)) if m else None
 
@@ -569,7 +562,7 @@ def request_bi_export(config, output_path, tag, timeout=300):
                 if offset is not None:
                     logging.info(f"{tag} Using bvr fallback after lookup error: clip={clip_path} offset={offset}")
                 else:
-                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing without clip_path")
+                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing anyway")
 
     payload = json.dumps({
         "request_id":       request_id,
@@ -596,11 +589,11 @@ def request_bi_export(config, output_path, tag, timeout=300):
     if item is None:
         logging.error(f"{tag} BI monitor timed out after {timeout}s")
         return False
-    
+
     result = json.loads(item[1])
     if result.get("ok"):
         return True
-    
+
     error_msg = result.get("error", "unknown monitor error")
     logging.error(f"{tag} BI monitor returned failure: {error_msg}")
     return False
