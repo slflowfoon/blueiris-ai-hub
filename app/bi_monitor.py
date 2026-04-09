@@ -87,9 +87,6 @@ def bi_find_alert_details(sess, base_url, sid, trigger_filename, tag, verbose=Fa
             resp.raise_for_status()
             data = resp.json().get("data", [])
             
-            if verbose:
-                logging.info(f"{tag} VERBOSE alert list: {json.dumps(data)}")
-                
             for alert in data:
                 if alert.get("file") == trigger_filename:
                     return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
@@ -115,7 +112,6 @@ def bi_wait_for_queue_completion(sess, base_url, sid, target_path, tag):
             resp = sess.post(json_url, json={"cmd": "export", "session": sid}, timeout=10)
             active_exports = resp.json().get("data", [])
             
-            # If our specific path is not in the list, it's finished
             if not any(item.get("path") == target_path for item in active_exports):
                 logging.info(f"{tag} Export {target_path} completed (left queue).")
                 return True
@@ -226,6 +222,7 @@ def _do_export(req, tag):
     if not sid:
         return False, "BI login failed"
 
+    # 1. Resolve clip details
     clip_path = req.get("clip_path")
     offset    = req.get("offset", 0)
     duration  = req.get("duration", 10000)
@@ -268,7 +265,7 @@ def _do_export(req, tag):
         if not target_path or not relative_uri:
             return False, "missing path/uri in BI response"
 
-        # 3. Wait for disappearance from active queue (NEW Queue-Logic)
+        # 3. Wait for disappearance from active queue
         if not bi_wait_for_queue_completion(sess, bi_url, sid, target_path, tag):
             result = _try_recovery("queue timeout")
             if result is not None:
@@ -318,7 +315,7 @@ def _do_export(req, tag):
                 bi_delete_clip(sess, bi_url, sid, target_path, tag)
             return False, "download failed (file not ready)"
 
-        # 5. Cleanup using direct target_path
+        # 5. Cleanup
         if delete_after:
             bi_delete_clip(sess, bi_url, sid, target_path, tag)
 
@@ -350,14 +347,25 @@ def _process_request(raw: bytes):
     logging.info(f"{tag} Processing BI export request")
     try:
         ok, error_msg = _do_export(req, tag)
-        result = {"ok": ok, "path": req.get("output_path") if ok else None, "error": error_msg}
+        result = {
+            "ok": ok,
+            "path": req.get("output_path") if ok else None,
+            "error": error_msg
+        }
     except Exception as e:
+        logging.error(f"{tag} Unhandled error: {e}")
         result = {"ok": False, "error": str(e)}
+
     r.rpush(result_key, json.dumps(result))
     r.expire(result_key, RESULT_KEY_TTL)
 
 
-def run_monitor():
+# =============================================================================
+# Main loop
+# =============================================================================
+
+def run_monitor(keep_running=None):
+    """Blocking loop that waits for and processes requests."""
     logging.info("[bi_monitor] Waiting for requests on bi:requests")
     while keep_running is None or keep_running():
         item = r.blpop(REQUEST_QUEUE, timeout=BLPOP_BLOCK_TIMEOUT)
