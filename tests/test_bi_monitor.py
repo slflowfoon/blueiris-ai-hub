@@ -10,8 +10,11 @@ import json
 import threading
 import time
 import uuid
+
+# bi_monitor lives in app/ — PYTHONPATH=app is set in CI
 import bi_monitor
 
+# Use the same Redis the module uses so helpers and the module share state
 _r = bi_monitor.r
 
 
@@ -190,7 +193,7 @@ class TestPreResolvedClip:
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
         )
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "2000"}  # Must be > 1000
@@ -200,8 +203,7 @@ class TestPreResolvedClip:
         fake_sess.get.return_value = fake_dl
 
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
-        # UPDATED: Use new function name and return True
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
         req = {
@@ -241,7 +243,7 @@ class TestPersistent404FastFail:
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
         )
         not_found = mock.MagicMock(status_code=404)
         not_found.headers = {}
@@ -252,8 +254,7 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
         monkeypatch.setattr(bi_monitor, "bi_find_alert_details",
                             lambda *a, **kw: ("@clip/foo.mp4", 0, 10000))
-        # UPDATED: Use new function name and return True
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
         monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
 
