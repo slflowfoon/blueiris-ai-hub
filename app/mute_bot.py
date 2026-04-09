@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 import redis
 import requests
 
-# --- CONFIGURATION (Updated to respect environment variables) ---
+# --- CONFIGURATION (Updated for environment awareness) ---
 LOG_FILE  = os.getenv("LOG_FILE", "/app/logs/mute_bot.log")
 DB_FILE   = os.getenv("DB_FILE", "/app/data/configs.db")
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')
@@ -33,7 +33,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(sys.stdout) # Allows 'docker logs' to work for this bot too
+        logging.StreamHandler(sys.stdout) # Allows 'docker logs' to work
     ]
 )
 

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
+    
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=1)
 handler.setFormatter(formatter)
@@ -40,7 +40,7 @@ AUTO_MUTE_THRESHOLD = 5
 AUTO_MUTE_DURATION_MINUTES = 30
 
 CAPTION_PROMPTS = {
-    "normal": None,  # uses config prompt
+    "normal": None,
     "hilarious": (
         "The CCTV has detected motion. Describe what's happening in a single outrageously "
         "funny sentence (max 145 characters). Be dramatic and absurd — narrate it like a "
@@ -344,14 +344,10 @@ def analyze_image_groq(config, encoded_image, prompt):
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "max_tokens": 200,
-                "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
-                ]}]
-            },
+            json={"model": "meta-llama/llama-4-scout-17b-16e-instruct", "max_tokens": 200, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
+            ]}]},
             timeout=30
         )
         if resp.status_code == 200:
@@ -492,18 +488,36 @@ def request_bi_export(config, output_path, tag, timeout=300):
     result_key = f"bi:result:{request_id}"
     item = r.blpop(result_key, timeout=timeout)
     if item is None:
-        logging.error(f"{tag} BI monitor timed out after {timeout}s -- falling back")
+        logging.error(f"{tag} BI monitor timed out after {timeout}s")
         return False
     
     result = json.loads(item[1])
     if result.get("ok"):
-        logging.info(f"{tag} BI monitor returned success")
         return True
     
-    # Specific error logging from monitor
-    error_detail = result.get("error", "unknown error")
-    logging.error(f"{tag} BI monitor returned failure: {error_detail}")
+    # FIXED: Extract the specific error string from the monitor result
+    error_msg = result.get("error", "unknown monitor error")
+    logging.error(f"{tag} BI monitor returned failure: {error_msg}")
     return False
+
+
+# =============================================================================
+# Image / Still fallback analysis
+# =============================================================================
+
+def analyze_still_image_fallback(image_path, prompt, config):
+    """PLAN C: Fallback to Still image AI models if Gemini Video fails."""
+    encoded = optimize_image(image_path)
+    if not encoded:
+        return None
+        
+    ai_text = analyze_image_gemini(config, encoded, prompt)
+    if not ai_text:
+        ai_text = analyze_image_grok(config, encoded, prompt)
+    if not ai_text:
+        ai_text = analyze_image_groq(config, encoded, prompt)
+        
+    return ai_text
 
 
 # =============================================================================
@@ -511,7 +525,8 @@ def request_bi_export(config, output_path, tag, timeout=300):
 # =============================================================================
 
 def process_alert(image_path, config):
-    tag = f"[{config['name']}]"
+    req_id = config.get('request_id', 'legacy')
+    tag = f"[{config['name']}][{req_id}]"
     try:
         logging.info(f"{tag} Processing alert...")
 
@@ -529,26 +544,35 @@ def process_alert(image_path, config):
         encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
-        # Still image analysis chain
-        ai_text = None
-        if encoded:
-            ai_text = analyze_image_gemini(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_grok(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_groq(config, encoded, prompt)
-
-        still_caption = ai_text or "Motion detected."
-
         if instant_notify:
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
                 send_telegram(config, image_path, "Motion detected.")
-            
+
+            ai_text = None
+            if encoded:
+                ai_text = analyze_image_gemini(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_grok(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_groq(config, encoded, prompt)
+
             if ai_text:
                 update_telegram_caption(config, ai_text)
+
+            still_caption = ai_text or "Motion detected."
         else:
+            ai_text = None
+            if encoded:
+                ai_text = analyze_image_gemini(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_grok(config, encoded, prompt)
+                if not ai_text:
+                    ai_text = analyze_image_groq(config, encoded, prompt)
+
+            still_caption = ai_text or "Motion detected."
+
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
@@ -559,30 +583,34 @@ def process_alert(image_path, config):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
                 raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
                 optimised_mp4 = image_path.replace(".jpg", ".mp4")
-                
                 success = request_bi_export(config, raw_mp4, tag)
 
                 if success:
-                    # Swap photo for video
                     if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
                         replace_telegram_media(config, optimised_mp4, still_caption)
                     else:
-                        logging.warning(f"{tag} Video optimisation failed, sending raw.")
+                        logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
                         replace_telegram_media(config, raw_mp4, still_caption)
 
-                    # Video analysis with Gemini
+                    # Now analyse video with Gemini
                     video_caption = analyze_video_gemini(config, raw_mp4, prompt)
                     
                     if video_caption:
                         update_telegram_caption(config, video_caption)
                     else:
-                        # PLAN C: Log that we are sticking with the Plan B (Image) caption
-                        logging.info(f"{tag} Video analysis failed, keeping image caption.")
+                        logging.info(f"{tag} Video analysis failed, falling back to image caption.")
+                        # PLAN C
+                        fallback_text = analyze_still_image_fallback(image_path, prompt, config)
+                        if fallback_text:
+                            logging.info(f"{tag} Successfully recovered using Still Image fallback.")
+                            update_telegram_caption(config, fallback_text)
+                        else:
+                            logging.info(f"{tag} Still Image fallback also failed, keeping image caption.")
 
-                    # Cleanup
-                    for f_path in [optimised_mp4, raw_mp4]:
-                        if os.path.exists(f_path):
-                            os.remove(f_path)
+                    if os.path.exists(optimised_mp4):
+                        os.remove(optimised_mp4)
+                    if os.path.exists(raw_mp4):
+                        os.remove(raw_mp4)
                 else:
                     logging.warning(f"{tag} Video export failed, keeping photo.")
             else:
