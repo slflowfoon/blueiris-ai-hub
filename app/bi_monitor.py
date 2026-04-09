@@ -239,8 +239,9 @@ def _do_export(req, tag):
 
         clipboard_path = bi_wait_for_export_ready(sess, bi_url, sid, export_id, tag)
         if not clipboard_path:
-            if export_id: bi_delete_clip(sess, bi_url, sid, export_id, tag)
-            return False, "timed out waiting for clipboard"
+                    if export_id:
+                        bi_delete_clip(sess, bi_url, sid, export_id, tag)
+                    return False, "timed out waiting for clipboard"
 
         mp4_url = f"{bi_url.rstrip('/')}/clips/{clipboard_path.lstrip('/')}?dl=1&session={sid}"
         logging.info(f"{tag} Clipboard ready -- beginning download.")
@@ -279,8 +280,9 @@ def _do_export(req, tag):
                 time.sleep(2)
 
         if not downloaded:
-            if export_id: bi_delete_clip(sess, bi_url, sid, export_id, tag)
-            return False, "download failed after retries"
+                    if export_id:
+                        bi_delete_clip(sess, bi_url, sid, export_id, tag)
+                    return False, "download failed after retries"
 
         if delete_after and export_id:
             bi_delete_clip(sess, bi_url, sid, export_id, tag)
