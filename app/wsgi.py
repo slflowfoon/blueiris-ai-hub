@@ -552,7 +552,12 @@ HTML_TEMPLATE = r"""
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const colors = ['#00ffff','#00ff00','#ff00ff','#ffff00','#ff8800','#ff4444','#8888ff'];
+const colors = [
+    '#00ffff', '#00ff00', '#ff00ff', '#ffff00', '#ff8800', '#ff4444', '#8888ff',
+    '#32cd32', '#1e90ff', '#ff69b4', '#ffa500', '#adff2f', '#00ced1', '#ffdab9',
+    '#00ff7f', '#40e0d0', '#da70d6', '#fafad2', '#7fffd4', '#b0c4de', '#f08080',
+    '#afeeee', '#ee82ee', '#98fb98'
+];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
 function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
 const html=document.documentElement;
@@ -589,17 +594,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     document.querySelectorAll('[data-bs-toggle="tab"]').forEach(el=>el.addEventListener('click',e=>localStorage.setItem('activeTab',e.target.getAttribute('data-bs-target'))));
     document.querySelector('[data-bs-target="#logs-pane"]').addEventListener('shown.bs.tab',()=>{const v=document.getElementById('logViewer');if(v)v.scrollTop=v.scrollHeight;});
     colorizeLogs();
-    // Check for updates (cached server-side for 1 hour)
     fetch('/api/check-update').then(r=>r.json()).then(d=>{
         const dismissedVersion = localStorage.getItem('dismissedUpdate');
-        
-        // Only show if update is available AND it hasn't been dismissed yet
         if(d.update_available && dismissedVersion !== d.latest_version){
             document.getElementById('update-version').textContent = d.latest_version;
             document.getElementById('update-link').href = d.release_url || 'https://github.com/slflowfoon/blueiris-ai-hub/releases';
             document.getElementById('update-banner').classList.remove('d-none');
-
-            // Save dismissal to localStorage when the 'X' is clicked
             document.getElementById('dismiss-update').addEventListener('click', () => {
                 localStorage.setItem('dismissedUpdate', d.latest_version);
             });
