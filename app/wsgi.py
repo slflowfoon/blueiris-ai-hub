@@ -804,9 +804,11 @@ def webhook(config_id):
     filename = f"{TEMP_IMAGE_DIR}/{uuid.uuid4()}.jpg"
     original_filename = request.files['image'].filename
     config['trigger_filename'] = secure_filename(original_filename)
-
     config['request_id'] = request_id
-    config['trigger_filename'] = secure_filename(original_filename)
+
+    bvr = request.form.get('bvr', '').strip()
+    if bvr:
+        config['bvr_clip'] = bvr
 
     try:
         request.files['image'].save(filename)

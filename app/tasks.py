@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import requests
@@ -491,6 +492,19 @@ def _bi_protocol_hash(s: str) -> str:
     return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
+def _parse_offset_ms(filename):
+    """Extract ms offset from a BI alert filename.
+
+    BI filenames follow the pattern:
+        Camera.YYYYMMDD_HHMMSS.OFFSET_MS.SEGMENT-FRAME.ext
+    e.g. FrontDoor.20260409_160000.533514.3-1.jpg → 533514
+
+    Returns the integer offset, or None if the filename doesn't match.
+    """
+    m = re.match(r'^.+\.\d{8}_\d{6}\.(\d+)\.\d+-\d+\.\w+$', filename)
+    return int(m.group(1)) if m else None
+
+
 def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
     """
     Login to BI and look up clip details for trigger_filename immediately,
@@ -524,19 +538,38 @@ def request_bi_export(config, output_path, tag, timeout=300):
     # Pre-queue alertlist lookup: resolve clip details while the alert is fresh.
     clip_path = offset = duration = None
     trigger_filename = config.get("trigger_filename", "")
+    bvr_clip = config.get("bvr_clip", "")
     if trigger_filename and config.get("bi_url") and config.get("bi_user"):
         try:
             result = _bi_lookup_alert(
                 config["bi_url"], config["bi_user"], config["bi_pass"],
                 trigger_filename, tag,
             )
-            if result is None:
+            if result is not None:
+                clip_path, offset, duration = result
+                logging.info(f"{tag} Pre-queue alert resolved: clip={clip_path}")
+            elif bvr_clip:
+                clip_path = bvr_clip
+                offset = _parse_offset_ms(trigger_filename)
+                duration = 30000
+                if offset is not None:
+                    logging.info(f"{tag} Alert not in alertlist — bvr fallback: clip={clip_path} offset={offset}")
+                else:
+                    logging.warning(f"{tag} Alert not in alertlist and offset unparseable — skipping export")
+                    return False
+            else:
                 logging.warning(f"{tag} Alert not in BI alertlist at queue time -- skipping export")
                 return False
-            clip_path, offset, duration = result
-            logging.info(f"{tag} Pre-queue alert resolved: clip={clip_path}")
         except Exception as e:
-            logging.warning(f"{tag} Pre-queue BI lookup failed ({e}) -- queuing anyway")
+            logging.warning(f"{tag} Pre-queue BI lookup failed ({e})")
+            if bvr_clip:
+                clip_path = bvr_clip
+                offset = _parse_offset_ms(trigger_filename)
+                duration = 30000
+                if offset is not None:
+                    logging.info(f"{tag} Using bvr fallback after lookup error: clip={clip_path} offset={offset}")
+                else:
+                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing without clip_path")
 
     payload = json.dumps({
         "request_id":       request_id,
