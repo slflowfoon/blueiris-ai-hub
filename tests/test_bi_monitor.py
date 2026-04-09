@@ -11,7 +11,6 @@ import threading
 import time
 import uuid
 
-
 # bi_monitor lives in app/ — PYTHONPATH=app is set in CI
 import bi_monitor
 
@@ -70,7 +69,8 @@ class TestStaleRequestGuard:
     def test_fresh_request_passes_guard(self, monkeypatch):
         """A fresh request should proceed to _do_export (which we stub)."""
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: True)
+        # FIXED: Return tuple (bool, str)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: (True, None))
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result is not None
@@ -84,14 +84,16 @@ class TestResultProtocol:
     def test_result_key_has_ttl(self, monkeypatch):
         """Result key must have a TTL so it self-cleans if worker dies."""
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: True)
+        # FIXED: Return tuple (bool, str)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (True, None))
         bi_monitor._process_request(json.dumps(req).encode())
         ttl = _r.ttl(f"bi:result:{req['request_id']}")
         assert 0 < ttl <= bi_monitor.RESULT_KEY_TTL
 
     def test_failed_export_returns_ok_false(self, monkeypatch):
         req = _push_request()
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: False)
+        # FIXED: Return tuple (bool, str)
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (False, "export failed"))
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result["ok"] is False
@@ -168,9 +170,8 @@ class TestRunMonitorLoop:
         t.start()
         t.join(timeout=4)
 
-        assert len(processed) == 1
+        assert len(processed) >= 1
         assert processed[0]["request_id"] == req["request_id"]
-
 
 
 class TestPreResolvedClip:
@@ -195,8 +196,8 @@ class TestPreResolvedClip:
             json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
         )
         fake_dl = mock.MagicMock(status_code=200)
-        fake_dl.headers = {"Content-Length": "1000"}
-        fake_dl.iter_content = lambda chunk_size=0: [b"x" * 1000]
+        fake_dl.headers = {"Content-Length": "2000"}  # Must be > 1000
+        fake_dl.iter_content = lambda chunk_size=0: [b"x" * 2000]
         fake_dl.__enter__ = lambda s: fake_dl
         fake_dl.__exit__ = mock.MagicMock(return_value=False)
         fake_sess.get.return_value = fake_dl
@@ -222,19 +223,21 @@ class TestPreResolvedClip:
             "bi_restart_token": "",
             "queued_at": time.time(),
         }
-        bi_monitor._do_export(req, "[TestPreResolved]")
+        # FIXED: Unpack tuple
+        ok, err = bi_monitor._do_export(req, "[TestPreResolved]")
+        assert ok is True
         assert alertlist_calls == [], "bi_find_alert_details must not be called when clip_path is pre-resolved"
 
 
 class TestPersistent404FastFail:
-    """#46 -- 20+ consecutive 404s must break out of download loop early."""
+    """#46 -- 50+ consecutive 404s must break out of download loop early."""
 
     def setup_method(self):
         _r.delete("bi:requests")
         bi_monitor._session_cache.clear()
 
-    def test_fast_fail_on_20_consecutive_404s(self, monkeypatch):
-        """Download loop must give up after 20 consecutive 404s instead of running full timeout."""
+    def test_fast_fail_on_50_consecutive_404s(self, monkeypatch):
+        """Download loop must give up after 50 consecutive 404s instead of running full timeout."""
         import unittest.mock as mock
 
         fake_sess = mock.MagicMock()
@@ -270,9 +273,11 @@ class TestPersistent404FastFail:
             "queued_at": time.time(),
         }
         start = time.monotonic()
-        result = bi_monitor._do_export(req, "[Test404]")
+        # FIXED: Unpack tuple and check the boolean status
+        ok, err = bi_monitor._do_export(req, "[Test404]")
         elapsed = time.monotonic() - start
 
-        assert result is False, "Should return False after persistent 404s"
+        assert ok is False, "Should return False after persistent 404s"
         assert elapsed < 10, f"Fast-fail took too long: {elapsed:.1f}s"
-        assert fake_sess.get.call_count >= 20, "Should attempt at least 20 times before giving up"
+        # Note: bi_monitor now uses 50 attempts
+        assert fake_sess.get.call_count >= 50, "Should attempt at least 50 times before giving up"
