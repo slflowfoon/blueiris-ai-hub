@@ -70,8 +70,7 @@ class TestStaleRequestGuard:
     def test_fresh_request_passes_guard(self, monkeypatch):
         """A fresh request should proceed to _do_export (which we stub)."""
         req = _push_request()
-        # FIXED: Returns tuple
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: (True, None))
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, tag: True)
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result is not None
@@ -85,16 +84,14 @@ class TestResultProtocol:
     def test_result_key_has_ttl(self, monkeypatch):
         """Result key must have a TTL so it self-cleans if worker dies."""
         req = _push_request()
-        # FIXED: Returns tuple
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (True, None))
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: True)
         bi_monitor._process_request(json.dumps(req).encode())
         ttl = _r.ttl(f"bi:result:{req['request_id']}")
         assert 0 < ttl <= bi_monitor.RESULT_KEY_TTL
 
     def test_failed_export_returns_ok_false(self, monkeypatch):
         req = _push_request()
-        # FIXED: Returns tuple
-        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: (False, "export failed"))
+        monkeypatch.setattr(bi_monitor, "_do_export", lambda r, t: False)
         bi_monitor._process_request(json.dumps(req).encode())
         result = _pop_result(req["request_id"])
         assert result["ok"] is False
@@ -175,6 +172,7 @@ class TestRunMonitorLoop:
         assert processed[0]["request_id"] == req["request_id"]
 
 
+
 class TestPreResolvedClip:
     """#45 -- monitor must use pre-resolved clip_path from payload and skip alertlist lookup."""
 
@@ -224,8 +222,7 @@ class TestPreResolvedClip:
             "bi_restart_token": "",
             "queued_at": time.time(),
         }
-        # FIXED: Unpack tuple
-        ok, err = bi_monitor._do_export(req, "[TestPreResolved]")
+        bi_monitor._do_export(req, "[TestPreResolved]")
         assert alertlist_calls == [], "bi_find_alert_details must not be called when clip_path is pre-resolved"
 
 
@@ -273,8 +270,7 @@ class TestPersistent404FastFail:
             "queued_at": time.time(),
         }
         start = time.monotonic()
-        # FIXED: Unpack tuple
-        result, err = bi_monitor._do_export(req, "[Test404]")
+        result = bi_monitor._do_export(req, "[Test404]")
         elapsed = time.monotonic() - start
 
         assert result is False, "Should return False after persistent 404s"
