@@ -170,3 +170,100 @@ class TestRunMonitorLoop:
 
         assert len(processed) == 1
         assert processed[0]["request_id"] == req["request_id"]
+
+
+class TestPreResolvedClip:
+    #45 -- monitor must use pre-resolved clip_path from payload and skip alertlist lookup.
+
+    def setup_method(self):
+        _r.delete("bi:requests")
+        bi_monitor._session_cache.clear()
+
+    def test_pre_resolved_clip_skips_alertlist(self, monkeypatch):
+        """When clip_path is in payload, bi_find_alert_details must not be called."""
+        alertlist_calls = []
+        monkeypatch.setattr(
+            bi_monitor, "bi_find_alert_details",
+            lambda *a, **kw: alertlist_calls.append(1) or ("@clip/foo.mp4", 0, 10000),
+        )
+
+        import unittest.mock as mock
+        fake_sess = mock.MagicMock()
+        fake_sess.post.return_value = mock.MagicMock(
+            status_code=200, json=lambda: {"result": "success"},
+        )
+        fake_dl = mock.MagicMock(status_code=200)
+        fake_dl.headers = {"Content-Length": "1000"}
+        fake_dl.iter_content = lambda chunk_size=0: [b"x" * 1000]
+        fake_sess.get.return_value = fake_dl
+        monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
+        monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
+
+        req = {
+            "request_id": str(uuid.uuid4()),
+            "config_name": "TestCam",
+            "bi_url": "http://192.168.1.1:81",
+            "bi_user": "admin",
+            "bi_pass": "secret",
+            "trigger_filename": "20240101_120000.jpg",
+            "clip_path": "@clip/20240101_120000.mp4",
+            "offset": 0,
+            "duration": 10000,
+            "output_path": "/tmp/test_pre_resolved.mp4",
+            "verbose": False,
+            "delete_after": False,
+            "bi_restart_url": "",
+            "bi_restart_token": "",
+            "queued_at": time.time(),
+        }
+        bi_monitor._do_export(req, "[TestPreResolved]")
+        assert alertlist_calls == [], "bi_find_alert_details must not be called when clip_path is pre-resolved"
+
+
+class TestPersistent404FastFail:
+    """#46 -- 20+ consecutive 404s must break out of download loop early."""
+
+    def setup_method(self):
+        _r.delete("bi:requests")
+        bi_monitor._session_cache.clear()
+
+    def test_fast_fail_on_20_consecutive_404s(self, monkeypatch):
+        """Download loop must give up after 20 consecutive 404s instead of running full timeout."""
+        import unittest.mock as mock
+
+        fake_sess = mock.MagicMock()
+        fake_sess.post.return_value = mock.MagicMock(
+            status_code=200, json=lambda: {"result": "success"},
+        )
+        not_found = mock.MagicMock(status_code=404)
+        not_found.headers = {}
+        fake_sess.get.return_value = not_found
+        monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
+        monkeypatch.setattr(
+            bi_monitor, "bi_find_alert_details",
+            lambda *a, **kw: ("@clip/foo.mp4", 0, 10000),
+        )
+        monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
+        monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
+
+        req = {
+            "request_id": str(uuid.uuid4()),
+            "config_name": "TestCam",
+            "bi_url": "http://192.168.1.1:81",
+            "bi_user": "admin",
+            "bi_pass": "secret",
+            "trigger_filename": "20240101_120000.jpg",
+            "output_path": "/tmp/test_404_fastfail.mp4",
+            "verbose": False,
+            "delete_after": False,
+            "bi_restart_url": "",
+            "bi_restart_token": "",
+            "queued_at": time.time(),
+        }
+        start = time.monotonic()
+        result = bi_monitor._do_export(req, "[Test404]")
+        elapsed = time.monotonic() - start
+
+        assert result is False, "Should return False after persistent 404s"
+        assert elapsed < 10, f"Fast-fail took too long: {elapsed:.1f}s"
+        assert fake_sess.get.call_count >= 20, "Should attempt at least 20 times before giving up"

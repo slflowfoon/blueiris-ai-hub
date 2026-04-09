@@ -5,7 +5,9 @@ import requests
 import base64
 import io
 import json
+import hashlib
 import subprocess
+from urllib.parse import urljoin
 import redis
 from logging.handlers import RotatingFileHandler
 from PIL import Image
@@ -460,6 +462,40 @@ def replace_telegram_media(config, media_path, caption):
 # Blue Iris helpers
 # =============================================================================
 
+
+def _bi_protocol_hash(s: str) -> str:
+    """MD5 hex digest required by the Blue Iris JSON API (protocol interop only)."""
+    return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
+    """
+    Login to BI and look up clip details for trigger_filename immediately,
+    while the alert is guaranteed fresh in the alertlist.
+
+    Returns (clip_path, offset, msec) if found.
+    Returns None if the alert is not in the list (caller should not queue).
+    Raises on connection error (caller should queue anyway; monitor may succeed
+    via its cached session).
+    """
+    json_url = urljoin(bi_url.rstrip("/") + "/", "json")
+    sess = requests.Session()
+    r1 = sess.post(json_url, json={"cmd": "login"}, timeout=10)
+    r1.raise_for_status()
+    sid = r1.json().get("session")
+    response = _bi_protocol_hash(f"{bi_user}:{sid}:{bi_pass}")
+    r2 = sess.post(json_url, json={"cmd": "login", "session": sid, "response": response}, timeout=10)
+    r2.raise_for_status()
+    if r2.json().get("result") != "success":
+        raise RuntimeError("BI login failed")
+    al = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
+    al.raise_for_status()
+    for alert in al.json().get("data", []):
+        if alert.get("file") == trigger_filename:
+            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
+    return None  # alert not in list
+
+
 def request_bi_export(config, output_path, tag, timeout=300):
     """
     Queue a BI export request to the bi_monitor service and block until done.
@@ -467,19 +503,46 @@ def request_bi_export(config, output_path, tag, timeout=300):
     """
     import uuid as _uuid
     request_id = str(_uuid.uuid4())
+
+    # Pre-queue alertlist lookup: resolve clip details while the alert is fresh.
+    # If the alert is already gone, fail immediately without consuming a monitor slot.
+    clip_path = offset = duration = None
+    trigger_filename = config.get("trigger_filename", "")
+    if trigger_filename and config.get("bi_url") and config.get("bi_user"):
+        try:
+            result = _bi_lookup_alert(
+                config["bi_url"], config["bi_user"], config["bi_pass"],
+                trigger_filename, tag,
+            )
+            if result is None:
+                logging.warning(
+                    f"{tag} Alert not in BI alertlist at queue time "
+                    f"({trigger_filename}) -- skipping export"
+                )
+                return False
+            clip_path, offset, duration = result
+            logging.info(f"{tag} Pre-queue alert resolved: clip={clip_path}")
+        except Exception as e:
+            logging.warning(
+                f"{tag} Pre-queue BI lookup failed ({e}) -- queuing anyway"
+            )
+
     payload = json.dumps({
         "request_id":       request_id,
         "config_name":      config.get("name", "?"),
         "bi_url":           config["bi_url"],
         "bi_user":          config["bi_user"],
         "bi_pass":          config["bi_pass"],
-        "trigger_filename": config["trigger_filename"],
+        "trigger_filename": trigger_filename,
+        "clip_path":        clip_path,
+        "offset":           offset,
+        "duration":         duration,
         "output_path":      output_path,
         "bi_restart_url":   config.get("bi_restart_url", ""),
         "bi_restart_token": config.get("bi_restart_token", ""),
         "verbose":          config.get("verbose_logging") == 1,
         "delete_after":     config.get("delete_after_send") == 1,
-        "queued_at":        __import__("time").time(),
+        "queued_at":        time.time(),
     })
     r.rpush("bi:requests", payload)
     logging.info(f"{tag} BI export request queued (id={request_id})")
