@@ -5,9 +5,11 @@ import requests
 import base64
 import io
 import json
+import hashlib
 import subprocess
 import redis
 import uuid
+from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
