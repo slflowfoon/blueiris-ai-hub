@@ -359,7 +359,7 @@ def _process_request(raw: bytes):
 
 def run_monitor():
     logging.info("[bi_monitor] Waiting for requests on bi:requests")
-    while True:
+    while keep_running is None or keep_running():
         item = r.blpop(REQUEST_QUEUE, timeout=BLPOP_BLOCK_TIMEOUT)
         if item:
             _process_request(item[1])

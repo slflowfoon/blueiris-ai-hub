@@ -97,13 +97,29 @@ class TestSessionCache:
 
 class TestRunMonitorLoop:
     def test_processes_queued_request(self, monkeypatch):
+        """run_monitor must pop and process a queued request then exit."""
         _push_request()
         processed = []
+        
+        # Kill switch logic
+        should_run = True
+        def keep_going():
+            return should_run
+
         monkeypatch.setattr(bi_monitor, "_process_request", lambda raw: processed.append(json.loads(raw)))
         monkeypatch.setattr(bi_monitor, "BLPOP_BLOCK_TIMEOUT", 1)
-        t = threading.Thread(target=bi_monitor.run_monitor, daemon=True)
+
+        # Pass the kill switch to the monitor
+        t = threading.Thread(target=bi_monitor.run_monitor, args=(keep_going,), daemon=True)
         t.start()
+        
+        # Wait a moment for it to process
+        time.sleep(2)
+        
+        # Signal the thread to stop
+        should_run = False
         t.join(timeout=2)
+
         assert len(processed) >= 1
 
 
