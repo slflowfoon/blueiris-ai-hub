@@ -226,7 +226,7 @@ def _do_export(req, tag):
     else:
         clip_path, offset, duration = bi_find_alert_details(sess, bi_url, sid, trigger_file, tag, verbose)
         if not clip_path:
-            return False, "alert not found in BI list"
+            return False, "alert not found in list"
 
     final_path = clip_path if clip_path.startswith("@") else f"@{clip_path}"
     if not final_path.endswith(".bvr"):
@@ -312,8 +312,11 @@ def _do_export(req, tag):
                         for chunk in dl.iter_content(8192):
                             f.write(chunk)
                             
-                    if os.path.getsize(output_path) > 1024:
-                        logging.info(f"{tag} Download complete elapsed={elapsed:.1f}s size={os.path.getsize(output_path)}")
+                    final_size = os.path.getsize(output_path)
+                    if final_size > 1024:
+                        logging.info(
+                            f"{tag} Download complete elapsed={elapsed:.1f}s size={final_size}"
+                        )
                         downloaded = True
                         break
                     time.sleep(2)
