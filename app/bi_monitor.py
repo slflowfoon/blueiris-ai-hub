@@ -41,7 +41,7 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
     handlers=[
         RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout)  # Allows 'docker logs' to work
+        logging.StreamHandler(sys.stdout)
     ],
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -122,9 +122,14 @@ def bi_delete_clip(sess, base_url, sid, clip_id, tag):
 
 
 def bi_wait_for_export_ready(sess, base_url, sid, export_id, tag, timeout=CLIPBOARD_POLL_TIMEOUT):
+    """
+    Polls the clipboard AND verifies the file is actually ready to download.
+    Returns the filename only when status=200 and size > 1000 bytes.
+    """
     json_url = urljoin(base_url.rstrip("/") + "/", "json")
     start = time.time()
     logging.info(f"{tag} Polling BI clipboard for export @{export_id}...")
+    
     while time.time() - start < timeout:
         try:
             resp = sess.post(
@@ -135,7 +140,17 @@ def bi_wait_for_export_ready(sess, base_url, sid, export_id, tag, timeout=CLIPBO
             if resp.status_code == 200:
                 for clip in resp.json().get("data", []):
                     if export_id in clip.get("path", ""):
-                        return clip.get("file")
+                        clip_file = clip.get("file")
+                        
+                        # PRE-FLIGHT CHECK: Verify the file is actually readable
+                        check_url = f"{base_url.rstrip('/')}/clips/{clip_file.lstrip('/')}?dl=1&session={sid}"
+                        with sess.get(check_url, stream=True, timeout=5) as r_check:
+                            cl = int(r_check.headers.get("Content-Length", "0") or "0")
+                            if r_check.status_code == 200 and cl > 1000:
+                                return clip_file
+                            
+                            # Log the "Not Ready" state so we can see why it's still polling
+                            logging.info(f"{tag} Export found but not ready (status={r_check.status_code} size={cl})")
         except Exception:
             pass
         time.sleep(2)
@@ -259,6 +274,7 @@ def _do_export(req, tag):
             logging.error(f"{tag} Export command failed: {res}")
             return False, f"BI export command failed: {res.get('result')}"
 
+        # --- WAIT FOR CLIPBOARD (Now includes size verification) ---
         clipboard_path = bi_wait_for_export_ready(sess, bi_url, sid, export_id, tag)
         if not clipboard_path:
             if export_id:
@@ -267,7 +283,6 @@ def _do_export(req, tag):
 
         mp4_url = f"{bi_url.rstrip('/')}/clips/{clipboard_path.lstrip('/')}?dl=1&session={sid}"
         logging.info(f"{tag} Clipboard ready -- beginning download.")
-        time.sleep(2) # Settle delay
 
         downloaded = False
         dl_start = time.time()
@@ -278,12 +293,10 @@ def _do_export(req, tag):
 
         while time.time() - dl_start < DOWNLOAD_TIMEOUT:
             attempt += 1
-            elapsed = time.time() - dl_start
             try:
                 with sess.get(mp4_url, stream=True, timeout=60) as dl:
                     cl = int(dl.headers.get("Content-Length", "0") or "0")
-                    logging.info(f"{tag} attempt={attempt} status={dl.status_code} size={cl}")
-
+                    
                     # Handle "Busy" (503) or "Ghost File" (200 but tiny)
                     if (dl.status_code == 503) or (dl.status_code == 200 and cl < 1000):
                         consecutive_503s += 1
@@ -298,7 +311,7 @@ def _do_export(req, tag):
                     # Handle "Not Ready Yet" (404)
                     if dl.status_code == 404:
                         consecutive_404s += 1
-                        if consecutive_404s >= 50: # Increased patience
+                        if consecutive_404s >= 50:
                             logging.error(f"{tag} Persistent 404 after 50 attempts -- failing fast")
                             break
                         time.sleep(2)
@@ -314,9 +327,7 @@ def _do_export(req, tag):
                             
                     final_size = os.path.getsize(output_path)
                     if final_size > 1024:
-                        logging.info(
-                            f"{tag} Download complete elapsed={elapsed:.1f}s size={final_size}"
-                        )
+                        logging.info(f"{tag} Download complete size={final_size}")
                         downloaded = True
                         break
                     time.sleep(2)
