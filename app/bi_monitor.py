@@ -218,15 +218,27 @@ def _do_export(req, tag):
     Execute a single BI export request end-to-end.
     Returns (bool, str): (Success status, Error message or None)
     """
-    bi_url        = req["bi_url"]
-    bi_user       = req["bi_user"]
-    bi_pass       = req["bi_pass"]
-    trigger_file  = req["trigger_filename"]
-    output_path   = req["output_path"]
-    verbose       = req.get("verbose", False)
-    delete_after  = req.get("delete_after", True)
-    restart_url   = req.get("bi_restart_url", "")
-    restart_token = req.get("bi_restart_token", "")
+    bi_url         = req["bi_url"]
+    bi_user        = req["bi_user"]
+    bi_pass        = req["bi_pass"]
+    trigger_file   = req["trigger_filename"]
+    output_path    = req["output_path"]
+    verbose        = req.get("verbose", False)
+    delete_after   = req.get("delete_after", True)
+    restart_url    = req.get("bi_restart_url", "")
+    restart_token  = req.get("bi_restart_token", "")
+    recovery_depth = req.get("_recovery_depth", 0)
+
+    def _try_recovery(reason):
+        """Restart BI and retry this export once. Returns (ok, err) tuple or None if not attempted."""
+        if recovery_depth >= 1:
+            logging.warning(f"{tag} Recovery already attempted -- not retrying again")
+            return None
+        logging.warning(f"{tag} Stuck encoder detected ({reason}) -- triggering recovery")
+        if trigger_bi_recovery(restart_url, restart_token, tag):
+            _invalidate_session(bi_url, bi_user)
+            return _do_export({**req, "_recovery_depth": recovery_depth + 1}, tag)
+        return None
 
     sess, sid = _get_session(bi_url, bi_user, bi_pass, tag)
     if not sid:
@@ -279,6 +291,9 @@ def _do_export(req, tag):
         if not clipboard_path:
             if export_id:
                 bi_delete_clip(sess, bi_url, sid, export_id, tag)
+            result = _try_recovery("clipboard timeout")
+            if result is not None:
+                return result
             return False, "timed out waiting for BI clipboard"
 
         mp4_url = f"{bi_url.rstrip('/')}/clips/{clipboard_path.lstrip('/')}?dl=1&session={sid}"
@@ -302,9 +317,9 @@ def _do_export(req, tag):
                         consecutive_503s += 1
                         if consecutive_503s >= 30 and not recovery_attempted:
                             recovery_attempted = True
-                            if trigger_bi_recovery(restart_url, restart_token, tag):
-                                _invalidate_session(bi_url, bi_user)
-                                return _do_export(req, tag) # Recursive retry
+                            result = _try_recovery("30x 503")
+                            if result is not None:
+                                return result
                         time.sleep(2)
                         continue
 
