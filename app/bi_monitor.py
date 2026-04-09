@@ -212,10 +212,18 @@ def _do_export(req, tag):
     if not sid:
         return False
 
-    clip_path, offset, duration = bi_find_alert_details(sess, bi_url, sid, trigger_file, tag, verbose)
-    if not clip_path:
-        logging.error(f"{tag} Cannot export: alert not found")
-        return False
+    clip_path = req.get("clip_path")
+    offset    = req.get("offset", 0)
+    duration  = req.get("duration", 10000)
+    if clip_path:
+        logging.info(f"{tag} Using pre-resolved clip: {clip_path}")
+    else:
+        clip_path, offset, duration = bi_find_alert_details(
+            sess, bi_url, sid, trigger_file, tag, verbose
+        )
+        if not clip_path:
+            logging.error(f"{tag} Cannot export: alert not found")
+            return False
 
     final_path = clip_path if clip_path.startswith("@") else f"@{clip_path}"
     if not final_path.endswith(".bvr"):
@@ -252,6 +260,7 @@ def _do_export(req, tag):
         dl_start = time.time()
         attempt = 0
         consecutive_503s = 0
+        consecutive_404s = 0
         recovery_attempted = False
 
         while time.time() - dl_start < DOWNLOAD_TIMEOUT:
@@ -300,8 +309,16 @@ def _do_export(req, tag):
 
                     consecutive_503s = 0
                     if dl.status_code == 404:
+                        consecutive_404s += 1
+                        if consecutive_404s >= 20:
+                            logging.error(
+                                f"{tag} Persistent 404 after {consecutive_404s} attempts"
+                                f" -- clip unreadable, failing fast"
+                            )
+                            break
                         time.sleep(2)
                         continue
+                    consecutive_404s = 0
                     dl.raise_for_status()
                     with open(output_path, "wb") as f:
                         for chunk in dl.iter_content(8192):
