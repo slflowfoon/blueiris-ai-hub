@@ -280,3 +280,4 @@ class TestPersistent404FastFail:
         assert result is False, "Should return False after persistent 404s"
         assert elapsed < 10, f"Fast-fail took too long: {elapsed:.1f}s"
         assert fake_sess.get.call_count >= 20, "Should attempt at least 20 times before giving up"
+        

@@ -31,7 +31,7 @@ RECOVERY_PAUSE         = 15
 BLPOP_BLOCK_TIMEOUT    = 5
 
 # =============================================================================
-# Logging (FIXED: Added StreamHandler for Docker logs)
+# Logging
 # =============================================================================
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -43,10 +43,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
-
-# =============================================================================
-# Redis
-# =============================================================================
 
 r = redis.from_url(REDIS_URL)
 
@@ -77,7 +73,7 @@ def bi_login(sess, base_url, user, password, tag):
 
 
 def bi_find_alert_details(sess, base_url, sid, trigger_filename, tag, verbose=False):
-    """FIXED: Added 3-attempt retry loop to wait for BI indexing."""
+    """Try to find alert in BI list with retries to account for indexing delays."""
     for attempt in range(3):
         try:
             json_url = urljoin(base_url.rstrip("/") + "/", "json")
@@ -184,7 +180,7 @@ def _invalidate_session(bi_url, bi_user):
 # =============================================================================
 
 def _do_export(req, tag):
-    """FIXED: Now returns (bool, str) for descriptive errors."""
+    """Execute a single BI export request end-to-end."""
     bi_url        = req["bi_url"]
     bi_user       = req["bi_user"]
     bi_pass       = req["bi_pass"]
@@ -203,7 +199,10 @@ def _do_export(req, tag):
     offset    = req.get("offset", 0)
     duration  = req.get("duration", 10000)
     
-    if not clip_path:
+    # Resolve clip details if not provided in payload
+    if clip_path:
+        logging.info(f"{tag} Using pre-resolved clip: {clip_path}")
+    else:
         clip_path, offset, duration = bi_find_alert_details(sess, bi_url, sid, trigger_file, tag, verbose)
         if not clip_path:
             return False, "alert not found in BI list"
@@ -221,7 +220,7 @@ def _do_export(req, tag):
             "format": 1, "audio": False, "session": sid,
         }
 
-        # --- FIXED: RETRY LOOP FOR EXPORT (Handles OpenBVR failed) ---
+        # --- EXPORT COMMAND WITH RETRY (Handles 'OpenBVR failed') ---
         for export_attempt in range(2):
             er = sess.post(export_url, json=payload, timeout=10)
             res = er.json()
@@ -239,9 +238,9 @@ def _do_export(req, tag):
 
         clipboard_path = bi_wait_for_export_ready(sess, bi_url, sid, export_id, tag)
         if not clipboard_path:
-                    if export_id:
-                        bi_delete_clip(sess, bi_url, sid, export_id, tag)
-                    return False, "timed out waiting for clipboard"
+            if export_id:
+                bi_delete_clip(sess, bi_url, sid, export_id, tag)
+            return False, "timed out waiting for clipboard"
 
         mp4_url = f"{bi_url.rstrip('/')}/clips/{clipboard_path.lstrip('/')}?dl=1&session={sid}"
         logging.info(f"{tag} Clipboard ready -- beginning download.")
@@ -249,6 +248,7 @@ def _do_export(req, tag):
         downloaded = False
         dl_start = time.time()
         consecutive_503s = 0
+        consecutive_404s = 0
         recovery_attempted = False
 
         while time.time() - dl_start < DOWNLOAD_TIMEOUT:
@@ -266,9 +266,14 @@ def _do_export(req, tag):
                         continue
 
                     if dl.status_code == 404:
+                        consecutive_404s += 1
+                        if consecutive_404s >= 20:
+                            logging.error(f"{tag} Persistent 404 after 20 attempts -- failing fast")
+                            break
                         time.sleep(2)
                         continue
                     
+                    consecutive_404s = 0
                     dl.raise_for_status()
                     with open(output_path, "wb") as f:
                         for chunk in dl.iter_content(8192):
@@ -280,9 +285,9 @@ def _do_export(req, tag):
                 time.sleep(2)
 
         if not downloaded:
-                    if export_id:
-                        bi_delete_clip(sess, bi_url, sid, export_id, tag)
-                    return False, "download failed after retries"
+            if export_id:
+                bi_delete_clip(sess, bi_url, sid, export_id, tag)
+            return False, "download failed after retries"
 
         if delete_after and export_id:
             bi_delete_clip(sess, bi_url, sid, export_id, tag)
@@ -339,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

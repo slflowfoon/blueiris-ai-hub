@@ -5,7 +5,9 @@ import requests
 import base64
 import io
 import json
+import hashlib
 import subprocess
+from urllib.parse import urljoin
 import redis
 import uuid
 from logging.handlers import RotatingFileHandler
@@ -462,19 +464,68 @@ def replace_telegram_media(config, media_path, caption):
 # Blue Iris helpers
 # =============================================================================
 
+
+def _bi_protocol_hash(s: str) -> str:
+    """MD5 hex digest required by the Blue Iris JSON API (protocol interop only)."""
+    return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
+    """
+    Login to BI and look up clip details for trigger_filename immediately,
+    while the alert is guaranteed fresh in the alertlist.
+    """
+    json_url = urljoin(bi_url.rstrip("/") + "/", "json")
+    sess = requests.Session()
+    r1 = sess.post(json_url, json={"cmd": "login"}, timeout=10)
+    r1.raise_for_status()
+    sid = r1.json().get("session")
+    response = _bi_protocol_hash(f"{bi_user}:{sid}:{bi_pass}")
+    r2 = sess.post(json_url, json={"cmd": "login", "session": sid, "response": response}, timeout=10)
+    r2.raise_for_status()
+    if r2.json().get("result") != "success":
+        raise RuntimeError("BI login failed")
+    al = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
+    al.raise_for_status()
+    for alert in al.json().get("data", []):
+        if alert.get("file") == trigger_filename:
+            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
+    return None
+
+
 def request_bi_export(config, output_path, tag, timeout=300):
     """
     Queue a BI export request to the bi_monitor service and block until done.
-    Returns True on success, False on failure.
     """
     request_id = str(uuid.uuid4())
+
+    # Pre-queue alertlist lookup: resolve clip details while the alert is fresh.
+    clip_path = offset = duration = None
+    trigger_filename = config.get("trigger_filename", "")
+    if trigger_filename and config.get("bi_url") and config.get("bi_user"):
+        try:
+            result = _bi_lookup_alert(
+                config["bi_url"], config["bi_user"], config["bi_pass"],
+                trigger_filename, tag,
+            )
+            if result is None:
+                logging.warning(f"{tag} Alert not in BI alertlist at queue time -- skipping export")
+                return False
+            clip_path, offset, duration = result
+            logging.info(f"{tag} Pre-queue alert resolved: clip={clip_path}")
+        except Exception as e:
+            logging.warning(f"{tag} Pre-queue BI lookup failed ({e}) -- queuing anyway")
+
     payload = json.dumps({
         "request_id":       request_id,
         "config_name":      config.get("name", "?"),
         "bi_url":           config["bi_url"],
         "bi_user":          config["bi_user"],
         "bi_pass":          config["bi_pass"],
-        "trigger_filename": config["trigger_filename"],
+        "trigger_filename": trigger_filename,
+        "clip_path":        clip_path,
+        "offset":           offset,
+        "duration":         duration,
         "output_path":      output_path,
         "bi_restart_url":   config.get("bi_restart_url", ""),
         "bi_restart_token": config.get("bi_restart_token", ""),
@@ -495,7 +546,6 @@ def request_bi_export(config, output_path, tag, timeout=300):
     if result.get("ok"):
         return True
     
-    # FIXED: Extract the specific error string from the monitor result
     error_msg = result.get("error", "unknown monitor error")
     logging.error(f"{tag} BI monitor returned failure: {error_msg}")
     return False
@@ -510,13 +560,11 @@ def analyze_still_image_fallback(image_path, prompt, config):
     encoded = optimize_image(image_path)
     if not encoded:
         return None
-        
     ai_text = analyze_image_gemini(config, encoded, prompt)
     if not ai_text:
         ai_text = analyze_image_grok(config, encoded, prompt)
     if not ai_text:
         ai_text = analyze_image_groq(config, encoded, prompt)
-        
     return ai_text
 
 
@@ -544,35 +592,24 @@ def process_alert(image_path, config):
         encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
+        ai_text = None
+        if encoded:
+            ai_text = analyze_image_gemini(config, encoded, prompt)
+            if not ai_text:
+                ai_text = analyze_image_grok(config, encoded, prompt)
+            if not ai_text:
+                ai_text = analyze_image_groq(config, encoded, prompt)
+
+        still_caption = ai_text or "Motion detected."
+
         if instant_notify:
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
                 send_telegram(config, image_path, "Motion detected.")
-
-            ai_text = None
-            if encoded:
-                ai_text = analyze_image_gemini(config, encoded, prompt)
-                if not ai_text:
-                    ai_text = analyze_image_grok(config, encoded, prompt)
-                if not ai_text:
-                    ai_text = analyze_image_groq(config, encoded, prompt)
-
             if ai_text:
                 update_telegram_caption(config, ai_text)
-
-            still_caption = ai_text or "Motion detected."
         else:
-            ai_text = None
-            if encoded:
-                ai_text = analyze_image_gemini(config, encoded, prompt)
-                if not ai_text:
-                    ai_text = analyze_image_grok(config, encoded, prompt)
-                if not ai_text:
-                    ai_text = analyze_image_groq(config, encoded, prompt)
-
-            still_caption = ai_text or "Motion detected."
-
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
@@ -589,28 +626,21 @@ def process_alert(image_path, config):
                     if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
                         replace_telegram_media(config, optimised_mp4, still_caption)
                     else:
-                        logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
                         replace_telegram_media(config, raw_mp4, still_caption)
 
-                    # Now analyse video with Gemini
                     video_caption = analyze_video_gemini(config, raw_mp4, prompt)
-                    
                     if video_caption:
                         update_telegram_caption(config, video_caption)
                     else:
                         logging.info(f"{tag} Video analysis failed, falling back to image caption.")
-                        # PLAN C
                         fallback_text = analyze_still_image_fallback(image_path, prompt, config)
                         if fallback_text:
                             logging.info(f"{tag} Successfully recovered using Still Image fallback.")
                             update_telegram_caption(config, fallback_text)
-                        else:
-                            logging.info(f"{tag} Still Image fallback also failed, keeping image caption.")
 
-                    if os.path.exists(optimised_mp4):
-                        os.remove(optimised_mp4)
-                    if os.path.exists(raw_mp4):
-                        os.remove(raw_mp4)
+                    for f_path in [optimised_mp4, raw_mp4]:
+                        if os.path.exists(f_path):
+                            os.remove(f_path)
                 else:
                     logging.warning(f"{tag} Video export failed, keeping photo.")
             else:
@@ -621,3 +651,4 @@ def process_alert(image_path, config):
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
+            
