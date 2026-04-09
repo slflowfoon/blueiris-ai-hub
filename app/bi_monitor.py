@@ -260,7 +260,6 @@ def _do_export(req, tag):
         dl_start = time.time()
         attempt = 0
         consecutive_503s = 0
-        consecutive_404s = 0
         recovery_attempted = False
 
         while time.time() - dl_start < DOWNLOAD_TIMEOUT:
@@ -309,16 +308,8 @@ def _do_export(req, tag):
 
                     consecutive_503s = 0
                     if dl.status_code == 404:
-                        consecutive_404s += 1
-                        if consecutive_404s >= 20:
-                            logging.error(
-                                f"{tag} Persistent 404 after {consecutive_404s} attempts"
-                                f" -- clip unreadable, failing fast"
-                            )
-                            break
                         time.sleep(2)
                         continue
-                    consecutive_404s = 0
                     dl.raise_for_status()
                     with open(output_path, "wb") as f:
                         for chunk in dl.iter_content(8192):

@@ -233,8 +233,8 @@ class TestPersistent404FastFail:
         _r.delete("bi:requests")
         bi_monitor._session_cache.clear()
 
-    def test_fast_fail_on_20_consecutive_404s(self, monkeypatch):
-        """Download loop must give up after 20 consecutive 404s instead of running full timeout."""
+    def test_404_retries_until_timeout(self, monkeypatch):
+        """Download loop retries on 404 until DOWNLOAD_TIMEOUT, then returns False."""
         import unittest.mock as mock
 
         fake_sess = mock.MagicMock()
@@ -254,6 +254,7 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
         monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
+        monkeypatch.setattr(bi_monitor, "DOWNLOAD_TIMEOUT", 5)
 
         req = {
             "request_id": str(uuid.uuid4()),
@@ -262,17 +263,14 @@ class TestPersistent404FastFail:
             "bi_user": "admin",
             "bi_pass": "secret",
             "trigger_filename": "20240101_120000.jpg",
-            "output_path": "/tmp/test_404_fastfail.mp4",
+            "output_path": "/tmp/test_404_timeout.mp4",
             "verbose": False,
             "delete_after": False,
             "bi_restart_url": "",
             "bi_restart_token": "",
             "queued_at": time.time(),
         }
-        start = time.monotonic()
         result = bi_monitor._do_export(req, "[Test404]")
-        elapsed = time.monotonic() - start
 
-        assert result is False, "Should return False after persistent 404s"
-        assert elapsed < 10, f"Fast-fail took too long: {elapsed:.1f}s"
-        assert fake_sess.get.call_count >= 20, "Should attempt at least 20 times before giving up"
+        assert result is False, "Should return False after timeout with persistent 404s"
+        assert fake_sess.get.call_count >= 1, "Should have attempted at least one download"
