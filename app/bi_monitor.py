@@ -336,7 +336,9 @@ def _do_export(req, tag):
                             
                     final_size = os.path.getsize(output_path)
                     if final_size > 1024:
-                        logging.info(f"{tag} Download complete size={final_size}")
+                        logging.info(
+                            f"{tag} Download complete elapsed={elapsed:.1f}s size={final_size}"
+                        )
                         downloaded = True
                         break
                     time.sleep(2)
