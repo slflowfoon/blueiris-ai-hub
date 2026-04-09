@@ -10,10 +10,8 @@ import json
 import threading
 import time
 import uuid
-
 import bi_monitor
 
-# Use the same Redis the module uses so helpers and the module share state
 _r = bi_monitor.r
 
 
@@ -192,7 +190,7 @@ class TestPreResolvedClip:
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
         )
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "2000"}  # Must be > 1000
@@ -202,8 +200,8 @@ class TestPreResolvedClip:
         fake_sess.get.return_value = fake_dl
 
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
-        # FIXED: Match the function name in your current bi_monitor.py
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
+        # UPDATED: Use new function name and return True
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
         req = {
@@ -230,20 +228,20 @@ class TestPreResolvedClip:
 
 
 class TestPersistent404FastFail:
-    """#46 -- 20+ consecutive 404s must break out of download loop early."""
+    """#46 -- 50+ consecutive 404s must break out of download loop early."""
 
     def setup_method(self):
         _r.delete("bi:requests")
         bi_monitor._session_cache.clear()
 
-    def test_fast_fail_on_20_consecutive_404s(self, monkeypatch):
-        """Download loop must give up after 20 consecutive 404s instead of running full timeout."""
+    def test_fast_fail_on_50_consecutive_404s(self, monkeypatch):
+        """Download loop must give up after 50 consecutive 404s instead of running full timeout."""
         import unittest.mock as mock
 
         fake_sess = mock.MagicMock()
         fake_sess.post.return_value = mock.MagicMock(
             status_code=200,
-            json=lambda: {"result": "success", "data": {"path": "@clip/foo"}},
+            json=lambda: {"result": "success", "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}},
         )
         not_found = mock.MagicMock(status_code=404)
         not_found.headers = {}
@@ -254,8 +252,8 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "_get_session", lambda *a, **kw: (fake_sess, "sid"))
         monkeypatch.setattr(bi_monitor, "bi_find_alert_details",
                             lambda *a, **kw: ("@clip/foo.mp4", 0, 10000))
-        # FIXED: Match the function name in your current bi_monitor.py
-        monkeypatch.setattr(bi_monitor, "bi_wait_for_export_ready", lambda *a, **kw: "clips/foo.mp4")
+        # UPDATED: Use new function name and return True
+        monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
         monkeypatch.setattr(bi_monitor.time, "sleep", lambda _: None)
 
@@ -280,5 +278,5 @@ class TestPersistent404FastFail:
 
         assert ok is False, "Should return False after persistent 404s"
         assert elapsed < 10, f"Fast-fail took too long: {elapsed:.1f}s"
-        # Note: Your current bi_monitor.py uses 20 attempts
-        assert fake_sess.get.call_count >= 20, "Should attempt at least 20 times before giving up"
+        # Note: bi_monitor now uses 50 attempts
+        assert fake_sess.get.call_count >= 50, "Should attempt at least 50 times before giving up"
