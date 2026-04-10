@@ -152,3 +152,82 @@ docker compose up -d
 | `redis` | Job queue and state store (mutes, caption modes, API key rotation, export jobs) |
 
 Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → worker optimises the Telegram media and analyses the raw clip with AI in parallel → caption updated and photo replaced with video clip.
+
+### Service topology
+
+```mermaid
+graph LR
+    BI[Blue Iris\nWindows]
+    subgraph Hub
+        web
+        worker
+        bi_exporter
+        bi_queue_monitor
+        bi_downloader
+        mute_bot
+        redis[(Redis)]
+    end
+    TG[Telegram]
+    AI[Gemini / Grok / Groq]
+    DVLA[DVLA API]
+
+    BI -->|webhook POST| web
+    web -->|enqueue job| redis
+    redis -->|dequeue job| worker
+    worker -->|image analysis| AI
+    worker -->|send alert| TG
+    worker -->|DVLA lookup| DVLA
+    worker -->|export request| redis
+    redis -->|bi:export:requests| bi_exporter
+    bi_exporter -->|job state| redis
+    bi_exporter -->|submit export| BI
+    bi_queue_monitor -->|poll active exports| redis
+    bi_queue_monitor -->|poll export queue| BI
+    bi_queue_monitor -->|bi:download:requests| redis
+    redis -->|bi:download:requests| bi_downloader
+    bi_downloader -->|download MP4| BI
+    bi_downloader -->|bi:result| redis
+    redis -->|bi:result| worker
+    worker -->|send video| TG
+    mute_bot -->|poll commands| TG
+    mute_bot -->|mute state| redis
+```
+
+### BI export pipeline
+
+```mermaid
+sequenceDiagram
+    participant W as worker
+    participant R as Redis
+    participant E as bi_exporter
+    participant Q as bi_queue_monitor
+    participant D as bi_downloader
+    participant BI as Blue Iris
+
+    W->>R: RPUSH bi:export:requests
+    E->>R: BLPOP bi:export:requests
+    E->>BI: POST /json?_export
+    E->>R: save job (status: submitted)<br/>SADD bi:exports:active
+
+    loop poll every ~1s
+        Q->>R: SMEMBERS bi:exports:active
+        Q->>BI: GET export queue
+        alt clip still in queue
+            Q->>R: update job (status: queued)
+        else clip left queue
+            Q->>R: update job (status: ready)<br/>SREM active set<br/>RPUSH bi:download:requests
+        else timeout / not acknowledged
+            Q->>R: queue retry or write failure result
+        end
+    end
+
+    D->>R: BLPOP bi:download:requests
+    D->>BI: GET /clips/...mp4
+    alt download success
+        D->>R: update job (status: downloaded)<br/>RPUSH bi:result:<id>
+    else download failed
+        D->>R: queue retry or write failure result
+    end
+
+    W->>R: BLPOP bi:result:<id>
+```
