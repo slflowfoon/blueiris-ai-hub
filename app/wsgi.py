@@ -7,7 +7,7 @@ import logging
 import requests
 from datetime import datetime
 from rq import Queue
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -25,10 +25,12 @@ q = Queue(connection=r)
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = os.path.join(DATA_DIR, "known_plates.json")
+PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
 os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -145,6 +147,26 @@ def init_db():
                     conn.execute(f"ALTER TABLE configs ADD COLUMN {col} {definition}")
                 except sqlite3.OperationalError:
                     pass  # Another worker added the column concurrently
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plate_audit (
+                id TEXT PRIMARY KEY,
+                plate TEXT NOT NULL,
+                first_seen TIMESTAMP NOT NULL,
+                last_seen TIMESTAMP NOT NULL,
+                seen_count INTEGER DEFAULT 1,
+                camera_name TEXT,
+                image_filename TEXT,
+                dvla_make TEXT,
+                dvla_colour TEXT,
+                dvla_year INTEGER,
+                dvla_tax_status TEXT,
+                dvla_tax_due TEXT,
+                dvla_mot_status TEXT,
+                dvla_mot_expiry TEXT,
+                dvla_checked_at TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_plate_audit_plate ON plate_audit(plate)")
 
 init_db()
 
@@ -286,6 +308,7 @@ HTML_TEMPLATE = r"""
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#configs-pane">Configurations</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#global-pane">Global Settings</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#plate-audit-pane">Plate Audit{% if plate_audit %} <span class="badge bg-secondary ms-1">{{ plate_audit|length }}</span>{% endif %}</button></li>
     </ul>
 
     <div class="tab-content">
@@ -433,6 +456,60 @@ HTML_TEMPLATE = r"""
                 </div>
             </div>
             <div class="log-viewer" id="logViewer">{{ logs }}</div>
+        </div>
+
+        <!-- Plate Audit tab -->
+        <div class="tab-pane fade" id="plate-audit-pane">
+            {% if plate_audit %}
+            <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead><tr>
+                    <th>Image</th><th>Plate</th><th>Vehicle</th><th>Tax</th><th>MOT</th><th>Camera</th><th>Last seen</th><th>Seen</th><th></th>
+                </tr></thead>
+                <tbody>
+                {% for entry in plate_audit %}
+                <tr>
+                    <td style="width:80px">
+                        {% if entry.image_filename %}
+                        <img src="{{ url_for('plate_audit_image', filename=entry.image_filename) }}" style="width:72px;height:54px;object-fit:cover;border-radius:4px;">
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><strong>{{ entry.plate }}</strong></td>
+                    <td>
+                        {% if entry.dvla_make %}{{ entry.dvla_make }}{% endif %}
+                        {% if entry.dvla_colour %}<br><small class="text-muted">{{ entry.dvla_colour }}{% if entry.dvla_year %}, {{ entry.dvla_year }}{% endif %}</small>{% endif %}
+                    </td>
+                    <td>
+                        {% set ts = entry.dvla_tax_status or '' %}
+                        {% if ts == 'Taxed' %}<span class="badge bg-success">Taxed</span>
+                        {% elif ts in ['Untaxed', 'SORN'] %}<span class="badge bg-danger">{{ ts }}</span>
+                        {% elif ts == 'unverified' %}<span class="badge bg-secondary">Unverified</span>
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td>
+                        {% set ms = entry.dvla_mot_status or '' %}
+                        {% if ms == 'Valid' %}<span class="badge bg-success">Valid</span>
+                        {% elif ms == 'Not valid' %}<span class="badge bg-danger">Not valid</span>
+                        {% elif ms %}<span class="badge bg-secondary">{{ ms }}</span>
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><small>{{ entry.camera_name or '—' }}</small></td>
+                    <td><small class="last-seen" {% if entry.last_seen %}data-ts="{{ entry.last_seen }}"{% endif %}>{{ entry.last_seen or '—' }}</small></td>
+                    <td><span class="badge bg-secondary">{{ entry.seen_count }}</span></td>
+                    <td>
+                        <form action="{{ url_for('delete_plate_audit') }}" method="POST" onsubmit="return confirm('Remove {{ entry.plate }} from audit log?');">
+                            <input type="hidden" name="id" value="{{ entry.id }}">
+                            <button class="btn btn-sm btn-outline-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-muted mt-3">No unknown plates recorded yet. Plates seen by cameras with a DVLA API key configured will appear here.</p>
+            {% endif %}
         </div>
 
     </div>
@@ -623,6 +700,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 def index():
     conn = get_db_connection()
     configs = [dict(r) for r in conn.execute('SELECT * FROM configs ORDER BY created_at DESC').fetchall()]
+    plate_audit = [dict(r) for r in conn.execute('SELECT * FROM plate_audit ORDER BY last_seen DESC').fetchall()]
     conn.close()
 
     primary_chat_id = configs[0]['chat_id'] if configs else ''
@@ -632,6 +710,7 @@ def index():
     return render_template_string(
         HTML_TEMPLATE,
         configs=configs,
+        plate_audit=plate_audit,
         logs=get_log_content(),
         base_url=BASE_URL,
         mutes=mutes,
@@ -783,6 +862,28 @@ def clear_caption():
     if chat_id:
         r.delete(f'caption_mode:{chat_id}')
         flash('Caption mode reset to normal.', 'success')
+    return redirect(url_for('index'))
+
+
+# --- Plate Audit ---
+
+@app.route('/plate-audit/image/<filename>')
+def plate_audit_image(filename):
+    return send_file(os.path.join(PLATE_IMAGES_DIR, filename), mimetype='image/jpeg')
+
+
+@app.route('/plate-audit/delete', methods=['POST'])
+def delete_plate_audit():
+    entry_id = request.form.get('id')
+    conn = get_db_connection()
+    row = conn.execute("SELECT image_filename FROM plate_audit WHERE id=?", (entry_id,)).fetchone()
+    if row and row['image_filename']:
+        img_path = os.path.join(PLATE_IMAGES_DIR, row['image_filename'])
+        if os.path.exists(img_path):
+            os.remove(img_path)
+    conn.execute("DELETE FROM plate_audit WHERE id=?", (entry_id,))
+    conn.commit()
+    conn.close()
     return redirect(url_for('index'))
 
 

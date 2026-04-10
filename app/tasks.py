@@ -8,6 +8,7 @@ import io
 import json
 import hashlib
 import subprocess
+import sqlite3
 import redis
 import uuid
 from urllib.parse import urljoin
@@ -33,7 +34,9 @@ r = redis.from_url(redis_url)
 
 # --- CONSTANTS ---
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
+PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -89,11 +92,65 @@ _PLATE_RE = re.compile(
 _DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiries/v1/vehicles"
 
 
-def enrich_caption_with_dvla(caption, config, tag=""):
+def _save_plate_thumbnail(image_path, plate):
+    try:
+        os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
+        filename = f"{plate}_{uuid.uuid4().hex[:8]}.jpg"
+        with Image.open(image_path) as img:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.thumbnail((400, 400))
+            img.save(os.path.join(PLATE_IMAGES_DIR, filename), format="JPEG", quality=80)
+        return filename
+    except Exception as e:
+        logging.warning(f"Plate thumbnail save failed for {plate}: {e}")
+        return None
+
+
+def _audit_plate(plate, dvla_data, camera_name, image_path, tag):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    image_filename = _save_plate_thumbnail(image_path, plate) if image_path else None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            existing = conn.execute(
+                "SELECT id, image_filename FROM plate_audit WHERE plate=?", (plate,)
+            ).fetchone()
+            if existing:
+                img_to_save = image_filename or existing[1]
+                conn.execute(
+                    "UPDATE plate_audit SET last_seen=?, seen_count=seen_count+1, "
+                    "image_filename=?, dvla_make=?, dvla_colour=?, dvla_year=?, "
+                    "dvla_tax_status=?, dvla_tax_due=?, dvla_mot_status=?, "
+                    "dvla_mot_expiry=?, dvla_checked_at=? WHERE plate=?",
+                    (now, img_to_save,
+                     dvla_data.get('make', '').title(), dvla_data.get('colour', '').title(),
+                     dvla_data.get('yearOfManufacture'), dvla_data.get('taxStatus'),
+                     dvla_data.get('taxDueDate'), dvla_data.get('motStatus'),
+                     dvla_data.get('motExpiryDate'), now, plate)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO plate_audit (id, plate, first_seen, last_seen, seen_count, "
+                    "camera_name, image_filename, dvla_make, dvla_colour, dvla_year, "
+                    "dvla_tax_status, dvla_tax_due, dvla_mot_status, dvla_mot_expiry, dvla_checked_at) "
+                    "VALUES (?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), plate, now, now, camera_name, image_filename,
+                     dvla_data.get('make', '').title(), dvla_data.get('colour', '').title(),
+                     dvla_data.get('yearOfManufacture'), dvla_data.get('taxStatus'),
+                     dvla_data.get('taxDueDate'), dvla_data.get('motStatus'),
+                     dvla_data.get('motExpiryDate'), now)
+                )
+    except Exception as e:
+        if tag:
+            logging.warning(f"{tag} Plate audit write failed for {plate}: {e}")
+
+
+def enrich_caption_with_dvla(caption, config, tag="", image_path=None):
     dvla_key = (config.get('dvla_api_key') or '').strip()
     if not dvla_key or not caption:
         return caption
     known = load_known_plates()
+    camera_name = config.get('name', '')
     for match in _PLATE_RE.finditer(caption.upper()):
         plate_raw = match.group(1)
         plate = plate_raw.replace(' ', '')
@@ -112,8 +169,10 @@ def enrich_caption_with_dvla(caption, config, tag=""):
                 colour = d.get('colour', '').title()
                 year   = d.get('yearOfManufacture', '')
                 suffix = f" ({make}, {colour}, {year})"
+                _audit_plate(plate, d, camera_name, image_path, tag)
             elif resp.status_code == 404:
                 suffix = " (unverified)"
+                _audit_plate(plate, {'taxStatus': 'unverified'}, camera_name, image_path, tag)
             else:
                 if tag:
                     logging.warning(f"{tag} DVLA lookup returned {resp.status_code} for {plate}")
@@ -699,7 +758,7 @@ def process_alert(image_path, config):
             if not ai_text:
                 ai_text = analyze_image_groq(config, encoded, prompt)
 
-        still_caption = enrich_caption_with_dvla(ai_text or "Motion detected.", config, tag)
+        still_caption = enrich_caption_with_dvla(ai_text or "Motion detected.", config, tag, image_path=image_path)
 
         if instant_notify:
             if config.get('initial_msg_id'):
@@ -731,13 +790,13 @@ def process_alert(image_path, config):
                     # Now analyse video with Gemini
                     video_caption = analyze_video_gemini(config, raw_mp4, prompt)
                     if video_caption:
-                        update_telegram_caption(config, enrich_caption_with_dvla(video_caption, config, tag))
+                        update_telegram_caption(config, enrich_caption_with_dvla(video_caption, config, tag, image_path=image_path))
                     else:
                         logging.info(f"{tag} Video analysis failed, falling back to image caption.")
                         fallback_text = analyze_still_image_fallback(image_path, prompt, config)
                         if fallback_text:
                             logging.info(f"{tag} Successfully recovered using Still Image fallback.")
-                            update_telegram_caption(config, enrich_caption_with_dvla(fallback_text, config, tag))
+                            update_telegram_caption(config, enrich_caption_with_dvla(fallback_text, config, tag, image_path=image_path))
 
                     for f_path in [optimised_mp4, raw_mp4]:
                         if os.path.exists(f_path):
