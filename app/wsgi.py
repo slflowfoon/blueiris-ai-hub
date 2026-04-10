@@ -125,6 +125,8 @@ def init_db():
                 dvla_api_key TEXT
             )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_configs_chat_id ON configs(chat_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_configs_created_at ON configs(created_at)")
         # Migrations for existing installs
         for col, definition in [
             ("last_triggered", "TIMESTAMP"),
