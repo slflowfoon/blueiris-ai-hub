@@ -14,7 +14,16 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+.pytest_cache/
 
 # Docker volumes
 /dev/shm/
+
+# Local test/runtime artifacts
+test_data/
+test_logs/
+test_tmp/
+
 CLAUDE.md
+.codex

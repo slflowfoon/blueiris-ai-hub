@@ -815,9 +815,9 @@ def webhook(config_id):
         app.logger.info(f"{tag} Webhook triggered. File: {original_filename}")
         q.enqueue(process_alert, filename, config, job_timeout=600)
 
-    except Exception as e:
-        app.logger.error(f"Error processing webhook: {e}")
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        app.logger.exception("Error processing webhook")
+        return jsonify({"error": "Internal server error"}), 500
 
     return jsonify({"status": "queued", "camera": config['name']}), 200
 

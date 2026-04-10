@@ -10,6 +10,7 @@ import hashlib
 import subprocess
 import redis
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-    
+
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1000000, backupCount=1)
 handler.setFormatter(formatter)
@@ -47,7 +48,7 @@ CAPTION_PROMPTS = {
     "hilarious": (
         "The CCTV has detected motion. Describe what's happening in a single outrageously "
         "funny sentence (max 145 characters). Be dramatic and absurd — narrate it like a "
-        "nature documentary gone completely wrong. Include vehicles, people, or deliveries you can see."
+        "nature documentary gone completely wrong. Include vehicles, people, or deliveries."
     ),
     "witty": (
         "The CCTV has detected motion. Describe what's happening in a single witty, sardonic "
@@ -65,6 +66,17 @@ CAPTION_PROMPTS = {
 # =============================================================================
 # Helpers
 # =============================================================================
+
+def _safe_request_error(exc):
+    """
+    Summarise request failures without logging secrets from URLs, headers, or
+    provider error messages.
+    """
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"{type(exc).__name__} (status {response.status_code})"
+    return type(exc).__name__
+
 
 def get_api_keys(config):
     raw = config.get('gemini_key', '')
@@ -148,7 +160,7 @@ def send_auto_mute_notification(config):
     cam_name = config.get('name', 'Camera')
     req_id = config.get('request_id', 'legacy')
     tag = f"[{cam_name}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     thread_id = config.get('message_thread_id') or ''
@@ -182,7 +194,7 @@ def analyze_image_gemini(config, encoded_image, prompt):
     config_id = config['id']
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
 
     for attempt in range(len(keys) * len(GEMINI_MODELS)):
@@ -205,10 +217,10 @@ def analyze_image_gemini(config, encoded_image, prompt):
                 logging.warning(f"{tag} Rate limited: key {key_i + 1}, {model}")
                 continue
             else:
-                logging.warning(f"{tag} Gemini {model} error {resp.status_code}: {resp.text[:120]}")
+                logging.warning(f"{tag} Gemini {model} error {resp.status_code}")
                 continue
         except Exception as e:
-            logging.error(f"{tag} Gemini request error: {e}")
+            logging.error(f"{tag} Gemini request error: {_safe_request_error(e)}")
             continue
     return None
 
@@ -225,7 +237,7 @@ def analyze_video_gemini(config, video_path, prompt):
     config_id = config['id']
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
 
     for ki in range(len(keys)):
@@ -252,7 +264,7 @@ def analyze_video_gemini(config, video_path, prompt):
                 )
 
             if upload_resp.status_code not in (200, 201):
-                logging.warning(f"{tag} Upload failed: {upload_resp.status_code} {upload_resp.text[:100]}")
+                logging.warning(f"{tag} Upload failed with status {upload_resp.status_code}")
                 continue
 
             file_info = upload_resp.json().get('file', {})
@@ -264,7 +276,7 @@ def analyze_video_gemini(config, video_path, prompt):
                 continue
 
             # Poll until ACTIVE
-            logging.info(f"{tag} Uploaded: {file_uri}. Polling for ACTIVE state...")
+            logging.info(f"{tag} Gemini upload accepted. Polling for ACTIVE state...")
             active = False
             for _ in range(20):
                 state_resp = requests.get(f"{GEMINI_API_BASE}/{file_name}?key={key}", timeout=10)
@@ -293,7 +305,7 @@ def analyze_video_gemini(config, video_path, prompt):
                     if resp.status_code == 200:
                         r.set(f'gemini_key_idx:{config_id}', (key_i + 1) % len(keys))
                         result = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        logging.info(f"{tag} Video analysis result ({model}): {result}")
+                        logging.info(f"{tag} Video analysis succeeded with {model}")
                         return result
                     elif resp.status_code == 429:
                         continue
@@ -301,11 +313,11 @@ def analyze_video_gemini(config, video_path, prompt):
                         logging.warning(f"{tag} Video analysis {model} error {resp.status_code}")
                         continue
                 except Exception as e:
-                    logging.error(f"{tag} Video analysis error: {e}")
+                    logging.error(f"{tag} Video analysis error: {_safe_request_error(e)}")
                     continue
 
         except Exception as e:
-            logging.error(f"{tag} Gemini video error: {e}")
+            logging.error(f"{tag} Gemini video error: {_safe_request_error(e)}")
         finally:
             if file_name:
                 try:
@@ -324,10 +336,10 @@ def analyze_image_grok(config, encoded_image, prompt):
     api_key = config.get('grok_api_key') or ''
     if not api_key:
         return None
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     try:
         logging.info(f"{tag} Trying Grok fallback...")
         resp = requests.post(
@@ -343,7 +355,7 @@ def analyze_image_grok(config, encoded_image, prompt):
             return resp.json()["choices"][0]["message"]["content"].strip()
         logging.warning(f"{tag} Grok error {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
-        logging.error(f"{tag} Grok error: {e}")
+        logging.error(f"{tag} Grok error: {_safe_request_error(e)}")
     return None
 
 
@@ -351,10 +363,10 @@ def analyze_image_groq(config, encoded_image, prompt):
     api_key = config.get('groq_api_key') or ''
     if not api_key:
         return None
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     try:
         logging.info(f"{tag} Trying Groq fallback...")
         resp = requests.post(
@@ -370,7 +382,7 @@ def analyze_image_groq(config, encoded_image, prompt):
             return resp.json()["choices"][0]["message"]["content"].strip()
         logging.warning(f"{tag} Groq error {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
-        logging.error(f"{tag} Groq error: {e}")
+        logging.error(f"{tag} Groq error: {_safe_request_error(e)}")
     return None
 
 
@@ -422,7 +434,7 @@ def _tg_thread(config):
 def send_telegram(config, img_path, caption):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     thread_id = _tg_thread(config)
@@ -445,10 +457,10 @@ def send_telegram(config, img_path, caption):
 def update_telegram_caption(config, text):
     if 'last_msg_id' not in config:
         return
-    
+
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     token = config['telegram_token']
     chat_id = config['chat_id']
     data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'caption': text}
@@ -461,7 +473,7 @@ def update_telegram_caption(config, text):
 def replace_telegram_media(config, media_path, caption):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
-    
+
     if 'last_msg_id' not in config:
         return
     token = config['telegram_token']
@@ -482,6 +494,19 @@ def replace_telegram_media(config, media_path, caption):
         logging.error(f"{tag} Replace media error: {e}")
 
 
+def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
+    """
+    Prepare Telegram-friendly media while Gemini analyzes the raw export.
+    """
+    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
+        replace_telegram_media(config, optimised_mp4, caption)
+        return optimised_mp4
+
+    logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
+    replace_telegram_media(config, raw_mp4, caption)
+    return raw_mp4
+
+
 # =============================================================================
 # Blue Iris helpers
 # =============================================================================
@@ -493,14 +518,7 @@ def _bi_protocol_hash(s: str) -> str:
 
 
 def _parse_offset_ms(filename):
-    """Extract ms offset from a BI alert filename.
-
-    BI filenames follow the pattern:
-        Camera.YYYYMMDD_HHMMSS.OFFSET_MS.SEGMENT-FRAME.ext
-    e.g. FrontDoor.20260409_160000.533514.3-1.jpg → 533514
-
-    Returns the integer offset, or None if the filename doesn't match.
-    """
+    """Extract ms offset from a BI alert filename."""
     m = re.match(r'^.+\.\d{8}_\d{6}\.(\d+)\.\d+-\d+\.\w+$', filename)
     return int(m.group(1)) if m else None
 
@@ -569,7 +587,7 @@ def request_bi_export(config, output_path, tag, timeout=300):
                 if offset is not None:
                     logging.info(f"{tag} Using bvr fallback after lookup error: clip={clip_path} offset={offset}")
                 else:
-                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing without clip_path")
+                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing anyway")
 
     payload = json.dumps({
         "request_id":       request_id,
@@ -596,11 +614,11 @@ def request_bi_export(config, output_path, tag, timeout=300):
     if item is None:
         logging.error(f"{tag} BI monitor timed out after {timeout}s")
         return False
-    
+
     result = json.loads(item[1])
     if result.get("ok"):
         return True
-    
+
     error_msg = result.get("error", "unknown monitor error")
     logging.error(f"{tag} BI monitor returned failure: {error_msg}")
     return False
@@ -678,14 +696,25 @@ def process_alert(image_path, config):
                 success = request_bi_export(config, raw_mp4, tag)
 
                 if success:
-                    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
-                        replace_telegram_media(config, optimised_mp4, still_caption)
-                    else:
-                        logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
-                        replace_telegram_media(config, raw_mp4, still_caption)
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        delivery_future = executor.submit(
+                            deliver_video_to_telegram,
+                            config,
+                            raw_mp4,
+                            optimised_mp4,
+                            still_caption,
+                            tag,
+                        )
+                        video_caption_future = executor.submit(
+                            analyze_video_gemini,
+                            config,
+                            raw_mp4,
+                            prompt,
+                        )
 
-                    # Now analyse video with Gemini
-                    video_caption = analyze_video_gemini(config, raw_mp4, prompt)
+                        delivery_future.result()
+                        video_caption = video_caption_future.result()
+
                     if video_caption:
                         update_telegram_caption(config, video_caption)
                     else:
