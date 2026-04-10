@@ -1,0 +1,24 @@
+2026-04-10 14:02:09,830 - INFO - [TestCam][91a03d34] Processing BI export request
+2026-04-10 14:02:09,832 - INFO - [TestCam][2974de2d] Processing BI export request
+2026-04-10 14:02:09,835 - INFO - [TestCam][012ab957] Processing BI export request
+2026-04-10 14:02:09,836 - INFO - [T] New BI session cached for admin
+2026-04-10 14:02:09,838 - INFO - [bi_monitor] Waiting for requests on bi:requests
+2026-04-10 14:02:11,916 - INFO - [TestPreResolved] Download complete elapsed=0.0s size=2000
+2026-04-10 14:04:53,620 - INFO - [TestCam][67c91bd2] Processing BI export request
+2026-04-10 14:04:53,622 - INFO - [TestCam][4242003b] Processing BI export request
+2026-04-10 14:04:53,625 - INFO - [TestCam][31deeefc] Processing BI export request
+2026-04-10 14:04:53,627 - INFO - [T] New BI session cached for admin
+2026-04-10 14:04:53,628 - INFO - [bi_monitor] Waiting for requests on bi:requests
+2026-04-10 14:04:56,108 - INFO - [TestPreResolved] Download complete elapsed=0.0s size=2000
+2026-04-10 14:06:43,026 - INFO - [TestCam][a491b81f] Processing BI export request
+2026-04-10 14:06:43,028 - INFO - [TestCam][fa97d81f] Processing BI export request
+2026-04-10 14:06:43,030 - INFO - [TestCam][bc34a357] Processing BI export request
+2026-04-10 14:06:43,032 - INFO - [T] New BI session cached for admin
+2026-04-10 14:06:43,033 - INFO - [bi_monitor] Waiting for requests on bi:requests
+2026-04-10 14:06:45,061 - INFO - [TestPreResolved] Download complete elapsed=0.0s size=2000
+2026-04-10 14:07:20,608 - INFO - [TestCam][cffe6eb2] Processing BI export request
+2026-04-10 14:07:20,610 - INFO - [TestCam][28b5ba91] Processing BI export request
+2026-04-10 14:07:20,612 - INFO - [TestCam][e7528794] Processing BI export request
+2026-04-10 14:07:20,613 - INFO - [T] New BI session cached for admin
+2026-04-10 14:07:20,615 - INFO - [bi_monitor] Waiting for requests on bi:requests
+2026-04-10 14:07:22,665 - INFO - [TestPreResolved] Download complete elapsed=0.0s size=2000

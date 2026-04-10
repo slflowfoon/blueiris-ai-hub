@@ -130,21 +130,29 @@ class TestPreResolvedClip:
     def test_pre_resolved_clip_skips_alertlist(self, monkeypatch):
         import unittest.mock as mock
         fake_sess = mock.MagicMock()
-        queue_before = {
-            "result": "success",
-            "data": [{"path": "@existing", "uri": "Clipboard\\existing.mp4"}]
-        }
-        queue_after = {
-            "result": "success",
-            "data": [
-                {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"},
-                {"path": "@existing", "uri": "Clipboard\\existing.mp4"},
-            ],
-        }
-        fake_sess.post.side_effect = [
-            mock.MagicMock(status_code=200, json=lambda: queue_before),
-            mock.MagicMock(status_code=200, json=lambda: queue_after),
-        ]
+        def post_side_effect(_url, json=None, timeout=None):
+            if json == {"cmd": "export", "session": "sid"}:
+                return mock.MagicMock(
+                    status_code=200,
+                    json=lambda: {
+                        "result": "success",
+                        "data": [{"path": "@existing", "uri": "Clipboard\\existing.mp4"}],
+                    },
+                )
+            if json and json.get("cmd") == "export" and json.get("path"):
+                return mock.MagicMock(
+                    status_code=200,
+                    json=lambda: {
+                        "result": "success",
+                        "data": [
+                            {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"},
+                            {"path": "@existing", "uri": "Clipboard\\existing.mp4"},
+                        ],
+                    },
+                )
+            raise AssertionError(f"Unexpected POST payload: {json}")
+
+        fake_sess.post.side_effect = post_side_effect
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "2000"}
         fake_dl.iter_content = lambda chunk_size=0: [b"x" * 2000]
@@ -170,11 +178,23 @@ class TestPersistent404FastFail:
     def test_fast_fail_on_persistent_404(self, monkeypatch):
         import unittest.mock as mock
         fake_sess = mock.MagicMock()
-        mock_resp = {
-            "result": "success",
-            "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}
-        }
-        fake_sess.post.return_value = mock.MagicMock(status_code=200, json=lambda: mock_resp)
+        def post_side_effect(_url, json=None, timeout=None):
+            if json == {"cmd": "export", "session": "sid"}:
+                return mock.MagicMock(
+                    status_code=200,
+                    json=lambda: {"result": "success", "data": []},
+                )
+            if json and json.get("cmd") == "export" and json.get("path"):
+                return mock.MagicMock(
+                    status_code=200,
+                    json=lambda: {
+                        "result": "success",
+                        "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"},
+                    },
+                )
+            raise AssertionError(f"Unexpected POST payload: {json}")
+
+        fake_sess.post.side_effect = post_side_effect
         not_found = mock.MagicMock(status_code=404)
         not_found.headers = {"Content-Length": "0"}
         not_found.__enter__ = lambda s: not_found
@@ -187,9 +207,9 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "bi_wait_for_queue_completion", lambda *a, **kw: True)
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
-        # Mock time.time() to jump forward to simulate timeout immediately
-        start_time = time.time()
-        monkeypatch.setattr(time, "time", lambda: start_time + 61)
+        # Advance time across loop checks so the persistent 404 path exits.
+        timeline = iter([1000, 1000, 1061])
+        monkeypatch.setattr(time, "time", lambda: next(timeline, 1061))
         monkeypatch.setattr(time, "sleep", lambda _: None)
 
         req = _push_request()
