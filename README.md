@@ -4,13 +4,15 @@ AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/)
 
 ## Features
 
-- **AI vision analysis** — Gemini 2.5/2.0 Flash with automatic API key rotation and fallback to Grok / Groq
+- **AI vision analysis** — Gemini 2.5 Flash with automatic API key rotation and fallback to Grok / Groq
 - **Video clips** — exports the alert clip from Blue Iris, analyses it with Gemini, and replaces the still photo in Telegram with the video
 - **Telegram notifications** — AI-generated captions sent with each alert; captions are updated in-place when video analysis completes
 - **Instant notify** — optional per-camera mode that sends the photo immediately with a fallback caption, then updates it once AI analysis completes (guarantees delivery even when Gemini is slow)
 - **Auto-mute** — silences a camera automatically after 5 triggers in 10 minutes (prevents spam)
 - **Caption modes** — switch to `hilarious`, `witty`, or `rude` captions via Telegram bot commands
 - **Known plates** — teach the AI to recognise and label your vehicles by number plate
+- **DVLA enrichment** — any UK number plate detected in a caption is automatically looked up against the DVLA API and annotated with make, colour, year, and tax/MOT status
+- **Plate audit log** — every plate lookup is recorded with full DVLA details and a thumbnail of the alert image, viewable in the web UI
 - **Web UI** — configure cameras, view logs, manage mutes and plates at `http://your-host:5000`
 - **Update notifications** — the UI checks GitHub for new releases and shows a banner when one is available
 
@@ -48,6 +50,7 @@ Open the web UI and click **+ New Configuration**. Fill in:
 | Blue Iris URL | e.g. `http://192.168.1.100:81` (required for video) |
 | BI Username / Password | Blue Iris credentials (required for video) |
 | Instant notify | Send photo immediately with "Motion detected.", update caption when AI responds (optional) |
+| DVLA API Key | Optional — enables automatic number plate enrichment for UK plates |
 | Recovery URL | URL of the `bi_recovery.py` endpoint on your Windows host (optional — enables automated encoder restart) |
 | Recovery Token | Secret token matching `BI_RECOVERY_SECRET` on the Windows host |
 
@@ -83,19 +86,19 @@ Once running, send these commands in your alert chat:
 
 Each alert tries AI providers in order until one succeeds:
 
-1. **Gemini** (rotates across keys and models: `gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`)
-2. **Grok** (`grok-2-vision-1212`) — optional, add key in configuration
-3. **Groq** (`llama-3.2-11b-vision-preview`) — optional, add key in configuration
+1. **Gemini** (rotates across keys and models: `gemini-2.5-flash` → `gemini-2.5-flash-lite`)
+2. **Grok** (`grok-4-0709`) — optional, add key in configuration
+3. **Groq** (`meta-llama/llama-4-scout-17b-16e-instruct`) — optional, add key in configuration
 
 ## BI Encoder Recovery
 
-Blue Iris's video export encoder can deadlock after extended uptime (typically 3+ weeks), causing all clip exports to return persistent `503` errors. The hub detects this automatically (30 consecutive empty 503 responses) and can trigger a remote restart of the Blue Iris Windows service.
+Blue Iris's video export encoder can deadlock after extended uptime (typically 3+ weeks), causing clip exports to stall indefinitely. The hub detects this automatically and can trigger a remote restart of the Blue Iris Windows service.
 
 ### Setup
 
 **On your Windows machine**, run `bi_recovery.py` as a startup task:
 
-1. Download [`bi_recovery.py`](app/bi_recovery.py) to your Blue Iris machine
+1. Copy `bi_recovery.py` to your Blue Iris machine
 2. Set a strong secret token:
    ```powershell
    $env:BI_RECOVERY_SECRET = "your-secret-here"
@@ -117,13 +120,13 @@ Blue Iris's video export encoder can deadlock after extended uptime (typically 3
 
 ### How it works
 
-If the hub sees 30 consecutive `503` responses with empty `Content-Length` during a video download (~60 seconds), it:
+If a clip export has not progressed through the BI export queue within 180 seconds, the hub concludes the encoder is stuck and:
 
 1. POSTs to the recovery endpoint on your Windows machine
 2. The Windows service is force-stopped and restarted (~13 seconds)
-3. The hub re-logs into Blue Iris, re-exports the clip, and retries the download
+3. The hub re-submits the export and retries the download
 
-Configs without a Recovery URL set skip this step and fall back to the existing retry behaviour.
+Configs without a Recovery URL set skip this step and the export fails gracefully.
 
 > **Tip:** Also set up a weekly scheduled restart as a preventive measure — this stops the encoder reaching the deadlock state in the first place.
 
@@ -142,10 +145,10 @@ docker compose up -d
 |---------|-------------|
 | `web` | Flask app — webhook receiver and configuration UI (gunicorn) |
 | `worker` | Background task processor (Redis Queue) — handles AI analysis and Telegram sends |
-| `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
 | `bi_exporter` | Blue Iris export submitter — starts BI exports and records staged export jobs |
 | `bi_queue_monitor` | Shared BI queue poller — watches `_export` and promotes finished jobs to download |
 | `bi_downloader` | Blue Iris downloader — validates and downloads completed exports |
-| `redis` | Job queue and state store (mutes, caption modes, API key rotation) |
+| `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
+| `redis` | Job queue and state store (mutes, caption modes, API key rotation, export jobs) |
 
 Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → worker optimises the Telegram media and analyses the raw clip with AI in parallel → caption updated and photo replaced with video clip.
