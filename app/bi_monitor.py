@@ -124,6 +124,49 @@ def bi_wait_for_queue_completion(sess, base_url, sid, target_path, tag):
     return False
 
 
+def bi_get_export_queue(sess, base_url, sid):
+    """Returns the active BI export queue as a list."""
+    json_url = urljoin(base_url.rstrip("/") + "/", "json?_export")
+    resp = sess.post(json_url, json={"cmd": "export", "session": sid}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    return data if isinstance(data, list) else []
+
+
+def bi_resolve_export_target(export_data, known_paths, tag):
+    """
+    Resolve the queued export entry from BI's response payload.
+
+    Blue Iris may return either a single object for the new export or the full
+    active queue. Prefer newly-seen queue entries over positional guesses.
+    """
+    if isinstance(export_data, dict):
+        path = export_data.get("path")
+        uri = (export_data.get("uri") or "").replace("\\", "/")
+        if path and uri:
+            return path, uri
+        return None, None
+
+    if not isinstance(export_data, list):
+        return None, None
+
+    new_entries = [item for item in export_data if item.get("path") and item.get("path") not in known_paths]
+    if len(new_entries) == 1:
+        target = new_entries[0]
+        return target.get("path"), (target.get("uri") or "").replace("\\", "/")
+
+    if len(new_entries) > 1:
+        logging.warning(f"{tag} Multiple new BI exports detected; using the newest queued item")
+        target = new_entries[0]
+        return target.get("path"), (target.get("uri") or "").replace("\\", "/")
+
+    if len(export_data) == 1:
+        target = export_data[0]
+        return target.get("path"), (target.get("uri") or "").replace("\\", "/")
+
+    return None, None
+
+
 def bi_delete_clip(sess, base_url, sid, clip_id, tag):
     """Deletes a clip from the BI clipboard using its ID."""
     try:
@@ -244,6 +287,16 @@ def _do_export(req, tag):
             "format": 1, "audio": False, "session": sid,
         }
 
+        # Snapshot the queue first so we can identify the newly-created export
+        # even when BI returns the full active queue instead of a single object.
+        known_paths = set()
+        try:
+            known_paths = {
+                item.get("path") for item in bi_get_export_queue(sess, bi_url, sid) if item.get("path")
+            }
+        except Exception as e:
+            logging.warning(f"{tag} Failed to read export queue before enqueue: {e}")
+
         # --- EXPORT COMMAND WITH RETRY ---
         target_path = None
         relative_uri = None
@@ -251,9 +304,15 @@ def _do_export(req, tag):
             er = sess.post(export_url, json=payload, timeout=10)
             res = er.json()
             if res.get("result") == "success":
-                target_path = res.get("data", {}).get("path")
-                relative_uri = res.get("data", {}).get("uri", "").replace("\\", "/")
-                break
+                target_path, relative_uri = bi_resolve_export_target(res.get("data"), known_paths, tag)
+                if not target_path or not relative_uri:
+                    try:
+                        queue_data = bi_get_export_queue(sess, bi_url, sid)
+                        target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
+                    except Exception as e:
+                        logging.warning(f"{tag} Failed to refresh export queue after enqueue: {e}")
+                if target_path and relative_uri:
+                    break
             
             if "OpenBVR failed" in str(res.get("data", {})) and export_attempt == 0:
                 logging.warning(f"{tag} BI reported OpenBVR failed. Retrying in 2s...")

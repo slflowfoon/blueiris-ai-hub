@@ -130,11 +130,21 @@ class TestPreResolvedClip:
     def test_pre_resolved_clip_skips_alertlist(self, monkeypatch):
         import unittest.mock as mock
         fake_sess = mock.MagicMock()
-        mock_resp = {
+        queue_before = {
             "result": "success",
-            "data": {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"}
+            "data": [{"path": "@existing", "uri": "Clipboard\\existing.mp4"}]
         }
-        fake_sess.post.return_value = mock.MagicMock(status_code=200, json=lambda: mock_resp)
+        queue_after = {
+            "result": "success",
+            "data": [
+                {"path": "@clip/foo", "uri": "Clipboard\\foo.mp4"},
+                {"path": "@existing", "uri": "Clipboard\\existing.mp4"},
+            ],
+        }
+        fake_sess.post.side_effect = [
+            mock.MagicMock(status_code=200, json=lambda: queue_before),
+            mock.MagicMock(status_code=200, json=lambda: queue_after),
+        ]
         fake_dl = mock.MagicMock(status_code=200)
         fake_dl.headers = {"Content-Length": "2000"}
         fake_dl.iter_content = lambda chunk_size=0: [b"x" * 2000]
@@ -150,6 +160,7 @@ class TestPreResolvedClip:
         req = _push_request(clip_path="@clip/20240101_120000.mp4")
         ok, err = bi_monitor._do_export(req, "[TestPreResolved]")
         assert ok is True
+        assert err is None
 
 
 class TestPersistent404FastFail:
@@ -186,3 +197,27 @@ class TestPersistent404FastFail:
 
         assert ok is False
         assert err == "download failed (file not ready)"
+
+
+class TestQueueResolution:
+    def test_resolves_new_entry_from_queue_list(self):
+        known_paths = {"@existing"}
+        queue_data = [
+            {"path": "@new", "uri": "Clipboard\\new.mp4"},
+            {"path": "@existing", "uri": "Clipboard\\existing.mp4"},
+        ]
+
+        target_path, relative_uri = bi_monitor.bi_resolve_export_target(queue_data, known_paths, "[TestQueue]")
+
+        assert target_path == "@new"
+        assert relative_uri == "Clipboard/new.mp4"
+
+    def test_handles_single_object_response(self):
+        target_path, relative_uri = bi_monitor.bi_resolve_export_target(
+            {"path": "@new", "uri": "Clipboard\\new.mp4"},
+            set(),
+            "[TestQueue]",
+        )
+
+        assert target_path == "@new"
+        assert relative_uri == "Clipboard/new.mp4"
