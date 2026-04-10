@@ -7,7 +7,7 @@ import logging
 import requests
 from datetime import datetime
 from rq import Queue
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -25,10 +25,12 @@ q = Queue(connection=r)
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = os.path.join(DATA_DIR, "known_plates.json")
+PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
 os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -119,7 +121,8 @@ def init_db():
                 groq_api_key TEXT,
                 bi_restart_url TEXT,
                 bi_restart_token TEXT,
-                instant_notify INTEGER DEFAULT 0
+                instant_notify INTEGER DEFAULT 0,
+                dvla_api_key TEXT
             )
         """)
         # Migrations for existing installs
@@ -135,6 +138,7 @@ def init_db():
             ("bi_restart_url", "TEXT"),
             ("bi_restart_token", "TEXT"),
             ("instant_notify", "INTEGER DEFAULT 0"),
+            ("dvla_api_key", "TEXT"),
         ]:
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
@@ -143,6 +147,26 @@ def init_db():
                     conn.execute(f"ALTER TABLE configs ADD COLUMN {col} {definition}")
                 except sqlite3.OperationalError:
                     pass  # Another worker added the column concurrently
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plate_audit (
+                id TEXT PRIMARY KEY,
+                plate TEXT NOT NULL,
+                first_seen TIMESTAMP NOT NULL,
+                last_seen TIMESTAMP NOT NULL,
+                seen_count INTEGER DEFAULT 1,
+                camera_name TEXT,
+                image_filename TEXT,
+                dvla_make TEXT,
+                dvla_colour TEXT,
+                dvla_year INTEGER,
+                dvla_tax_status TEXT,
+                dvla_tax_due TEXT,
+                dvla_mot_status TEXT,
+                dvla_mot_expiry TEXT,
+                dvla_checked_at TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_plate_audit_plate ON plate_audit(plate)")
 
 init_db()
 
@@ -284,6 +308,7 @@ HTML_TEMPLATE = r"""
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#configs-pane">Configurations</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#global-pane">Global Settings</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#plate-audit-pane">Plate Audit{% if plate_audit %} <span class="badge bg-secondary ms-1">{{ plate_audit|length }}</span>{% endif %}</button></li>
     </ul>
 
     <div class="tab-content">
@@ -433,6 +458,60 @@ HTML_TEMPLATE = r"""
             <div class="log-viewer" id="logViewer">{{ logs }}</div>
         </div>
 
+        <!-- Plate Audit tab -->
+        <div class="tab-pane fade" id="plate-audit-pane">
+            {% if plate_audit %}
+            <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead><tr>
+                    <th>Image</th><th>Plate</th><th>Vehicle</th><th>Tax</th><th>MOT</th><th>Camera</th><th>Last seen</th><th>Seen</th><th></th>
+                </tr></thead>
+                <tbody>
+                {% for entry in plate_audit %}
+                <tr>
+                    <td style="width:80px">
+                        {% if entry.image_filename %}
+                        <img src="{{ url_for('plate_audit_image', filename=entry.image_filename) }}" style="width:72px;height:54px;object-fit:cover;border-radius:4px;">
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><strong>{{ entry.plate }}</strong></td>
+                    <td>
+                        {% if entry.dvla_make %}{{ entry.dvla_make }}{% endif %}
+                        {% if entry.dvla_colour %}<br><small class="text-muted">{{ entry.dvla_colour }}{% if entry.dvla_year %}, {{ entry.dvla_year }}{% endif %}</small>{% endif %}
+                    </td>
+                    <td>
+                        {% set ts = entry.dvla_tax_status or '' %}
+                        {% if ts == 'Taxed' %}<span class="badge bg-success">Taxed</span>
+                        {% elif ts in ['Untaxed', 'SORN'] %}<span class="badge bg-danger">{{ ts }}</span>
+                        {% elif ts == 'unverified' %}<span class="badge bg-secondary">Unverified</span>
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td>
+                        {% set ms = entry.dvla_mot_status or '' %}
+                        {% if ms == 'Valid' %}<span class="badge bg-success">Valid</span>
+                        {% elif ms == 'Not valid' %}<span class="badge bg-danger">Not valid</span>
+                        {% elif ms %}<span class="badge bg-secondary">{{ ms }}</span>
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><small>{{ entry.camera_name or '—' }}</small></td>
+                    <td><small class="last-seen" {% if entry.last_seen %}data-ts="{{ entry.last_seen }}"{% endif %}>{{ entry.last_seen or '—' }}</small></td>
+                    <td><span class="badge bg-secondary">{{ entry.seen_count }}</span></td>
+                    <td>
+                        <form action="{{ url_for('delete_plate_audit') }}" method="POST" onsubmit="return confirm('Remove {{ entry.plate }} from audit log?');">
+                            <input type="hidden" name="id" value="{{ entry.id }}">
+                            <button class="btn btn-sm btn-outline-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-muted mt-3">No unknown plates recorded yet. Plates seen by cameras with a DVLA API key configured will appear here.</p>
+            {% endif %}
+        </div>
+
     </div>
 </div>
 
@@ -479,6 +558,7 @@ HTML_TEMPLATE = r"""
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
                         <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')">👁️</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" name="dvla_api_key" id="add_dvla_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
                     </div>
                     <hr>
                     <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -536,6 +616,7 @@ HTML_TEMPLATE = r"""
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" id="edit_grok_key" name="grok_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_grok_key')">👁️</button></div></div>
                         <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')">👁️</button></div></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" id="edit_dvla_key" name="dvla_api_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
                     </div>
                     <hr>
                     <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -582,9 +663,10 @@ function openEditModal(c){
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
     document.getElementById('edit_grok_key').value=c.grok_api_key||'';
     document.getElementById('edit_groq_key').value=c.groq_api_key||'';
+    document.getElementById('edit_dvla_key').value=c.dvla_api_key||'';
     document.getElementById('edit_bi_restart_url').value=c.bi_restart_url||'';
     document.getElementById('edit_bi_restart_token').value=c.bi_restart_token||'';
-    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_grok_key','edit_groq_key','edit_bi_restart_token'].forEach(id=>document.getElementById(id).type='password');
+    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_grok_key','edit_groq_key','edit_dvla_key','edit_bi_restart_token'].forEach(id=>document.getElementById(id).type='password');
     document.getElementById('editForm').action='/edit/'+c.id;
     new bootstrap.Modal(document.getElementById('editModal')).show();
 }
@@ -618,6 +700,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 def index():
     conn = get_db_connection()
     configs = [dict(r) for r in conn.execute('SELECT * FROM configs ORDER BY created_at DESC').fetchall()]
+    plate_audit = [dict(r) for r in conn.execute('SELECT * FROM plate_audit ORDER BY last_seen DESC').fetchall()]
     conn.close()
 
     primary_chat_id = configs[0]['chat_id'] if configs else ''
@@ -627,6 +710,7 @@ def index():
     return render_template_string(
         HTML_TEMPLATE,
         configs=configs,
+        plate_audit=plate_audit,
         logs=get_log_content(),
         base_url=BASE_URL,
         mutes=mutes,
@@ -662,8 +746,8 @@ def add_config():
         conn.execute(
             'INSERT INTO configs (id,name,gemini_key,telegram_token,chat_id,prompt,bi_url,bi_user,bi_pass,'
             'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key,'
-            'bi_restart_url,bi_restart_token,instant_notify) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'bi_restart_url,bi_restart_token,instant_notify,dvla_api_key) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (str(uuid.uuid4()), request.form['name'], request.form['gemini_key'],
              request.form['telegram_token'], request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -675,7 +759,8 @@ def add_config():
              request.form.get('groq_api_key') or None,
              request.form.get('bi_restart_url') or None,
              request.form.get('bi_restart_token') or None,
-             1 if 'instant_notify' in request.form else 0)
+             1 if 'instant_notify' in request.form else 0,
+             request.form.get('dvla_api_key') or None)
         )
         conn.commit()
         conn.close()
@@ -692,7 +777,8 @@ def edit_config(id):
         conn.execute(
             'UPDATE configs SET name=?,gemini_key=?,telegram_token=?,chat_id=?,prompt=?,bi_url=?,bi_user=?,'
             'bi_pass=?,send_video=?,verbose_logging=?,delete_after_send=?,message_thread_id=?,'
-            'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=?,instant_notify=? WHERE id=?',
+            'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=?,instant_notify=?,'
+            'dvla_api_key=? WHERE id=?',
             (request.form['name'], request.form['gemini_key'], request.form['telegram_token'],
              request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -705,6 +791,7 @@ def edit_config(id):
              request.form.get('bi_restart_url') or None,
              request.form.get('bi_restart_token') or None,
              1 if 'instant_notify' in request.form else 0,
+             request.form.get('dvla_api_key') or None,
              id)
         )
         conn.commit()
@@ -775,6 +862,31 @@ def clear_caption():
     if chat_id:
         r.delete(f'caption_mode:{chat_id}')
         flash('Caption mode reset to normal.', 'success')
+    return redirect(url_for('index'))
+
+
+# --- Plate Audit ---
+
+@app.route('/plate-audit/image/<filename>')
+def plate_audit_image(filename):
+    safe = secure_filename(filename)
+    if not safe:
+        abort(404)
+    return send_file(os.path.join(PLATE_IMAGES_DIR, safe), mimetype='image/jpeg')
+
+
+@app.route('/plate-audit/delete', methods=['POST'])
+def delete_plate_audit():
+    entry_id = request.form.get('id')
+    conn = get_db_connection()
+    row = conn.execute("SELECT image_filename FROM plate_audit WHERE id=?", (entry_id,)).fetchone()
+    if row and row['image_filename']:
+        img_path = os.path.join(PLATE_IMAGES_DIR, row['image_filename'])
+        if os.path.exists(img_path):
+            os.remove(img_path)
+    conn.execute("DELETE FROM plate_audit WHERE id=?", (entry_id,))
+    conn.commit()
+    conn.close()
     return redirect(url_for('index'))
 
 

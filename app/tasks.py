@@ -8,6 +8,7 @@ import io
 import json
 import hashlib
 import subprocess
+import sqlite3
 import redis
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -34,7 +35,9 @@ r = redis.from_url(redis_url)
 
 # --- CONSTANTS ---
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
+PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -91,6 +94,111 @@ def load_known_plates():
     except Exception:
         pass
     return {}
+
+
+_PLATE_RE = re.compile(
+    r'\b([A-Z]{2}[0-9]{2}\s?[A-Z]{3}'  # Current (2001+):  AB12 ABC
+    r'|[A-Z][0-9]{1,3}\s?[A-Z]{3}'     # Prefix (1983-01): A123 BCD
+    r'|[A-Z]{3}\s?[0-9]{1,3}[A-Z])\b'  # Suffix (1963-83): ABC 123D
+)
+_DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiries/v1/vehicles"
+
+
+def _save_plate_thumbnail(image_path, plate):
+    try:
+        os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
+        filename = f"{plate}_{uuid.uuid4().hex[:8]}.jpg"
+        with Image.open(image_path) as img:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.thumbnail((400, 400))
+            img.save(os.path.join(PLATE_IMAGES_DIR, filename), format="JPEG", quality=80)
+        return filename
+    except Exception as e:
+        logging.warning(f"Plate thumbnail save failed for {plate}: {e}")
+        return None
+
+
+def _audit_plate(plate, dvla_data, camera_name, image_path, tag):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    image_filename = _save_plate_thumbnail(image_path, plate) if image_path else None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            existing = conn.execute(
+                "SELECT id, image_filename FROM plate_audit WHERE plate=?", (plate,)
+            ).fetchone()
+            if existing:
+                old_filename = existing[1]
+                img_to_save = image_filename or old_filename
+                if image_filename and old_filename and image_filename != old_filename:
+                    old_path = os.path.join(PLATE_IMAGES_DIR, old_filename)
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
+                conn.execute(
+                    "UPDATE plate_audit SET last_seen=?, seen_count=seen_count+1, "
+                    "image_filename=?, dvla_make=?, dvla_colour=?, dvla_year=?, "
+                    "dvla_tax_status=?, dvla_tax_due=?, dvla_mot_status=?, "
+                    "dvla_mot_expiry=?, dvla_checked_at=? WHERE plate=?",
+                    (now, img_to_save,
+                     dvla_data.get('make', '').title(), dvla_data.get('colour', '').title(),
+                     dvla_data.get('yearOfManufacture'), dvla_data.get('taxStatus'),
+                     dvla_data.get('taxDueDate'), dvla_data.get('motStatus'),
+                     dvla_data.get('motExpiryDate'), now, plate)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO plate_audit (id, plate, first_seen, last_seen, seen_count, "
+                    "camera_name, image_filename, dvla_make, dvla_colour, dvla_year, "
+                    "dvla_tax_status, dvla_tax_due, dvla_mot_status, dvla_mot_expiry, dvla_checked_at) "
+                    "VALUES (?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), plate, now, now, camera_name, image_filename,
+                     dvla_data.get('make', '').title(), dvla_data.get('colour', '').title(),
+                     dvla_data.get('yearOfManufacture'), dvla_data.get('taxStatus'),
+                     dvla_data.get('taxDueDate'), dvla_data.get('motStatus'),
+                     dvla_data.get('motExpiryDate'), now)
+                )
+    except Exception as e:
+        if tag:
+            logging.warning(f"{tag} Plate audit write failed for {plate}: {e}")
+
+
+def enrich_caption_with_dvla(caption, config, tag="", image_path=None):
+    dvla_key = (config.get('dvla_api_key') or '').strip()
+    if not dvla_key or not caption:
+        return caption
+    known = load_known_plates()
+    camera_name = config.get('name', '')
+    for match in _PLATE_RE.finditer(caption.upper()):
+        plate_raw = match.group(1)
+        plate = plate_raw.replace(' ', '')
+        if plate in known:
+            continue
+        try:
+            resp = requests.post(
+                _DVLA_URL,
+                headers={'x-api-key': dvla_key, 'Content-Type': 'application/json'},
+                json={'registrationNumber': plate},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                d = resp.json()
+                make   = d.get('make', '').title()
+                colour = d.get('colour', '').title()
+                year   = d.get('yearOfManufacture', '')
+                suffix = f" ({make}, {colour}, {year})"
+                _audit_plate(plate, d, camera_name, image_path, tag)
+            elif resp.status_code == 404:
+                suffix = " (unverified)"
+                _audit_plate(plate, {'taxStatus': 'unverified'}, camera_name, image_path, tag)
+            else:
+                if tag:
+                    logging.warning(f"{tag} DVLA lookup returned {resp.status_code} for {plate}")
+                continue
+            caption = caption.replace(plate_raw, plate_raw + suffix, 1)
+        except Exception as e:
+            if tag:
+                logging.warning(f"{tag} DVLA lookup error for {plate}: {e}")
+    return caption
 
 
 def build_prompt(config):
@@ -681,12 +789,18 @@ def process_alert(image_path, config):
             else:
                 send_telegram(config, image_path, "Motion detected.")
             if ai_text:
-                update_telegram_caption(config, ai_text)
+                update_telegram_caption(config, still_caption)
         else:
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
                 send_telegram(config, image_path, still_caption)
+
+        # DVLA enrichment after Telegram send — edits the caption if plates are found (#66)
+        enriched_still = enrich_caption_with_dvla(still_caption, config, tag, image_path=image_path)
+        if enriched_still != still_caption:
+            update_telegram_caption(config, enriched_still)
+        still_caption = enriched_still
 
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):
@@ -716,13 +830,13 @@ def process_alert(image_path, config):
                         video_caption = video_caption_future.result()
 
                     if video_caption:
-                        update_telegram_caption(config, video_caption)
+                        update_telegram_caption(config, enrich_caption_with_dvla(video_caption, config, tag, image_path=image_path))
                     else:
                         logging.info(f"{tag} Video analysis failed, falling back to image caption.")
                         fallback_text = analyze_still_image_fallback(image_path, prompt, config)
                         if fallback_text:
                             logging.info(f"{tag} Successfully recovered using Still Image fallback.")
-                            update_telegram_caption(config, fallback_text)
+                            update_telegram_caption(config, enrich_caption_with_dvla(fallback_text, config, tag, image_path=image_path))
 
                     for f_path in [optimised_mp4, raw_mp4]:
                         if os.path.exists(f_path):
