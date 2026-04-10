@@ -338,7 +338,7 @@ HTML_TEMPLATE = r"""
                             <div class="d-flex justify-content-between align-items-start">
                                 <div>
                                     <h5 class="card-title mb-1">{{ config.name }}</h5>
-                                    <span class="last-seen">{% if config.last_triggered %}Last triggered: {{ config.last_triggered }}{% else %}Never triggered{% endif %}</span>
+                                    <span class="last-seen" {% if config.last_triggered %}data-ts="{{ config.last_triggered }}"{% endif %}>{% if config.last_triggered %}Last triggered: {{ config.last_triggered }}{% else %}Never triggered{% endif %}</span>
                                 </div>
                                 <div class="btn-group">
                                     <button class="btn btn-sm btn-outline-secondary" onclick='openEditModal({{ config|tojson }})'>Edit</button>
@@ -678,6 +678,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     document.querySelectorAll('[data-bs-toggle="tab"]').forEach(el=>el.addEventListener('click',e=>localStorage.setItem('activeTab',e.target.getAttribute('data-bs-target'))));
     document.querySelector('[data-bs-target="#logs-pane"]').addEventListener('shown.bs.tab',()=>{const v=document.getElementById('logViewer');if(v)v.scrollTop=v.scrollHeight;});
     colorizeLogs();
+    function relativeTime(ts){const diff=Math.floor((Date.now()-new Date(ts.replace(' ','T')))/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago';}
+    document.querySelectorAll('.last-seen[data-ts]').forEach(el=>{el.textContent='Last triggered: '+relativeTime(el.dataset.ts);el.title=el.dataset.ts;});
     fetch('/api/check-update').then(r=>r.json()).then(d=>{
         const dismissedVersion = localStorage.getItem('dismissedUpdate');
         if(d.update_available && dismissedVersion !== d.latest_version){
