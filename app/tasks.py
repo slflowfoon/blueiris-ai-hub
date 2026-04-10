@@ -116,7 +116,12 @@ def _audit_plate(plate, dvla_data, camera_name, image_path, tag):
                 "SELECT id, image_filename FROM plate_audit WHERE plate=?", (plate,)
             ).fetchone()
             if existing:
-                img_to_save = image_filename or existing[1]
+                old_filename = existing[1]
+                img_to_save = image_filename or old_filename
+                if image_filename and old_filename and image_filename != old_filename:
+                    old_path = os.path.join(PLATE_IMAGES_DIR, old_filename)
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
                 conn.execute(
                     "UPDATE plate_audit SET last_seen=?, seen_count=seen_count+1, "
                     "image_filename=?, dvla_make=?, dvla_colour=?, dvla_year=?, "
