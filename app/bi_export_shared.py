@@ -30,6 +30,8 @@ RECOVERY_PAUSE           = 15
 QUEUE_PROGRESS_LOG_INTERVAL = 15
 MAX_EXPORT_ATTEMPTS      = 2
 MAX_RECOVERY_ATTEMPTS    = 1
+SESSION_KEY_PREFIX       = "bi:session:"
+SESSION_TTL              = 3600
 
 r = redis.from_url(REDIS_URL)
 _session_cache = {}
@@ -56,8 +58,34 @@ def job_tag(job):
     return f"[{job.get('config_name', '?')}][{job.get('request_id', 'unknown')[:8]}]"
 
 
+def session_key(bi_url, bi_user):
+    digest = hashlib.sha256(f"{bi_url}|{bi_user}".encode("utf-8")).hexdigest()
+    return f"{SESSION_KEY_PREFIX}{digest}"
+
+
+def _load_shared_session(bi_url, bi_user):
+    raw = r.get(session_key(bi_url, bi_user))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    sid = data.get("sid")
+    return sid or None
+
+
+def _save_shared_session(bi_url, bi_user, sid):
+    r.setex(
+        session_key(bi_url, bi_user),
+        SESSION_TTL,
+        json.dumps({"sid": sid, "updated_at": time.time()}),
+    )
+
+
 def _invalidate_session(bi_url, bi_user):
     _session_cache.pop((bi_url, bi_user), None)
+    r.delete(session_key(bi_url, bi_user))
 
 
 def bi_login(sess, base_url, user, password, tag):
@@ -92,10 +120,25 @@ def get_session(bi_url, bi_user, bi_pass, tag):
             pass
         _invalidate_session(bi_url, bi_user)
 
+    shared_sid = _load_shared_session(bi_url, bi_user)
+    if shared_sid:
+        sess = requests.Session()
+        try:
+            json_url = urljoin(bi_url.rstrip("/") + "/", "json")
+            chk = sess.post(json_url, json={"cmd": "status", "session": shared_sid}, timeout=10)
+            if chk.status_code == 200 and chk.json().get("result") == "success":
+                _session_cache[key] = (sess, shared_sid)
+                logging.info(f"{tag} Reused shared BI session for {bi_user}")
+                return sess, shared_sid
+        except Exception:
+            pass
+        _invalidate_session(bi_url, bi_user)
+
     sess = requests.Session()
     sid = bi_login(sess, bi_url, bi_user, bi_pass, tag)
     if sid:
         _session_cache[key] = (sess, sid)
+        _save_shared_session(bi_url, bi_user, sid)
         logging.info(f"{tag} New BI session cached for {bi_user}")
     return sess, sid
 
