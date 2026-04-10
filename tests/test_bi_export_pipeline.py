@@ -259,6 +259,41 @@ class TestDownloader:
         assert stored["status"] == "downloaded"
         assert json.loads(result[1])["ok"] is True
 
+    def test_download_failure_requeues_after_recovery(self, monkeypatch):
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "http://recovery.local/restart",
+            "restart_token": "token",
+            "status": "ready",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        monkeypatch.setattr(
+            bi_downloader,
+            "_download_export",
+            lambda current_job: (False, "download failed (file not ready)"),
+        )
+        monkeypatch.setattr(bi_downloader, "trigger_bi_recovery", lambda *args, **kwargs: True)
+
+        bi_downloader._process_download_request(job["request_id"])
+
+        queued_retry = _r.blpop(bi_export_shared.EXPORT_REQUEST_QUEUE, timeout=1)
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert queued_retry is not None
+        assert stored["status"] == "retry_queued"
+        assert stored["last_error"] == "download failed (file not ready)"
+
 
 class TestSharedSessionCache:
     def setup_method(self):
