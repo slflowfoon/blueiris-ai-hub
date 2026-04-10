@@ -7,7 +7,7 @@ import logging
 import requests
 from datetime import datetime
 from rq import Queue
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -869,7 +869,10 @@ def clear_caption():
 
 @app.route('/plate-audit/image/<filename>')
 def plate_audit_image(filename):
-    return send_file(os.path.join(PLATE_IMAGES_DIR, filename), mimetype='image/jpeg')
+    safe = secure_filename(filename)
+    if not safe:
+        abort(404)
+    return send_file(os.path.join(PLATE_IMAGES_DIR, safe), mimetype='image/jpeg')
 
 
 @app.route('/plate-audit/delete', methods=['POST'])
