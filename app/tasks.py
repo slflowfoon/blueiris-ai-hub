@@ -81,6 +81,50 @@ def load_known_plates():
     return {}
 
 
+_PLATE_RE = re.compile(
+    r'\b([A-Z]{2}[0-9]{2}\s?[A-Z]{3}'  # Current (2001+):  AB12 ABC
+    r'|[A-Z][0-9]{1,3}\s?[A-Z]{3}'     # Prefix (1983-01): A123 BCD
+    r'|[A-Z]{3}\s?[0-9]{1,3}[A-Z])\b'  # Suffix (1963-83): ABC 123D
+)
+_DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiries/v1/vehicles"
+
+
+def enrich_caption_with_dvla(caption, config, tag=""):
+    dvla_key = (config.get('dvla_api_key') or '').strip()
+    if not dvla_key or not caption:
+        return caption
+    known = load_known_plates()
+    for match in _PLATE_RE.finditer(caption.upper()):
+        plate_raw = match.group(1)
+        plate = plate_raw.replace(' ', '')
+        if plate in known:
+            continue
+        try:
+            resp = requests.post(
+                _DVLA_URL,
+                headers={'x-api-key': dvla_key, 'Content-Type': 'application/json'},
+                json={'registrationNumber': plate},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                d = resp.json()
+                make   = d.get('make', '').title()
+                colour = d.get('colour', '').title()
+                year   = d.get('yearOfManufacture', '')
+                suffix = f" ({make}, {colour}, {year})"
+            elif resp.status_code == 404:
+                suffix = " (unverified)"
+            else:
+                if tag:
+                    logging.warning(f"{tag} DVLA lookup returned {resp.status_code} for {plate}")
+                continue
+            caption = caption.replace(plate_raw, plate_raw + suffix, 1)
+        except Exception as e:
+            if tag:
+                logging.warning(f"{tag} DVLA lookup error for {plate}: {e}")
+    return caption
+
+
 def build_prompt(config):
     chat_id = config.get('chat_id', '')
     mode = 'normal'
@@ -655,7 +699,7 @@ def process_alert(image_path, config):
             if not ai_text:
                 ai_text = analyze_image_groq(config, encoded, prompt)
 
-        still_caption = ai_text or "Motion detected."
+        still_caption = enrich_caption_with_dvla(ai_text or "Motion detected.", config, tag)
 
         if instant_notify:
             if config.get('initial_msg_id'):
@@ -663,7 +707,7 @@ def process_alert(image_path, config):
             else:
                 send_telegram(config, image_path, "Motion detected.")
             if ai_text:
-                update_telegram_caption(config, ai_text)
+                update_telegram_caption(config, still_caption)
         else:
             if config.get('initial_msg_id'):
                 config['last_msg_id'] = config['initial_msg_id']
@@ -687,13 +731,13 @@ def process_alert(image_path, config):
                     # Now analyse video with Gemini
                     video_caption = analyze_video_gemini(config, raw_mp4, prompt)
                     if video_caption:
-                        update_telegram_caption(config, video_caption)
+                        update_telegram_caption(config, enrich_caption_with_dvla(video_caption, config, tag))
                     else:
                         logging.info(f"{tag} Video analysis failed, falling back to image caption.")
                         fallback_text = analyze_still_image_fallback(image_path, prompt, config)
                         if fallback_text:
                             logging.info(f"{tag} Successfully recovered using Still Image fallback.")
-                            update_telegram_caption(config, fallback_text)
+                            update_telegram_caption(config, enrich_caption_with_dvla(fallback_text, config, tag))
 
                     for f_path in [optimised_mp4, raw_mp4]:
                         if os.path.exists(f_path):
