@@ -36,6 +36,11 @@ _session_cache = {}
 
 
 def _bi_protocol_hash(value: str) -> str:
+    """
+    Blue Iris requires an MD5 digest of `user:session:password` for JSON API
+    login. This is protocol interoperability, not password storage.
+    """
+    # Blue Iris mandates MD5 here; changing the algorithm would break auth.
     return hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 

@@ -622,7 +622,11 @@ def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
 
 
 def _bi_protocol_hash(s: str) -> str:
-    """MD5 hex digest required by the Blue Iris JSON API (protocol interop only)."""
+    """
+    Blue Iris requires an MD5 digest of `user:session:password` for JSON API
+    login. This is protocol interoperability, not password storage.
+    """
+    # Blue Iris mandates MD5 here; changing the algorithm would break auth.
     return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 

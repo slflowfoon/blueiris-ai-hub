@@ -133,7 +133,12 @@ def _poll_active_exports():
                     job["error"] = "export not acknowledged by queue monitor"
                     save_job(job)
                     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
-                    write_result(job["request_id"], job["output_path"], False, "export not acknowledged by queue monitor")
+                    write_result(
+                        job["request_id"],
+                        job["output_path"],
+                        False,
+                        "export not acknowledged by queue monitor",
+                    )
                 continue
 
             if elapsed >= EXPORT_QUEUE_TIMEOUT:

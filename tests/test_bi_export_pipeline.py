@@ -33,8 +33,15 @@ def _request_payload(**overrides):
 
 
 def _clear_pipeline_state():
-    active_ids = [rid.decode() if isinstance(rid, bytes) else rid for rid in _r.smembers(bi_export_shared.ACTIVE_EXPORT_SET)]
-    keys = [bi_export_shared.ACTIVE_EXPORT_SET, bi_export_shared.EXPORT_REQUEST_QUEUE, bi_export_shared.DOWNLOAD_REQUEST_QUEUE]
+    active_ids = [
+        rid.decode() if isinstance(rid, bytes) else rid
+        for rid in _r.smembers(bi_export_shared.ACTIVE_EXPORT_SET)
+    ]
+    keys = [
+        bi_export_shared.ACTIVE_EXPORT_SET,
+        bi_export_shared.EXPORT_REQUEST_QUEUE,
+        bi_export_shared.DOWNLOAD_REQUEST_QUEUE,
+    ]
     for request_id in active_ids:
         keys.append(bi_export_shared.job_key(request_id))
         keys.append(bi_export_shared.result_key(request_id))
@@ -47,7 +54,6 @@ class TestExporter:
 
     def test_process_request_stores_submitted_job(self, monkeypatch):
         payload = _request_payload()
-        tag = f"[{payload['config_name']}][{payload['request_id'][:8]}]"
 
         monkeypatch.setattr(
             bi_exporter,
