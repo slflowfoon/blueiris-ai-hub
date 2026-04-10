@@ -763,7 +763,7 @@ def process_alert(image_path, config):
             if not ai_text:
                 ai_text = analyze_image_groq(config, encoded, prompt)
 
-        still_caption = enrich_caption_with_dvla(ai_text or "Motion detected.", config, tag, image_path=image_path)
+        still_caption = ai_text or "Motion detected."
 
         if instant_notify:
             if config.get('initial_msg_id'):
@@ -777,6 +777,12 @@ def process_alert(image_path, config):
                 config['last_msg_id'] = config['initial_msg_id']
             else:
                 send_telegram(config, image_path, still_caption)
+
+        # DVLA enrichment after Telegram send — edits the caption if plates are found (#66)
+        enriched_still = enrich_caption_with_dvla(still_caption, config, tag, image_path=image_path)
+        if enriched_still != still_caption:
+            update_telegram_caption(config, enriched_still)
+        still_caption = enriched_still
 
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):
