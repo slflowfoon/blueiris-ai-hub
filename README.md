@@ -145,8 +145,10 @@ docker compose up -d
 |---------|-------------|
 | `web` | Flask app — webhook receiver and configuration UI (gunicorn) |
 | `worker` | Background task processor (Redis Queue) — handles AI analysis and Telegram sends |
-| `bi_monitor` | BI export coordinator — serialises all Blue Iris API calls to eliminate clipboard contention (single replica, intentional) |
+| `bi_exporter` | Blue Iris export submitter — starts BI exports and records staged export jobs |
+| `bi_queue_monitor` | Shared BI queue poller — watches `_export` and promotes finished jobs to download |
+| `bi_downloader` | Blue Iris downloader — validates and downloads completed exports |
 | `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
 | `redis` | Job queue and state store (mutes, caption modes, API key rotation, export jobs) |
 
-Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) worker requests clip export via `bi_monitor` → `bi_monitor` coordinates export and download with BI → worker receives result, analyses video with AI, caption updated and photo replaced with video clip.
+Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → worker optimises the Telegram media and analyses the raw clip with AI in parallel → caption updated and photo replaced with video clip.

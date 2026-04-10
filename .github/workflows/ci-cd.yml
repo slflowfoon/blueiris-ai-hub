@@ -102,8 +102,14 @@ jobs:
           echo "Verifying Mute Bot..."
           docker run --rm $IMAGE python3 -c "import mute_bot; print('Mute Bot OK')"
           
-          echo "Verifying BI Monitor..."
-          docker run --rm $IMAGE python3 -c "import bi_monitor; print('BI Monitor OK')"
+          echo "Verifying BI Exporter..."
+          docker run --rm $IMAGE python3 -c "import bi_exporter; print('BI Exporter OK')"
+
+          echo "Verifying BI Queue Monitor..."
+          docker run --rm $IMAGE python3 -c "import bi_queue_monitor; print('BI Queue Monitor OK')"
+
+          echo "Verifying BI Downloader..."
+          docker run --rm $IMAGE python3 -c "import bi_downloader; print('BI Downloader OK')"
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master

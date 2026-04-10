@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
+from bi_export_shared import EXPORT_REQUEST_QUEUE
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -621,7 +622,11 @@ def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
 
 
 def _bi_protocol_hash(s: str) -> str:
-    """MD5 hex digest required by the Blue Iris JSON API (protocol interop only)."""
+    """
+    Blue Iris requires an MD5 digest of `user:session:password` for JSON API
+    login. This is protocol interoperability, not password storage.
+    """
+    # Blue Iris mandates MD5 here; changing the algorithm would break auth.
     return hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
@@ -656,7 +661,7 @@ def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
 
 def request_bi_export(config, output_path, tag, timeout=300):
     """
-    Queue a BI export request to the bi_monitor service and block until done.
+    Queue a BI export request to the staged BI exporter service and block until done.
     Returns True on success, False on failure.
     """
     request_id = str(uuid.uuid4())
@@ -714,7 +719,7 @@ def request_bi_export(config, output_path, tag, timeout=300):
         "delete_after":     config.get("delete_after_send") == 1,
         "queued_at":        time.time(),
     })
-    r.rpush("bi:requests", payload)
+    r.rpush(EXPORT_REQUEST_QUEUE, payload)
     logging.info(f"{tag} BI export request queued (id={request_id})")
 
     result_key = f"bi:result:{request_id}"
