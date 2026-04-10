@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import json
 import re
@@ -1095,7 +1096,8 @@ def webhook(config_id):
 
     bvr = request.form.get('bvr', '').strip()
     if bvr:
-        dedup_key = f"clip_dedup:{bvr}"
+        bucket = int(time.time()) // 30
+        dedup_key = f"clip_dedup:{bvr}:{bucket}"
         if not r.set(dedup_key, 1, nx=True, ex=30):
             app.logger.info(f"{tag} Duplicate webhook for clip {bvr} — skipping.")
             return jsonify({"status": "duplicate", "camera": config['name']}), 200
