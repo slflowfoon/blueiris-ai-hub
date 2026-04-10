@@ -33,6 +33,7 @@ DOWNLOAD_TIMEOUT       = 60    # Max seconds for the final file-ready check
 RECOVERY_PAUSE         = 15
 BLPOP_BLOCK_TIMEOUT    = 5
 QUEUE_PROGRESS_LOG_INTERVAL = 15
+MONITOR_LOOP_IDLE_TIMEOUT   = 1
 
 # =============================================================================
 # Logging
@@ -128,15 +129,17 @@ def bi_wait_for_queue_completion(sess, base_url, sid, target_path, tag):
         except Exception as e:
             logging.warning(f"{tag} Error polling export queue: {e}")
 
-        if elapsed < 20:
-            sleep_for = 8
-        elif elapsed < 50:
-            sleep_for = 4
-        else:
-            sleep_for = 2
-
-        time.sleep(sleep_for)
+        time.sleep(bi_queue_poll_interval(elapsed))
     return False
+
+
+def bi_queue_poll_interval(elapsed):
+    """Use a slower poll cadence early, then speed up near expected completion."""
+    if elapsed < 20:
+        return 8
+    if elapsed < 50:
+        return 4
+    return 2
 
 
 def bi_get_export_queue(sess, base_url, sid):
@@ -248,14 +251,8 @@ def _invalidate_session(bi_url, bi_user):
 
 
 # =============================================================================
-# Core export logic
-# =============================================================================
-
-def _do_export(req, tag):
-    """
-    Execute a single BI export request end-to-end.
-    Returns (bool, str): (Success status, Error message or None)
-    """
+def _prepare_export(req, tag):
+    """Submit the BI export and return active-job metadata."""
     bi_url         = req["bi_url"]
     bi_user        = req["bi_user"]
     bi_pass        = req["bi_pass"]
@@ -267,18 +264,9 @@ def _do_export(req, tag):
     restart_token  = req.get("bi_restart_token", "")
     recovery_depth = req.get("_recovery_depth", 0)
 
-    def _try_recovery(reason):
-        if recovery_depth >= 1:
-            logging.warning(f"{tag} Recovery already attempted -- not retrying again")
-            return None
-        if trigger_bi_recovery(restart_url, restart_token, tag):
-            _invalidate_session(bi_url, bi_user)
-            return _do_export({**req, "_recovery_depth": recovery_depth + 1}, tag)
-        return None
-
     sess, sid = _get_session(bi_url, bi_user, bi_pass, tag)
     if not sid:
-        return False, "BI login failed"
+        return None, "BI login failed"
 
     # 1. Resolve clip details
     clip_path = req.get("clip_path")
@@ -334,70 +322,199 @@ def _do_export(req, tag):
                 time.sleep(2)
                 continue
             
-            return False, f"BI export command failed: {res.get('result')}"
+            return None, f"BI export command failed: {res.get('result')}"
 
         if not target_path or not relative_uri:
-            return False, "missing path/uri in BI response"
+            return None, "missing path/uri in BI response"
 
-        # 3. Wait for disappearance from active queue
-        if not bi_wait_for_queue_completion(sess, bi_url, sid, target_path, tag):
-            result = _try_recovery("queue timeout")
-            if result is not None:
-                return result
-            return False, "timed out waiting for BI queue"
-
-        # 4. Download with final readiness check
-        mp4_url = f"{bi_url.rstrip('/')}/clips/{relative_uri}?dl=1&session={sid}"
-        downloaded = False
-        dl_start = time.time()
-        
-        while time.time() - dl_start < DOWNLOAD_TIMEOUT:
-            attempt_elapsed = time.time() - dl_start
-            try:
-                with sess.get(mp4_url, stream=True, timeout=60) as dl:
-                    if dl.status_code == 404:
-                        if attempt_elapsed >= 50:
-                            logging.error(f"{tag} Persistent 404 after {attempt_elapsed:.1f}s")
-                            break
-                        time.sleep(2)
-                        continue
-                    
-                    cl = int(dl.headers.get("Content-Length", "0") or "0")
-                    if (dl.status_code == 503) or (dl.status_code == 200 and cl < 1000):
-                        time.sleep(2)
-                        continue
-                    
-                    dl.raise_for_status()
-                    with open(output_path, "wb") as f:
-                        for chunk in dl.iter_content(8192):
-                            f.write(chunk)
-                    
-                    final_size = os.path.getsize(output_path)
-                    if final_size > 1024:
-                        logging.info(
-                            f"{tag} Download complete elapsed={attempt_elapsed:.1f}s size={final_size}"
-                        )
-                        downloaded = True
-                        break
-                    time.sleep(2)
-            except Exception as e:
-                logging.warning(f"{tag} Download error: {e}")
-                time.sleep(2)
-
-        if not downloaded:
-            if target_path:
-                bi_delete_clip(sess, bi_url, sid, target_path, tag)
-            return False, "download failed (file not ready)"
-
-        # 5. Cleanup
-        if delete_after:
-            bi_delete_clip(sess, bi_url, sid, target_path, tag)
-
-        return True, None
+        now = time.time()
+        return {
+            "req": req,
+            "tag": tag,
+            "sess": sess,
+            "sid": sid,
+            "bi_url": bi_url,
+            "bi_user": bi_user,
+            "bi_pass": bi_pass,
+            "output_path": output_path,
+            "target_path": target_path,
+            "relative_uri": relative_uri,
+            "delete_after": delete_after,
+            "restart_url": restart_url,
+            "restart_token": restart_token,
+            "recovery_depth": recovery_depth,
+            "monitor_started_at": now,
+            "next_poll_at": now + bi_queue_poll_interval(0),
+            "last_progress_log": 0,
+        }, None
 
     except Exception as e:
         logging.error(f"{tag} Internal monitor error: {e}")
-        return False, str(e)
+        return None, str(e)
+
+
+def _download_export(job):
+    """Download a completed BI export and clean up the clipboard clip."""
+    tag = job["tag"]
+    sess = job["sess"]
+    sid = job["sid"]
+    bi_url = job["bi_url"]
+    output_path = job["output_path"]
+    target_path = job["target_path"]
+    mp4_url = f"{bi_url.rstrip('/')}/clips/{job['relative_uri']}?dl=1&session={sid}"
+    downloaded = False
+    dl_start = time.time()
+
+    while time.time() - dl_start < DOWNLOAD_TIMEOUT:
+        attempt_elapsed = time.time() - dl_start
+        try:
+            with sess.get(mp4_url, stream=True, timeout=60) as dl:
+                if dl.status_code == 404:
+                    if attempt_elapsed >= 50:
+                        logging.error(f"{tag} Persistent 404 after {attempt_elapsed:.1f}s")
+                        break
+                    time.sleep(2)
+                    continue
+
+                cl = int(dl.headers.get("Content-Length", "0") or "0")
+                if (dl.status_code == 503) or (dl.status_code == 200 and cl < 1000):
+                    time.sleep(2)
+                    continue
+
+                dl.raise_for_status()
+                with open(output_path, "wb") as f:
+                    for chunk in dl.iter_content(8192):
+                        f.write(chunk)
+
+                final_size = os.path.getsize(output_path)
+                if final_size > 1024:
+                    logging.info(
+                        f"{tag} Download complete elapsed={attempt_elapsed:.1f}s size={final_size}"
+                    )
+                    downloaded = True
+                    break
+                time.sleep(2)
+        except Exception as e:
+            logging.warning(f"{tag} Download error: {e}")
+            time.sleep(2)
+
+    if not downloaded:
+        bi_delete_clip(sess, bi_url, sid, target_path, tag)
+        return False, "download failed (file not ready)"
+
+    if job["delete_after"]:
+        bi_delete_clip(sess, bi_url, sid, target_path, tag)
+
+    return True, None
+
+
+def _recover_or_fail(job):
+    """Attempt one BI recovery cycle for a stuck export, otherwise fail it."""
+    tag = job["tag"]
+    req = job["req"]
+    if job["recovery_depth"] >= 1:
+        logging.warning(f"{tag} Recovery already attempted -- not retrying again")
+        return None, "timed out waiting for BI queue"
+
+    if not trigger_bi_recovery(job["restart_url"], job["restart_token"], tag):
+        return None, "timed out waiting for BI queue"
+
+    _invalidate_session(job["bi_url"], job["bi_user"])
+    retry_req = {**req, "_recovery_depth": job["recovery_depth"] + 1}
+    return _prepare_export(retry_req, tag)
+
+
+def _write_result(request_id, output_path, ok, error_msg=None):
+    result_key  = f"bi:result:{request_id}"
+    result = {
+        "ok": ok,
+        "path": output_path if ok else None,
+        "error": error_msg,
+    }
+    r.rpush(result_key, json.dumps(result))
+    r.expire(result_key, RESULT_KEY_TTL)
+
+
+def _process_active_exports(active_jobs):
+    """Poll shared BI export queues and finish jobs whose exports have completed."""
+    if not active_jobs:
+        return
+
+    now = time.time()
+    jobs_by_session = {}
+    for request_id, job in active_jobs.items():
+        if now >= job["next_poll_at"]:
+            key = (job["bi_url"], job["bi_user"], job["sid"])
+            jobs_by_session.setdefault(key, []).append((request_id, job))
+
+    for _session_key, jobs in jobs_by_session.items():
+        first_job = jobs[0][1]
+        try:
+            active_exports = bi_get_export_queue(first_job["sess"], first_job["bi_url"], first_job["sid"])
+            active_paths = {item.get("path") for item in active_exports if item.get("path")}
+        except Exception as e:
+            logging.warning(f"{first_job['tag']} Error polling export queue: {e}")
+            for _request_id, job in jobs:
+                elapsed = now - job["monitor_started_at"]
+                job["next_poll_at"] = now + bi_queue_poll_interval(elapsed)
+            continue
+
+        for request_id, job in jobs:
+            elapsed = now - job["monitor_started_at"]
+            if job["target_path"] not in active_paths:
+                logging.info(f"{job['tag']} Export {job['target_path']} completed after {elapsed:.1f}s (left queue).")
+                ok, error_msg = _download_export(job)
+                _write_result(request_id, job["output_path"], ok, error_msg)
+                active_jobs.pop(request_id, None)
+                continue
+
+            if elapsed >= EXPORT_QUEUE_TIMEOUT:
+                replacement_job, error_msg = _recover_or_fail(job)
+                if replacement_job:
+                    active_jobs[request_id] = replacement_job
+                else:
+                    _write_result(request_id, job["output_path"], False, error_msg)
+                    active_jobs.pop(request_id, None)
+                continue
+
+            if (elapsed - job["last_progress_log"]) >= QUEUE_PROGRESS_LOG_INTERVAL:
+                logging.info(
+                    f"{job['tag']} Export still in progress after {elapsed:.1f}s "
+                    f"(queue size: {len(active_exports)})"
+                )
+                job["last_progress_log"] = elapsed
+
+            job["next_poll_at"] = now + bi_queue_poll_interval(elapsed)
+
+
+# =============================================================================
+# Core export logic
+# =============================================================================
+
+def _do_export(req, tag):
+    """
+    Execute a single BI export request end-to-end.
+    Returns (bool, str): (Success status, Error message or None)
+    """
+    job, error_msg = _prepare_export(req, tag)
+    if not job:
+        return False, error_msg
+
+    if not bi_wait_for_queue_completion(job["sess"], job["bi_url"], job["sid"], job["target_path"], tag):
+        replacement_job, recovery_error = _recover_or_fail(job)
+        if replacement_job:
+            if not bi_wait_for_queue_completion(
+                replacement_job["sess"],
+                replacement_job["bi_url"],
+                replacement_job["sid"],
+                replacement_job["target_path"],
+                tag,
+            ):
+                return False, "timed out waiting for BI queue"
+            return _download_export(replacement_job)
+        return False, recovery_error
+
+    return _download_export(job)
 
 
 # =============================================================================
@@ -412,26 +529,42 @@ def _process_request(raw: bytes):
     request_id  = req.get("request_id", "unknown")
     config_name = req.get("config_name", "?")
     tag         = f"[{config_name}][{request_id[:8]}]"
-    result_key  = f"bi:result:{request_id}"
     queued_at = req.get("queued_at", 0)
     if queued_at and (time.time() - queued_at) > STALE_REQUEST_AGE:
-        r.rpush(result_key, json.dumps({"ok": False, "error": "stale request"}))
-        r.expire(result_key, RESULT_KEY_TTL)
+        _write_result(request_id, req.get("output_path"), False, "stale request")
         return
     logging.info(f"{tag} Processing BI export request")
     try:
         ok, error_msg = _do_export(req, tag)
-        result = {
-            "ok": ok,
-            "path": req.get("output_path") if ok else None,
-            "error": error_msg
-        }
     except Exception as e:
         logging.error(f"{tag} Unhandled error: {e}")
-        result = {"ok": False, "error": str(e)}
+        ok, error_msg = False, str(e)
 
-    r.rpush(result_key, json.dumps(result))
-    r.expire(result_key, RESULT_KEY_TTL)
+    _write_result(request_id, req.get("output_path"), ok, error_msg)
+
+
+def _enqueue_export_request(raw: bytes, active_jobs):
+    """Move a queued BI request into the active export-monitor set."""
+    try:
+        req = json.loads(raw)
+    except Exception:
+        return
+
+    request_id = req.get("request_id", "unknown")
+    tag = f"[{req.get('config_name', '?')}][{request_id[:8]}]"
+    queued_at = req.get("queued_at", 0)
+    if queued_at and (time.time() - queued_at) > STALE_REQUEST_AGE:
+        _write_result(request_id, req.get("output_path"), False, "stale request")
+        return
+
+    logging.info(f"{tag} Processing BI export request")
+    job, error_msg = _prepare_export(req, tag)
+    if not job:
+        _write_result(request_id, req.get("output_path"), False, error_msg)
+        return
+
+    logging.info(f"{tag} Export queued as {job['target_path']}; awaiting shared queue monitor")
+    active_jobs[request_id] = job
 
 
 # =============================================================================
@@ -441,10 +574,13 @@ def _process_request(raw: bytes):
 def run_monitor(keep_running=None):
     """Blocking loop that waits for and processes requests."""
     logging.info("[bi_monitor] Waiting for requests on bi:requests")
-    while keep_running is None or keep_running():
-        item = r.blpop(REQUEST_QUEUE, timeout=BLPOP_BLOCK_TIMEOUT)
+    active_jobs = {}
+    while (keep_running is None or keep_running()) or active_jobs:
+        timeout = MONITOR_LOOP_IDLE_TIMEOUT if active_jobs else BLPOP_BLOCK_TIMEOUT
+        item = r.blpop(REQUEST_QUEUE, timeout=timeout)
         if item:
-            _process_request(item[1])
+            _enqueue_export_request(item[1], active_jobs)
+        _process_active_exports(active_jobs)
 
 
 def main():

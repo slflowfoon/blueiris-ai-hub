@@ -106,8 +106,14 @@ class TestRunMonitorLoop:
         def keep_going():
             return should_run
 
-        monkeypatch.setattr(bi_monitor, "_process_request", lambda raw: processed.append(json.loads(raw)))
+        monkeypatch.setattr(
+            bi_monitor,
+            "_enqueue_export_request",
+            lambda raw, active_jobs: processed.append(json.loads(raw)),
+        )
+        monkeypatch.setattr(bi_monitor, "_process_active_exports", lambda active_jobs: None)
         monkeypatch.setattr(bi_monitor, "BLPOP_BLOCK_TIMEOUT", 1)
+        monkeypatch.setattr(bi_monitor, "MONITOR_LOOP_IDLE_TIMEOUT", 1)
 
         # Pass the kill switch to the monitor
         t = threading.Thread(target=bi_monitor.run_monitor, args=(keep_going,), daemon=True)
@@ -208,8 +214,8 @@ class TestPersistent404FastFail:
         monkeypatch.setattr(bi_monitor, "bi_delete_clip", lambda *a, **kw: None)
 
         # Advance time across loop checks so the persistent 404 path exits.
-        timeline = iter([1000, 1000, 1061])
-        monkeypatch.setattr(time, "time", lambda: next(timeline, 1061))
+        timeline = iter([1000, 1001, 1002, 1002, 1002, 1063])
+        monkeypatch.setattr(time, "time", lambda: next(timeline, 1063))
         monkeypatch.setattr(time, "sleep", lambda _: None)
 
         req = _push_request()
@@ -231,6 +237,45 @@ class TestQueueResolution:
 
         assert target_path == "@new"
         assert relative_uri == "Clipboard/new.mp4"
+
+
+class TestActiveExportProcessing:
+    def test_completed_export_is_downloaded_and_result_written(self, monkeypatch):
+        request_id = str(uuid.uuid4())
+        active_jobs = {
+            request_id: {
+                "tag": "[TestCam][abcd1234]",
+                "sess": object(),
+                "sid": "sid",
+                "bi_url": "http://192.168.1.1:81",
+                "bi_user": "admin",
+                "output_path": "/tmp/test_out.mp4",
+                "target_path": "@done",
+                "relative_uri": "Clipboard/done.mp4",
+                "delete_after": False,
+                "restart_url": "",
+                "restart_token": "",
+                "recovery_depth": 0,
+                "monitor_started_at": time.time() - 12,
+                "next_poll_at": 0,
+                "last_progress_log": 0,
+                "req": {"request_id": request_id},
+            }
+        }
+        results = []
+
+        monkeypatch.setattr(bi_monitor, "bi_get_export_queue", lambda *a, **kw: [])
+        monkeypatch.setattr(bi_monitor, "_download_export", lambda job: (True, None))
+        monkeypatch.setattr(
+            bi_monitor,
+            "_write_result",
+            lambda rid, path, ok, err=None: results.append((rid, path, ok, err)),
+        )
+
+        bi_monitor._process_active_exports(active_jobs)
+
+        assert request_id not in active_jobs
+        assert results == [(request_id, "/tmp/test_out.mp4", True, None)]
 
     def test_handles_single_object_response(self):
         target_path, relative_uri = bi_monitor.bi_resolve_export_target(
