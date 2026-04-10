@@ -304,7 +304,7 @@ def analyze_video_gemini(config, video_path, prompt):
                     if resp.status_code == 200:
                         r.set(f'gemini_key_idx:{config_id}', (key_i + 1) % len(keys))
                         result = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        logging.info(f"{tag} Video analysis result ({model}): {result}")
+                        logging.info(f"{tag} Video analysis succeeded with {model}")
                         return result
                     elif resp.status_code == 429:
                         continue
