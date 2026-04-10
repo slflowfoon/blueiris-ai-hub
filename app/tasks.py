@@ -66,6 +66,17 @@ CAPTION_PROMPTS = {
 # Helpers
 # =============================================================================
 
+def _safe_request_error(exc):
+    """
+    Summarise request failures without logging secrets from URLs, headers, or
+    provider error messages.
+    """
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"{type(exc).__name__} (status {response.status_code})"
+    return type(exc).__name__
+
+
 def get_api_keys(config):
     raw = config.get('gemini_key', '')
     return [k.strip() for k in raw.split(',') if k.strip()]
@@ -205,10 +216,10 @@ def analyze_image_gemini(config, encoded_image, prompt):
                 logging.warning(f"{tag} Rate limited: key {key_i + 1}, {model}")
                 continue
             else:
-                logging.warning(f"{tag} Gemini {model} error {resp.status_code}: {resp.text[:120]}")
+                logging.warning(f"{tag} Gemini {model} error {resp.status_code}")
                 continue
         except Exception as e:
-            logging.error(f"{tag} Gemini request error: {e}")
+            logging.error(f"{tag} Gemini request error: {_safe_request_error(e)}")
             continue
     return None
 
@@ -252,7 +263,7 @@ def analyze_video_gemini(config, video_path, prompt):
                 )
 
             if upload_resp.status_code not in (200, 201):
-                logging.warning(f"{tag} Upload failed: {upload_resp.status_code} {upload_resp.text[:100]}")
+                logging.warning(f"{tag} Upload failed with status {upload_resp.status_code}")
                 continue
 
             file_info = upload_resp.json().get('file', {})
@@ -264,7 +275,7 @@ def analyze_video_gemini(config, video_path, prompt):
                 continue
 
             # Poll until ACTIVE
-            logging.info(f"{tag} Uploaded: {file_uri}. Polling for ACTIVE state...")
+            logging.info(f"{tag} Gemini upload accepted. Polling for ACTIVE state...")
             active = False
             for _ in range(20):
                 state_resp = requests.get(f"{GEMINI_API_BASE}/{file_name}?key={key}", timeout=10)
@@ -301,11 +312,11 @@ def analyze_video_gemini(config, video_path, prompt):
                         logging.warning(f"{tag} Video analysis {model} error {resp.status_code}")
                         continue
                 except Exception as e:
-                    logging.error(f"{tag} Video analysis error: {e}")
+                    logging.error(f"{tag} Video analysis error: {_safe_request_error(e)}")
                     continue
 
         except Exception as e:
-            logging.error(f"{tag} Gemini video error: {e}")
+            logging.error(f"{tag} Gemini video error: {_safe_request_error(e)}")
         finally:
             if file_name:
                 try:
@@ -343,7 +354,7 @@ def analyze_image_grok(config, encoded_image, prompt):
             return resp.json()["choices"][0]["message"]["content"].strip()
         logging.warning(f"{tag} Grok error {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
-        logging.error(f"{tag} Grok error: {e}")
+        logging.error(f"{tag} Grok error: {_safe_request_error(e)}")
     return None
 
 
@@ -370,7 +381,7 @@ def analyze_image_groq(config, encoded_image, prompt):
             return resp.json()["choices"][0]["message"]["content"].strip()
         logging.warning(f"{tag} Groq error {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
-        logging.error(f"{tag} Groq error: {e}")
+        logging.error(f"{tag} Groq error: {_safe_request_error(e)}")
     return None
 
 
