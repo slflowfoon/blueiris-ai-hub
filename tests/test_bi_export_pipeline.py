@@ -52,6 +52,14 @@ class TestExporter:
     def setup_method(self):
         _clear_pipeline_state()
 
+    def test_stale_request_is_rejected(self):
+        payload = _request_payload(queued_at=time.time() - (bi_export_shared.STALE_REQUEST_AGE + 60))
+
+        bi_exporter._process_request(json.dumps(payload).encode())
+
+        result = _r.blpop(bi_export_shared.result_key(payload["request_id"]), timeout=1)
+        assert json.loads(result[1])["ok"] is False
+
     def test_process_request_stores_submitted_job(self, monkeypatch):
         payload = _request_payload()
 
@@ -90,6 +98,15 @@ class TestExporter:
         assert stored["status"] == "submitted"
         assert stored["target_path"] == "@queued"
         assert _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, payload["request_id"])
+
+    def test_result_key_has_ttl_on_failure(self, monkeypatch):
+        payload = _request_payload()
+        monkeypatch.setattr(bi_exporter, "_prepare_export", lambda req, tag: (None, "export failed"))
+
+        bi_exporter._process_request(json.dumps(payload).encode())
+
+        ttl = _r.ttl(bi_export_shared.result_key(payload["request_id"]))
+        assert 0 < ttl <= bi_export_shared.RESULT_KEY_TTL
 
 
 class TestQueueMonitor:
@@ -241,3 +258,29 @@ class TestDownloader:
         result = _r.blpop(bi_export_shared.result_key(job["request_id"]), timeout=1)
         assert stored["status"] == "downloaded"
         assert json.loads(result[1])["ok"] is True
+
+
+class TestSharedSessionCache:
+    def setup_method(self):
+        _clear_pipeline_state()
+        bi_export_shared._session_cache.clear()
+        _r.delete(bi_export_shared.session_key("http://bi:81", "admin"))
+
+    def test_shared_session_reused_via_redis(self, monkeypatch):
+        import unittest.mock as mock
+
+        fake_sess = mock.MagicMock()
+        fake_sess.post.return_value = mock.MagicMock(
+            status_code=200,
+            json=lambda: {"result": "success"},
+        )
+
+        monkeypatch.setattr(bi_export_shared.requests, "Session", lambda: fake_sess)
+        monkeypatch.setattr(bi_export_shared, "bi_login", lambda *args, **kwargs: "shared-sid")
+
+        _sess1, sid1 = bi_export_shared.get_session("http://bi:81", "admin", "pw", "[T]")
+        bi_export_shared._session_cache.clear()
+        _sess2, sid2 = bi_export_shared.get_session("http://bi:81", "admin", "pw", "[T]")
+
+        assert sid1 == "shared-sid"
+        assert sid2 == "shared-sid"
