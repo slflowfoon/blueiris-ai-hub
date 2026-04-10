@@ -10,6 +10,7 @@ import hashlib
 import subprocess
 import redis
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
@@ -493,6 +494,19 @@ def replace_telegram_media(config, media_path, caption):
         logging.error(f"{tag} Replace media error: {e}")
 
 
+def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
+    """
+    Prepare Telegram-friendly media while Gemini analyzes the raw export.
+    """
+    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
+        replace_telegram_media(config, optimised_mp4, caption)
+        return optimised_mp4
+
+    logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
+    replace_telegram_media(config, raw_mp4, caption)
+    return raw_mp4
+
+
 # =============================================================================
 # Blue Iris helpers
 # =============================================================================
@@ -682,14 +696,25 @@ def process_alert(image_path, config):
                 success = request_bi_export(config, raw_mp4, tag)
 
                 if success:
-                    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
-                        replace_telegram_media(config, optimised_mp4, still_caption)
-                    else:
-                        logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
-                        replace_telegram_media(config, raw_mp4, still_caption)
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        delivery_future = executor.submit(
+                            deliver_video_to_telegram,
+                            config,
+                            raw_mp4,
+                            optimised_mp4,
+                            still_caption,
+                            tag,
+                        )
+                        video_caption_future = executor.submit(
+                            analyze_video_gemini,
+                            config,
+                            raw_mp4,
+                            prompt,
+                        )
 
-                    # Now analyse video with Gemini
-                    video_caption = analyze_video_gemini(config, raw_mp4, prompt)
+                        delivery_future.result()
+                        video_caption = video_caption_future.result()
+
                     if video_caption:
                         update_telegram_caption(config, video_caption)
                     else:

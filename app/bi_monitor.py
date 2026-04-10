@@ -32,6 +32,7 @@ EXPORT_QUEUE_TIMEOUT   = 180   # Max seconds to wait for item to leave queue
 DOWNLOAD_TIMEOUT       = 60    # Max seconds for the final file-ready check
 RECOVERY_PAUSE         = 15
 BLPOP_BLOCK_TIMEOUT    = 5
+QUEUE_PROGRESS_LOG_INTERVAL = 15
 
 # =============================================================================
 # Logging
@@ -105,22 +106,36 @@ def bi_wait_for_queue_completion(sess, base_url, sid, target_path, tag):
     """Polls the export queue. Returns True when target_path is no longer present."""
     json_url = urljoin(base_url.rstrip("/") + "/", "json?_export")
     start = time.time()
+    last_progress_log = 0
     logging.info(f"{tag} Monitoring export queue for completion of {target_path}...")
     
     while time.time() - start < EXPORT_QUEUE_TIMEOUT:
+        elapsed = time.time() - start
         try:
             resp = sess.post(json_url, json={"cmd": "export", "session": sid}, timeout=10)
             active_exports = resp.json().get("data", [])
             
             if not any(item.get("path") == target_path for item in active_exports):
-                logging.info(f"{tag} Export {target_path} completed (left queue).")
+                logging.info(f"{tag} Export {target_path} completed after {elapsed:.1f}s (left queue).")
                 return True
-                
-            logging.info(f"{tag} Export still in progress (queue size: {len(active_exports)})")
+
+            if (elapsed - last_progress_log) >= QUEUE_PROGRESS_LOG_INTERVAL:
+                logging.info(
+                    f"{tag} Export still in progress after {elapsed:.1f}s "
+                    f"(queue size: {len(active_exports)})"
+                )
+                last_progress_log = elapsed
         except Exception as e:
             logging.warning(f"{tag} Error polling export queue: {e}")
-            
-        time.sleep(2)
+
+        if elapsed < 20:
+            sleep_for = 8
+        elif elapsed < 50:
+            sleep_for = 4
+        else:
+            sleep_for = 2
+
+        time.sleep(sleep_for)
     return False
 
 
