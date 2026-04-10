@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Centralised Blue Iris API monitor - Queue Monitor Edition.
+Legacy compatibility Blue Iris monitor.
 
-Serialises all BI API calls and monitors the active export queue for 
-completion, eliminating clipboard contention and polling overhead.
+This module remains for compatibility with the existing test surface and
+one-shot export execution helpers. Production deployment now uses the staged
+`bi_exporter`, `bi_queue_monitor`, and `bi_downloader` services.
 """
 
 import sys
@@ -584,7 +585,7 @@ def run_monitor(keep_running=None):
 
 
 def main():
-    logging.info("[bi_monitor] Service starting (Queue Monitor Mode)...")
+    logging.warning("[bi_monitor] Legacy monitor mode is deprecated; use staged BI services instead")
     while True:
         try:
             run_monitor()

@@ -46,9 +46,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
 
-  bi_monitor:
+  bi_exporter:
     image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
-    command: python3 bi_monitor.py
+    command: python3 bi_exporter.py
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -58,5 +58,32 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
-    # Single replica is intentional — serialises all BI API calls to eliminate
-    # clipboard contention. Do NOT scale this service.
+    # Single replica is intentional — export submission must stay ordered.
+
+  bi_queue_monitor:
+    image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 bi_queue_monitor.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    # Single replica is intentional — one shared queue poller per BI instance.
+
+  bi_downloader:
+    image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 bi_downloader.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    # Keep single replica until per-job file path ownership is expanded.
