@@ -34,6 +34,7 @@ from bi_export_shared import (
     setup_service_logger,
     write_result,
 )
+from service_health import start_heartbeat_thread
 
 
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_watchdog.log")
@@ -208,6 +209,7 @@ def _run_once():
 
 
 def run_watchdog():
+    start_heartbeat_thread("bi_watchdog")
     logger.info("Monitoring for stranded BI export and delivery jobs")
     while True:
         _run_once()

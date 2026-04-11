@@ -27,6 +27,7 @@ from bi_export_shared import (
     trigger_bi_recovery,
     queue_retry,
 )
+from service_health import start_heartbeat_thread
 
 
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_downloader.log")
@@ -182,6 +183,7 @@ def _process_download_request(request_id):
 
 
 def run_downloader():
+    start_heartbeat_thread("bi_downloader")
     logger.info("Waiting for completed exports")
     while True:
         item = r.blpop(DOWNLOAD_REQUEST_QUEUE, timeout=5)

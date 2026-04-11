@@ -37,6 +37,12 @@ The web UI will be available at `http://your-host:5000`.
 
 Redis now stores durable BI export job state, session reuse data, and queue coordination. The default Compose file persists this in the named Docker volume `redis_data`, so do not remove that volume unless you intentionally want to discard in-flight BI pipeline state.
 
+The default Compose file also configures Docker healthchecks:
+
+- `web` probes `http://localhost:5000/health`
+- `redis` uses `redis-cli ping`
+- background services use heartbeat files under `/app/data/health`
+
 ### 2. Add a camera configuration
 
 Open the web UI and click **+ New Configuration**. Fill in:
@@ -153,6 +159,25 @@ The default `docker-compose.yml` now enables Redis append-only persistence and m
 - `redis-server --appendonly yes --appendfsync everysec`
 
 That means normal container restarts and `docker compose down` / `up -d` cycles keep BI pipeline state intact. If you remove Docker volumes, you also remove Redis state and may orphan in-flight BI jobs.
+
+## Health and Status
+
+The hub now exposes:
+
+- `GET /health` — lightweight health probe for Docker healthchecks; returns `503` if Redis is unavailable
+- `GET /status` — operator-facing JSON with queue depths, stale BI job counts, and background service heartbeat freshness
+
+The Compose file also adds healthchecks for:
+
+- `redis`
+- `web`
+- `worker`
+- `mute_bot`
+- `bi_exporter`
+- `bi_queue_monitor`
+- `bi_downloader`
+- `bi_watchdog`
+- `video_delivery_worker`
 
 ## Architecture
 

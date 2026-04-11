@@ -27,6 +27,7 @@ from bi_export_shared import (
     setup_service_logger,
     write_result,
 )
+from service_health import start_heartbeat_thread
 
 
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_exporter.log")
@@ -204,6 +205,7 @@ def _process_request(raw):
 
 
 def run_exporter():
+    start_heartbeat_thread("bi_exporter")
     logger.info("Waiting for requests on bi:export:requests")
     while True:
         item = r.blpop(EXPORT_REQUEST_QUEUE, timeout=5)
