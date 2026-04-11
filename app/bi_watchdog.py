@@ -53,7 +53,14 @@ def _repair_job(job):
     transition_age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
 
     if status in {"submitted", "queued"} and not r.sismember(ACTIVE_EXPORT_SET, request_id):
-        log_job_event(logging.WARNING, f"{tag} watchdog reattaching active export", job, logger=logger)
+        log_job_event(
+            logging.WARNING,
+            f"{tag} watchdog reattaching active export",
+            job,
+            logger=logger,
+            phase="watchdog_reattach",
+            error_code="active_export_missing",
+        )
         r.sadd(ACTIVE_EXPORT_SET, request_id)
         job["next_poll_at"] = 0
         job["last_transition_at"] = now
@@ -67,7 +74,9 @@ def _repair_job(job):
                 f"{tag} watchdog retrying unacknowledged export",
                 job,
                 logger=logger,
+                phase="watchdog_export_retry",
                 age=f"{submitted_age:.1f}s",
+                error_code="queue_ack_timeout",
             )
             queue_retry(job, "watchdog: export acknowledgement stale")
         else:
@@ -86,7 +95,9 @@ def _repair_job(job):
                 f"{tag} watchdog retrying stale queued export",
                 job,
                 logger=logger,
+                phase="watchdog_queue_retry",
                 age=f"{submitted_age:.1f}s",
+                error_code="queue_timeout",
             )
             queue_retry(job, "watchdog: export queue stale")
         else:
@@ -104,8 +115,10 @@ def _repair_job(job):
             f"{tag} watchdog requeueing stale ready download",
             job,
             logger=logger,
+            phase="watchdog_download_requeue",
             age=f"{transition_age:.1f}s",
             download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
+            error_code="download_stale",
         )
         job["last_transition_at"] = now
         save_job(job)
@@ -118,7 +131,9 @@ def _repair_job(job):
             f"{tag} watchdog requeueing stalled export retry",
             job,
             logger=logger,
+            phase="watchdog_retry_requeue",
             age=f"{transition_age:.1f}s",
+            error_code="retry_queue_stale",
         )
         job["last_transition_at"] = now
         save_job(job)
@@ -133,8 +148,10 @@ def _repair_job(job):
                     f"{tag} watchdog requeueing stale delivery job",
                     job,
                     logger=logger,
+                    phase="watchdog_delivery_requeue",
                     age=f"{transition_age:.1f}s",
                     delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
+                    error_code="delivery_queue_stale",
                 )
                 mark_delivery_queued(job)
                 return
@@ -146,7 +163,9 @@ def _repair_job(job):
                         f"{tag} watchdog requeueing stuck delivery processing",
                         job,
                         logger=logger,
+                        phase="watchdog_delivery_processing_requeue",
                         age=f"{transition_age:.1f}s",
+                        error_code="delivery_processing_stale",
                     )
                     mark_delivery_queued(job)
                 else:

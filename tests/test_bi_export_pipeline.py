@@ -263,7 +263,7 @@ class TestDownloader:
             "recovery_attempts": 0,
         }
         bi_export_shared.save_job(job)
-        monkeypatch.setattr(bi_downloader, "_download_export", lambda current_job: (True, None))
+        monkeypatch.setattr(bi_downloader, "_download_export", lambda current_job: (True, None, 1.2, 2048))
 
         bi_downloader._process_download_request(job["request_id"])
 
@@ -295,7 +295,7 @@ class TestDownloader:
             "delivery_attempts": 0,
         }
         bi_export_shared.save_job(job)
-        monkeypatch.setattr(bi_downloader, "_download_export", lambda current_job: (True, None))
+        monkeypatch.setattr(bi_downloader, "_download_export", lambda current_job: (True, None, 1.2, 2048))
 
         bi_downloader._process_download_request(job["request_id"])
 
@@ -327,7 +327,7 @@ class TestDownloader:
         monkeypatch.setattr(
             bi_downloader,
             "_download_export",
-            lambda current_job: (False, "download failed (file not ready)"),
+            lambda current_job: (False, "download failed (file not ready)", None, None),
         )
         monkeypatch.setattr(bi_downloader, "trigger_bi_recovery", lambda *args, **kwargs: True)
 

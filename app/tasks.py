@@ -34,6 +34,24 @@ logger.addHandler(handler)
 def _resolve_logger(service_logger=None):
     return service_logger or logging
 
+
+def _format_log_fields(**fields):
+    ordered = []
+    for key in sorted(fields):
+        value = fields[key]
+        if value is None or value == "":
+            continue
+        ordered.append(f"{key}={value}")
+    return " ".join(ordered)
+
+
+def log_alert_event(level, tag, message, phase, error_code=None, **extra):
+    suffix = _format_log_fields(phase=phase, error_code=error_code, **extra)
+    line = f"{tag} {message}"
+    if suffix:
+        line = f"{line} | {suffix}"
+    logging.log(level, line)
+
 # --- REDIS ---
 redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
@@ -677,29 +695,92 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
             )
             if result is not None:
                 clip_path, offset, duration = result
-                logging.info(f"{tag} Pre-queue alert resolved: clip={clip_path}")
+                log_alert_event(
+                    logging.INFO,
+                    tag,
+                    "Pre-queue alert resolved",
+                    "prequeue_lookup",
+                    bi_instance=config["bi_url"],
+                    lookup_result="resolved",
+                    clip_path=clip_path,
+                    offset=offset,
+                    duration=duration,
+                )
             elif bvr_clip:
                 clip_path = bvr_clip
                 offset = _parse_offset_ms(trigger_filename)
                 duration = 30000
                 if offset is not None:
-                    logging.info(f"{tag} Alert not in alertlist — bvr fallback: clip={clip_path} offset={offset}")
+                    log_alert_event(
+                        logging.INFO,
+                        tag,
+                        "Alert not in alertlist; using bvr fallback",
+                        "prequeue_lookup",
+                        bi_instance=config["bi_url"],
+                        lookup_result="bvr_fallback",
+                        clip_path=clip_path,
+                        offset=offset,
+                        duration=duration,
+                    )
                 else:
-                    logging.warning(f"{tag} Alert not in alertlist and offset unparseable — skipping export")
+                    log_alert_event(
+                        logging.WARNING,
+                        tag,
+                        "Alert not in alertlist and offset unparseable; skipping export",
+                        "prequeue_lookup",
+                        error_code="offset_unparseable",
+                        bi_instance=config["bi_url"],
+                        lookup_result="skipped",
+                        clip_path=clip_path,
+                    )
                     return None
             else:
-                logging.warning(f"{tag} Alert not in BI alertlist at queue time -- skipping export")
+                log_alert_event(
+                    logging.WARNING,
+                    tag,
+                    "Alert not in BI alertlist at queue time; skipping export",
+                    "prequeue_lookup",
+                    error_code="alert_not_found",
+                    bi_instance=config["bi_url"],
+                    lookup_result="skipped",
+                )
                 return None
         except Exception as e:
-            logging.warning(f"{tag} Pre-queue BI lookup failed ({e})")
+            log_alert_event(
+                logging.WARNING,
+                tag,
+                "Pre-queue BI lookup failed",
+                "prequeue_lookup",
+                error_code="lookup_failed",
+                bi_instance=config.get("bi_url"),
+                error=_safe_request_error(e),
+            )
             if bvr_clip:
                 clip_path = bvr_clip
                 offset = _parse_offset_ms(trigger_filename)
                 duration = 30000
                 if offset is not None:
-                    logging.info(f"{tag} Using bvr fallback after lookup error: clip={clip_path} offset={offset}")
+                    log_alert_event(
+                        logging.INFO,
+                        tag,
+                        "Using bvr fallback after lookup error",
+                        "prequeue_lookup",
+                        bi_instance=config["bi_url"],
+                        lookup_result="bvr_fallback_after_error",
+                        clip_path=clip_path,
+                        offset=offset,
+                        duration=duration,
+                    )
                 else:
-                    logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing anyway")
+                    log_alert_event(
+                        logging.WARNING,
+                        tag,
+                        "bvr fallback unavailable (offset unparseable); queuing anyway",
+                        "prequeue_lookup",
+                        error_code="offset_unparseable",
+                        bi_instance=config.get("bi_url"),
+                        lookup_result="queue_without_clip",
+                    )
 
     return {
         "request_id":       request_id,
@@ -729,7 +810,13 @@ def queue_bi_export(config, output_path, tag, delivery_context=None):
 
     request_id = payload["request_id"]
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(payload))
-    logging.info(f"{tag} BI export request queued")
+    log_alert_event(
+        logging.INFO,
+        tag,
+        "BI export request queued",
+        "export_request_queued",
+        queue=EXPORT_REQUEST_QUEUE,
+    )
     return request_id
 
 
@@ -768,14 +855,18 @@ def process_alert(image_path, config):
     tag = f"[{config['name']}][{req_id}]"
     raw_mp4 = None
     optimised_mp4 = None
+    final_status = "unknown"
+    summary_error_code = None
     try:
-        logging.info(f"{tag} Processing alert...")
+        log_alert_event(logging.INFO, tag, "Processing alert...", "alert_processing_started")
 
         if is_muted(config):
-            logging.info(f"{tag} Muted — skipping.")
+            final_status = "muted"
+            log_alert_event(logging.INFO, tag, "Muted; skipping.", "alert_skipped", final_status=final_status)
             return
 
         if check_auto_mute(config):
+            final_status = "auto_muted"
             send_auto_mute_notification(config)
             return
 
@@ -826,16 +917,55 @@ def process_alert(image_path, config):
                 request_id = queue_bi_export(config, raw_mp4, tag, delivery_context=delivery_context)
 
                 if not request_id:
-                    logging.warning(f"{tag} Video export failed, keeping photo.")
+                    final_status = "photo_only"
+                    summary_error_code = "video_export_unavailable"
+                    log_alert_event(
+                        logging.WARNING,
+                        tag,
+                        "Video export failed, keeping photo.",
+                        "video_queue_result",
+                        error_code=summary_error_code,
+                        final_status=final_status,
+                    )
                 else:
-                    logging.info(f"{tag} Video export queued for asynchronous delivery")
+                    final_status = "still_sent_video_queued"
+                    log_alert_event(
+                        logging.INFO,
+                        tag,
+                        "Video export queued for asynchronous delivery",
+                        "video_queue_result",
+                        final_status=final_status,
+                    )
                     raw_mp4 = None
             else:
-                logging.warning(f"{tag} Send video enabled but BI credentials missing.")
+                final_status = "photo_only"
+                summary_error_code = "bi_credentials_missing"
+                log_alert_event(
+                    logging.WARNING,
+                    tag,
+                    "Send video enabled but BI credentials missing.",
+                    "video_queue_result",
+                    error_code=summary_error_code,
+                    final_status=final_status,
+                )
+        elif final_status == "unknown":
+            final_status = "photo_only"
 
     except Exception as e:
-        logging.error(f"{tag} Task failed: {e}")
+        final_status = "task_failed"
+        summary_error_code = "task_exception"
+        logging.error(f"{tag} Task failed: {_safe_request_error(e)}")
     finally:
+        log_alert_event(
+            logging.INFO,
+            tag,
+            "Alert processing summary",
+            "alert_summary",
+            error_code=summary_error_code,
+            final_status=final_status,
+            send_video=config.get('send_video') == 1,
+            trigger_filename=bool(config.get('trigger_filename')),
+        )
         for p in [image_path, raw_mp4, optimised_mp4]:
             if p and os.path.exists(p):
                 os.remove(p)

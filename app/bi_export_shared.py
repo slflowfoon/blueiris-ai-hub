@@ -8,8 +8,9 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from logging.handlers import RotatingFileHandler
 
 import redis
@@ -17,6 +18,8 @@ import requests
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+DB_FILE = os.path.join(DATA_DIR, "configs.db")
 
 EXPORT_REQUEST_QUEUE     = "bi:export:requests"
 DOWNLOAD_REQUEST_QUEUE   = "bi:download:requests"
@@ -43,6 +46,7 @@ DELIVERY_QUEUE_STALE_AGE = 45
 
 r = redis.from_url(REDIS_URL)
 _session_cache = {}
+_bi_instance_logging_cache = {"checked_at": 0.0, "enabled": True}
 INSTANCE_ID = os.getenv("HOSTNAME") or socket.gethostname()
 
 
@@ -96,6 +100,37 @@ def job_tag(job):
     return f"[{job.get('config_name', '?')}][{correlation_id[:8]}]"
 
 
+def bi_instance_label(bi_url):
+    parsed = urlparse((bi_url or "").strip())
+    return parsed.netloc or parsed.path or "unknown"
+
+
+def should_log_bi_instance():
+    now = time.time()
+    cached = _bi_instance_logging_cache
+    if (now - cached["checked_at"]) < 60:
+        return cached["enabled"]
+
+    enabled = True
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            count = conn.execute(
+                """
+                SELECT COUNT(DISTINCT TRIM(bi_url))
+                FROM configs
+                WHERE bi_url IS NOT NULL AND TRIM(bi_url) <> ''
+                """
+            ).fetchone()[0]
+            enabled = count > 1
+    except Exception:
+        # Fall back to logging the BI instance when config inspection is unavailable.
+        enabled = True
+
+    cached["checked_at"] = now
+    cached["enabled"] = enabled
+    return enabled
+
+
 def _job_log_fields(job=None, **extra):
     fields = {}
     fields.update({
@@ -114,6 +149,8 @@ def _job_log_fields(job=None, **extra):
             "download_attempt": job.get("download_attempts", 0),
             "delivery_attempt": job.get("delivery_attempts", 0),
         })
+        if job.get("bi_url") and should_log_bi_instance():
+            fields["bi_instance"] = bi_instance_label(job["bi_url"])
     fields.update({k: v for k, v in extra.items() if v is not None and v != ""})
     return fields
 

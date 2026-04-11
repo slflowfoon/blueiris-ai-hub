@@ -15,6 +15,7 @@ from bi_export_shared import (
     MAX_EXPORT_ATTEMPTS,
     MAX_RECOVERY_ATTEMPTS,
     QUEUE_PROGRESS_LOG_INTERVAL,
+    bi_instance_label,
     bi_get_export_queue,
     get_session,
     job_tag,
@@ -87,7 +88,8 @@ def _poll_active_exports():
             active_exports = bi_get_export_queue(sess, bi_url, sid)
         except Exception as exc:
             logger.warning(
-                f"{tag} export queue poll failed | bi_url={bi_url} error={safe_error_summary(exc)}"
+                f"{tag} export queue poll failed | bi_instance={bi_instance_label(bi_url)} "
+                f"phase=queue_poll error_code=queue_poll_failed error={safe_error_summary(exc)}"
             )
             continue
 
@@ -107,6 +109,7 @@ def _poll_active_exports():
                         f"{tag} export acknowledged",
                         job,
                         logger=logger,
+                        phase="queue_ack",
                         queue_size=queue_size,
                         target_path=job["target_path"],
                     )
@@ -117,6 +120,7 @@ def _poll_active_exports():
                         f"{tag} export in progress",
                         job,
                         logger=logger,
+                        phase="queue_progress",
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                         active_exports=len(request_ids),
@@ -139,6 +143,7 @@ def _poll_active_exports():
                     f"{tag} export ready for download",
                     job,
                     logger=logger,
+                    phase="ready_for_download",
                     elapsed=f"{elapsed:.1f}s",
                     queue_size=queue_size,
                     download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
@@ -152,8 +157,10 @@ def _poll_active_exports():
                         f"{tag} export acknowledgement timeout; retrying",
                         job,
                         logger=logger,
+                        phase="queue_ack_timeout",
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
+                        error_code="queue_ack_timeout",
                     )
                     queue_retry(job, "export not acknowledged by queue monitor")
                 else:
@@ -180,8 +187,10 @@ def _poll_active_exports():
                         f"{tag} export queue timeout; retrying after recovery",
                         job,
                         logger=logger,
+                        phase="queue_timeout",
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
+                        error_code="queue_timeout",
                     )
                     job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
                     queue_retry(job, "timed out waiting for BI queue")
@@ -196,8 +205,10 @@ def _poll_active_exports():
                         f"{tag} export failed waiting for queue",
                         job,
                         logger=logger,
+                        phase="queue_failed",
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
+                        error_code="queue_timeout",
                     )
 
 

@@ -472,7 +472,10 @@ HTML_TEMPLATE = r"""
         <div class="tab-pane fade" id="logs-pane">
             <div class="d-flex justify-content-between mb-2">
                 <h5>Live Logs (last 200 lines)</h5>
-                <div>
+                <div class="d-flex align-items-center gap-2">
+                    <select id="logSourceFilter" class="form-select form-select-sm" style="width:auto;">
+                        <option value="all">All sources</option>
+                    </select>
                     <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">🔄 Refresh</a>
                     <form action="{{ url_for('clear_logs') }}" method="POST" style="display:inline;">
                         <button class="btn btn-sm btn-outline-danger">🗑️ Clear</button>
@@ -664,7 +667,34 @@ const colors = [
     '#afeeee', '#ee82ee', '#98fb98'
 ];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
-function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const matches=[...l.matchAll(/\[([^\]]+)\]/g)];const key=matches.length?matches[matches.length-1][1]:'';html+=`<div style="color:${key?stringToColor(key):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
+function escapeHtml(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
+function logSource(line){const match=line.match(/^\[([^\]]+)\]/);return match?match[1]:'unknown';}
+function populateLogSourceFilter(lines){
+    const select=document.getElementById('logSourceFilter');
+    if(!select)return;
+    const current=select.value||'all';
+    const sources=[...new Set(lines.map(logSource).filter(Boolean))].sort();
+    select.innerHTML='<option value="all">All sources</option>'+sources.map(s=>`<option value="${s}">${s}</option>`).join('');
+    select.value=sources.includes(current)||current==='all'?current:'all';
+}
+function renderLogs(){
+    const v=document.getElementById('logViewer');
+    if(!v)return;
+    if(!v.dataset.rawLogs){v.dataset.rawLogs=v.innerText;}
+    const lines=v.dataset.rawLogs.split('\n').filter(l=>l.trim());
+    populateLogSourceFilter(lines);
+    const selected=(document.getElementById('logSourceFilter')||{}).value||'all';
+    let html='';
+    lines.forEach(l=>{
+        const source=logSource(l);
+        if(selected!=='all'&&source!==selected)return;
+        const matches=[...l.matchAll(/\[([^\]]+)\]/g)];
+        const key=matches.length?matches[matches.length-1][1]:'';
+        html+=`<div data-source="${source}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(l)}</div>`;
+    });
+    v.innerHTML=html;
+    v.scrollTop=v.scrollHeight;
+}
 const html=document.documentElement;
 function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('theme',t);document.getElementById('themeIcon').innerText=t==='dark'?'☀️':'🌙';}
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
@@ -699,7 +729,9 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(savedTab){const t=document.querySelector(`[data-bs-target="${savedTab}"]`);if(t)new bootstrap.Tab(t).show();}
     document.querySelectorAll('[data-bs-toggle="tab"]').forEach(el=>el.addEventListener('click',e=>localStorage.setItem('activeTab',e.target.getAttribute('data-bs-target'))));
     document.querySelector('[data-bs-target="#logs-pane"]').addEventListener('shown.bs.tab',()=>{const v=document.getElementById('logViewer');if(v)v.scrollTop=v.scrollHeight;});
-    colorizeLogs();
+    const logSourceFilter=document.getElementById('logSourceFilter');
+    if(logSourceFilter)logSourceFilter.addEventListener('change',renderLogs);
+    renderLogs();
     function relativeTime(ts){const diff=Math.floor((Date.now()-new Date(ts.replace(' ','T')))/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago';}
     document.querySelectorAll('.last-seen[data-ts]').forEach(el=>{el.textContent='Last triggered: '+relativeTime(el.dataset.ts);el.title=el.dataset.ts;});
     fetch('/api/check-update').then(r=>r.json()).then(d=>{

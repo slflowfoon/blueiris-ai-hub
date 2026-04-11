@@ -40,11 +40,13 @@ def _download_export(job):
     tag = job_tag(job)
     sess, sid = get_session(job["bi_url"], job["bi_user"], job["bi_pass"], tag)
     if not sid:
-        return False, "BI login failed"
+        return False, "BI login failed", None, None
 
     mp4_url = f"{job['bi_url'].rstrip('/')}/clips/{job['relative_uri']}?dl=1&session={sid}"
     downloaded = False
     dl_start = time.time()
+    final_size = None
+    success_elapsed = None
 
     while time.time() - dl_start < DOWNLOAD_TIMEOUT:
         attempt_elapsed = time.time() - dl_start
@@ -52,7 +54,15 @@ def _download_export(job):
             with sess.get(mp4_url, stream=True, timeout=60) as dl:
                 if dl.status_code == 404:
                     if attempt_elapsed >= 50:
-                        logging.error(f"{tag} Persistent 404 after {attempt_elapsed:.1f}s")
+                        log_job_event(
+                            logging.ERROR,
+                            f"{tag} persistent 404 while waiting for download",
+                            job,
+                            logger=logger,
+                            phase="download_wait",
+                            error_code="persistent_404",
+                            elapsed=f"{attempt_elapsed:.1f}s",
+                        )
                         break
                     time.sleep(2)
                     continue
@@ -69,15 +79,8 @@ def _download_export(job):
 
                 final_size = os.path.getsize(job["output_path"])
                 if final_size > 1024:
-                    log_job_event(
-                        logging.INFO,
-                        f"{tag} download complete",
-                        job,
-                        logger=logger,
-                        elapsed=f"{attempt_elapsed:.1f}s",
-                        size=final_size,
-                    )
                     downloaded = True
+                    success_elapsed = attempt_elapsed
                     break
                 time.sleep(2)
         except Exception as exc:
@@ -86,19 +89,21 @@ def _download_export(job):
                 f"{tag} download attempt failed",
                 job,
                 logger=logger,
+                phase="download_wait",
                 elapsed=f"{attempt_elapsed:.1f}s",
+                error_code="download_attempt_failed",
                 error=safe_error_summary(exc),
             )
             time.sleep(2)
 
     if not downloaded:
         bi_delete_clip(sess, job["bi_url"], sid, job["target_path"], tag)
-        return False, "download failed (file not ready)"
+        return False, "download failed (file not ready)", None, None
 
     if job.get("delete_after", True):
         bi_delete_clip(sess, job["bi_url"], sid, job["target_path"], tag)
 
-    return True, None
+    return True, None, success_elapsed, final_size
 
 
 def _process_download_request(request_id):
@@ -111,17 +116,29 @@ def _process_download_request(request_id):
     save_job(job)
     tag = job_tag(job)
 
-    ok, error_msg = _download_export(job)
+    ok, error_msg, wait_elapsed, final_size = _download_export(job)
     if ok:
         finish_job(job, True, None)
+        completed_job = load_job(job["request_id"]) or job
+        log_job_event(
+            logging.INFO,
+            f"{tag} download complete",
+            completed_job,
+            logger=logger,
+            phase="downloaded",
+            wait_elapsed=f"{wait_elapsed:.1f}s" if wait_elapsed is not None else None,
+            size=final_size,
+        )
         if job.get("delivery_context"):
-            mark_delivery_queued(load_job(job["request_id"]) or job)
+            queue_depth_before = r.llen(VIDEO_DELIVERY_QUEUE)
+            mark_delivery_queued(completed_job)
             log_job_event(
                 logging.INFO,
                 f"{tag} delivery queued after download",
                 load_job(job["request_id"]) or job,
                 logger=logger,
-                delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
+                phase="delivery_queued",
+                delivery_queue_depth=queue_depth_before + 1,
             )
         return
 
@@ -135,12 +152,23 @@ def _process_download_request(request_id):
             f"{tag} download failed; retrying export after recovery",
             job,
             logger=logger,
+            phase="download_retry",
             error=error_msg,
+            error_code="download_not_ready",
         )
         job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
         queue_retry(job, error_msg or "download failed")
         return
 
+    log_job_event(
+        logging.ERROR,
+        f"{tag} download failed",
+        job,
+        logger=logger,
+        phase="download_failed",
+        error=error_msg,
+        error_code="download_not_ready",
+    )
     finish_job(job, False, error_msg)
 
 
