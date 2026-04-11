@@ -1,9 +1,13 @@
 volumes:
   tmp_images:
+  redis_data:
 
 services:
   redis:
     image: redis:alpine
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
 
   web:
