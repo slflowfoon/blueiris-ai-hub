@@ -14,6 +14,7 @@ from bi_export_shared import (
     VIDEO_DELIVERY_QUEUE,
     finish_delivery,
     job_tag,
+    log_job_event,
     load_job,
     requeue_delivery,
     r,
@@ -73,6 +74,7 @@ def _process_delivery_request(request_id):
     job["delivery_status"] = "processing"
     job["last_transition_at"] = time.time()
     save_job(job)
+    log_job_event(logging.INFO, f"{tag} delivery processing started", job)
 
     if not os.path.exists(raw_mp4):
         finish_delivery(job, False, "downloaded video missing from disk")
@@ -87,6 +89,7 @@ def _process_delivery_request(request_id):
     )
     if not media_ok:
         if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
+            log_job_event(logging.WARNING, f"{tag} telegram media replace failed; retrying", job)
             requeue_delivery(job, "telegram media replace failed")
         else:
             finish_delivery(job, False, "telegram media replace failed")
@@ -102,6 +105,7 @@ def _process_delivery_request(request_id):
 
     _cleanup_paths(optimised_mp4, raw_mp4)
     finish_delivery(load_job(request_id) or job, True, None)
+    log_job_event(logging.INFO, f"{tag} delivery completed", load_job(request_id) or job)
 
 
 def run_video_delivery_worker():

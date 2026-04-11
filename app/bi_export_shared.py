@@ -73,6 +73,42 @@ def job_tag(job):
     return f"[{job.get('config_name', '?')}][{correlation_id[:8]}]"
 
 
+def _job_log_fields(job=None, **extra):
+    fields = {}
+    if job:
+        fields.update({
+            "camera": job.get("config_name", "?"),
+            "alert_id": (job.get("alert_request_id") or job.get("request_id") or "unknown")[:8],
+            "job_id": (job.get("request_id") or "unknown")[:8],
+            "state": job.get("status", ""),
+            "delivery_state": job.get("delivery_status", ""),
+            "export_attempt": job.get("export_attempts", 0),
+            "recovery_attempt": job.get("recovery_attempts", 0),
+            "download_attempt": job.get("download_attempts", 0),
+            "delivery_attempt": job.get("delivery_attempts", 0),
+        })
+    fields.update({k: v for k, v in extra.items() if v is not None and v != ""})
+    return fields
+
+
+def format_log_fields(job=None, **extra):
+    fields = _job_log_fields(job, **extra)
+    ordered = []
+    for key in sorted(fields):
+        value = fields[key]
+        ordered.append(f"{key}={value}")
+    return " ".join(ordered)
+
+
+def log_job_event(level, message, job=None, **extra):
+    logger = logging.getLogger()
+    line = message
+    suffix = format_log_fields(job, **extra)
+    if suffix:
+        line = f"{line} | {suffix}"
+    logger.log(level, line)
+
+
 def session_key(bi_url, bi_user):
     digest = hashlib.sha256(f"{bi_url}|{bi_user}".encode("utf-8")).hexdigest()
     return f"{SESSION_KEY_PREFIX}{digest}"
