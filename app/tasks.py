@@ -83,7 +83,7 @@ def _safe_request_error(exc):
 
 
 def get_api_keys(config):
-    raw = config.get('gemini_key', '')
+    raw = config.get('gemini_key') or ''
     return [k.strip() for k in raw.split(',') if k.strip()]
 
 
@@ -267,7 +267,7 @@ def check_auto_mute(config):
 
 def send_auto_mute_notification(config):
     cam_name = config.get('name', 'Camera')
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{cam_name}][{req_id}]"
 
     token = config['telegram_token']
@@ -301,7 +301,7 @@ def analyze_image_gemini(config, encoded_image, prompt):
         return None
 
     config_id = config['id']
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     start_idx = r.incr(f'gemini_key_idx:{config_id}') % len(keys)
@@ -343,7 +343,7 @@ def analyze_video_gemini(config, video_path, prompt):
         return None
 
     config_id = config['id']
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     start_idx = r.incr(f'gemini_key_idx:{config_id}') % len(keys)
@@ -444,7 +444,7 @@ def analyze_image_grok(config, encoded_image, prompt):
     if not api_key:
         return None
 
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     try:
@@ -471,7 +471,7 @@ def analyze_image_groq(config, encoded_image, prompt):
     if not api_key:
         return None
 
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     try:
@@ -539,7 +539,7 @@ def _tg_thread(config):
 
 
 def send_telegram(config, img_path, caption):
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     token = config['telegram_token']
@@ -565,7 +565,7 @@ def update_telegram_caption(config, text):
     if 'last_msg_id' not in config:
         return False
 
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     token = config['telegram_token']
@@ -580,7 +580,7 @@ def update_telegram_caption(config, text):
 
 
 def replace_telegram_media(config, media_path, caption):
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
     if 'last_msg_id' not in config:
@@ -724,42 +724,14 @@ def queue_bi_export(config, output_path, tag, delivery_context=None):
     return request_id
 
 
-def request_bi_export(config, output_path, tag, timeout=300):
-    """
-    Queue a BI export request to the staged BI exporter service and block until done.
-    Returns True on success, False on failure.
-    """
-    request_id = queue_bi_export(config, output_path, tag)
-    if not request_id:
-        return False
-
-    result_key = f"bi:result:{request_id}"
-    item = r.blpop(result_key, timeout=timeout)
-    if item is None:
-        logging.error(f"{tag} BI monitor timed out after {timeout}s")
-        return False
-
-    result = json.loads(item[1])
-    if result.get("ok"):
-        return True
-
-    error_msg = result.get("error", "unknown monitor error")
-    logging.error(f"{tag} BI monitor returned failure: {error_msg}")
-    return False
-
-
-# =============================================================================
-# Image / Still fallback analysis
-# =============================================================================
-
 def analyze_image_parallel(config, encoded_image, prompt):
     """Run all configured AI providers concurrently; return the first successful result."""
     providers = []
-    if config.get('gemini_key', '').strip():
+    if (config.get('gemini_key') or '').strip():
         providers.append(lambda: analyze_image_gemini(config, encoded_image, prompt))
-    if config.get('grok_api_key', '').strip():
+    if (config.get('grok_api_key') or '').strip():
         providers.append(lambda: analyze_image_grok(config, encoded_image, prompt))
-    if config.get('groq_api_key', '').strip():
+    if (config.get('groq_api_key') or '').strip():
         providers.append(lambda: analyze_image_groq(config, encoded_image, prompt))
     if not providers:
         return None
@@ -778,21 +750,15 @@ def analyze_image_parallel(config, encoded_image, prompt):
     return None
 
 
-def analyze_still_image_fallback(image_path, prompt, config):
-    """PLAN C: Fallback to still image analysis if Gemini Video fails."""
-    encoded = optimize_image(image_path)
-    if not encoded:
-        return None
-    return analyze_image_parallel(config, encoded, prompt)
-
-
 # =============================================================================
 # Main entry point
 # =============================================================================
 
 def process_alert(image_path, config):
-    req_id = config.get('request_id', 'legacy')
+    req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
+    raw_mp4 = None
+    optimised_mp4 = None
     try:
         logging.info(f"{tag} Processing alert...")
 
@@ -815,17 +781,11 @@ def process_alert(image_path, config):
         still_caption = ai_text or "Motion detected."
 
         if instant_notify:
-            if config.get('initial_msg_id'):
-                config['last_msg_id'] = config['initial_msg_id']
-            else:
-                send_telegram(config, image_path, "Motion detected.")
+            send_telegram(config, image_path, "Motion detected.")
             if ai_text:
                 update_telegram_caption(config, still_caption)
         else:
-            if config.get('initial_msg_id'):
-                config['last_msg_id'] = config['initial_msg_id']
-            else:
-                send_telegram(config, image_path, still_caption)
+            send_telegram(config, image_path, still_caption)
 
         # DVLA enrichment after Telegram send — edits the caption if plates are found (#66)
         enriched_still = enrich_caption_with_dvla(still_caption, config, tag, image_path=image_path)
@@ -834,8 +794,6 @@ def process_alert(image_path, config):
         still_caption = enriched_still
 
         # Video handling
-        raw_mp4 = None
-        optimised_mp4 = None
         if config.get('send_video') == 1 and config.get('trigger_filename'):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
                 raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
@@ -843,7 +801,7 @@ def process_alert(image_path, config):
                     "config": {
                         "id": config["id"],
                         "name": config["name"],
-                        "request_id": config.get("request_id", "legacy"),
+                        "request_id": config.get("request_id", "unknown"),
                         "telegram_token": config["telegram_token"],
                         "chat_id": config["chat_id"],
                         "message_thread_id": config.get("message_thread_id"),
