@@ -173,6 +173,55 @@ def log_job_event(level, message, job=None, logger=None, **extra):
     logger.log(level, line)
 
 
+def recommended_action_for(error_code):
+    actions = {
+        "active_export_missing": "check_queue_monitor_and_redis_active_export_membership",
+        "alert_not_found": "check_bi_alertlist_retention_and_trigger_filename_mapping",
+        "bi_credentials_missing": "check_blue_iris_credentials_in_camera_config",
+        "bi_login_failed": "check_bi_url_credentials_and_session_reuse",
+        "delivery_processing_stale": "check_video_delivery_worker_health_and_ffmpeg_runtime",
+        "delivery_queue_stale": "check_video_delivery_worker_queue_consumption_and_tmp_images_sharing",
+        "download_attempt_failed": "check_bi_clip_endpoint_and_network_stability",
+        "download_not_ready": "check_bi_export_completion_and_clip_readiness",
+        "download_stale": "check_bi_downloader_health_and_download_queue_backlog",
+        "downloaded_video_missing": "check_tmp_images_volume_sharing_and_cleanup_timing",
+        "export_command_failed": "check_bi_export_api_response_and_clip_source_path",
+        "lookup_failed": "check_bi_alertlist_access_and_shared_session_reuse",
+        "missing_delivery_context": "check_telegram_message_context_persistence_before_queueing_export",
+        "missing_export_target": "check_bi_export_queue_response_and_target_resolution",
+        "missing_clip_path": "check_prequeue_lookup_and_bvr_clip_fallback",
+        "offset_unparseable": "check_alert_filename_format_and_offset_parser",
+        "openbvr_failed": "check_blue_iris_clip_integrity_and_source_bvr_path",
+        "persistent_404": "check_bi_clip_endpoint_visibility_after_export_completion",
+        "queue_ack_timeout": "check_bi_export_queue_acknowledgement_and_export_submission",
+        "queue_poll_failed": "check_bi_queue_monitor_connectivity_and_session_validity",
+        "queue_refresh_failed": "check_bi_export_queue_refresh_after_submit",
+        "queue_snapshot_failed": "check_bi_export_queue_snapshot_before_submit",
+        "queue_timeout": "check_bi_export_queue_progress_and_encoder_health",
+        "retry_queue_stale": "check_export_retry_requeue_and_exporter_consumer_health",
+        "stale_request": "check_queue_latency_and_alert_enqueue_timing",
+        "task_exception": "check_system_log_for_preceding_task_failure_details",
+        "telegram_replace_failed": "check_telegram_media_replace_api_and_message_permissions",
+        "retry_limit_reached": "check_repeated_export_failures_and_prior_error_codes",
+        "video_export_unavailable": "check_prequeue_lookup_result_and_export_request_enqueue",
+    }
+    return actions.get(error_code)
+
+
+def log_terminal_diagnosis(logger, tag, job, phase, error_code, final_status="video_not_delivered", **extra):
+    log_job_event(
+        logging.ERROR,
+        f"{tag} terminal diagnosis",
+        job,
+        logger=logger,
+        phase=phase,
+        error_code=error_code,
+        final_status=final_status,
+        recommended_action=recommended_action_for(error_code),
+        **extra,
+    )
+
+
 def session_key(bi_url, bi_user):
     digest = hashlib.sha256(f"{bi_url}|{bi_user}".encode("utf-8")).hexdigest()
     return f"{SESSION_KEY_PREFIX}{digest}"

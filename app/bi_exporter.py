@@ -20,6 +20,7 @@ from bi_export_shared import (
     get_session,
     job_tag,
     log_job_event,
+    log_terminal_diagnosis,
     r,
     safe_error_summary,
     save_job,
@@ -145,15 +146,46 @@ def _process_request(raw):
     tag = job_tag(req)
     queued_at = req.get("queued_at", 0)
     if queued_at and (time.time() - queued_at) > STALE_REQUEST_AGE:
+        log_terminal_diagnosis(
+            logger,
+            tag,
+            req,
+            "export_rejected",
+            "stale_request",
+            error="stale request",
+        )
         write_result(request_id, req.get("output_path"), False, "stale request")
         return
 
     if int(req.get("_export_attempts", 0)) >= MAX_EXPORT_ATTEMPTS:
+        log_terminal_diagnosis(
+            logger,
+            tag,
+            req,
+            "export_rejected",
+            "retry_limit_reached",
+            error="export retry limit reached",
+        )
         write_result(request_id, req.get("output_path"), False, "export retry limit reached")
         return
 
     job, error_msg = _prepare_export(req, tag)
     if not job:
+        error_code = "export_command_failed"
+        if error_msg == "BI login failed":
+            error_code = "bi_login_failed"
+        elif error_msg == "missing clip_path for staged export":
+            error_code = "missing_clip_path"
+        elif error_msg == "missing path/uri in BI response":
+            error_code = "missing_export_target"
+        log_terminal_diagnosis(
+            logger,
+            tag,
+            req,
+            "export_submit_failed",
+            error_code,
+            error=error_msg,
+        )
         write_result(request_id, req.get("output_path"), False, error_msg)
         return
 

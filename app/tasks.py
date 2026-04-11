@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
-from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session
+from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -963,6 +963,7 @@ def process_alert(image_path, config):
             "alert_summary",
             error_code=summary_error_code,
             final_status=final_status,
+            recommended_action=recommended_action_for(summary_error_code),
             send_video=config.get('send_video') == 1,
             trigger_filename=bool(config.get('trigger_filename')),
         )
