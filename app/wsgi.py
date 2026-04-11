@@ -28,6 +28,7 @@ KNOWN_PLATES_FILE = os.path.join(DATA_DIR, "known_plates.json")
 PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
+LOG_DIR = os.path.dirname(LOG_FILE) or "/app/logs"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
@@ -176,11 +177,32 @@ init_db()
 # --- HELPERS ---
 
 def get_log_content():
-    if not os.path.exists(LOG_FILE):
+    if not os.path.isdir(LOG_DIR):
         return "No logs yet."
+
     try:
-        with open(LOG_FILE) as f:
-            return "".join(f.readlines()[-200:])
+        entries = []
+        log_files = sorted(
+            name for name in os.listdir(LOG_DIR)
+            if name.endswith(".log") and os.path.isfile(os.path.join(LOG_DIR, name))
+        )
+        if not log_files:
+            return "No logs yet."
+
+        for name in log_files:
+            path = os.path.join(LOG_DIR, name)
+            with open(path) as f:
+                for line in f.readlines()[-200:]:
+                    line = line.rstrip("\n")
+                    if not line:
+                        continue
+                    entries.append((line[:23], f"[{name}] {line}"))
+
+        if not entries:
+            return "No logs yet."
+
+        entries.sort(key=lambda item: item[0])
+        return "\n".join(line for _, line in entries[-200:])
     except Exception as e:
         return f"Error reading logs: {e}"
 
@@ -642,7 +664,7 @@ const colors = [
     '#afeeee', '#ee82ee', '#98fb98'
 ];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
-function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const m=l.match(/\[(.*)\]/);html+=`<div style="color:${m?stringToColor(m[1]):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
+function colorizeLogs(){const v=document.getElementById('logViewer');if(!v)return;const lines=v.innerText.split('\n');let html='';lines.forEach(l=>{if(!l.trim())return;const matches=[...l.matchAll(/\[([^\]]+)\]/g)];const key=matches.length?matches[matches.length-1][1]:'';html+=`<div style="color:${key?stringToColor(key):'#888'}">${l}</div>`;});v.innerHTML=html;v.scrollTop=v.scrollHeight;}
 const html=document.documentElement;
 function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('theme',t);document.getElementById('themeIcon').innerText=t==='dark'?'☀️':'🌙';}
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
@@ -819,7 +841,9 @@ def delete_config(id):
 @app.route('/clear_logs', methods=['POST'])
 def clear_logs():
     try:
-        open(LOG_FILE, 'w').close()
+        for name in os.listdir(LOG_DIR):
+            if name.endswith(".log"):
+                open(os.path.join(LOG_DIR, name), 'w').close()
         flash('Logs cleared.', 'success')
     except Exception as e:
         flash(f'Error: {e}', 'danger')
