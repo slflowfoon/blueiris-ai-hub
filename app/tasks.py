@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
-from bi_export_shared import EXPORT_REQUEST_QUEUE
+from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -638,18 +638,12 @@ def _parse_offset_ms(filename):
 
 def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
     """
-    Login to BI and look up clip details for trigger_filename immediately,
-    while the alert is guaranteed fresh in the alertlist.
+    Reuse the shared BI session and look up clip details for trigger_filename
+    immediately, while the alert is guaranteed fresh in the alertlist.
     """
     json_url = urljoin(bi_url.rstrip("/") + "/", "json")
-    sess = requests.Session()
-    r1 = sess.post(json_url, json={"cmd": "login"}, timeout=10)
-    r1.raise_for_status()
-    sid = r1.json().get("session")
-    response = _bi_protocol_hash(f"{bi_user}:{sid}:{bi_pass}")
-    r2 = sess.post(json_url, json={"cmd": "login", "session": sid, "response": response}, timeout=10)
-    r2.raise_for_status()
-    if r2.json().get("result") != "success":
+    sess, sid = get_session(bi_url, bi_user, bi_pass, tag)
+    if not sid:
         raise RuntimeError("BI login failed")
     al = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
     al.raise_for_status()
