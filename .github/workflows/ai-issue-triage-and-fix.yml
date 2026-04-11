@@ -1,0 +1,85 @@
+name: AI Issue Triage and Fix
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage-and-fix:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.issue.pull_request == null }}
+    services:
+      redis:
+        image: redis
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Configure git
+        run: |
+          git config user.name "blueiris-ai-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Run AI issue worker
+        id: ai_issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.2' }}
+        run: python .github/scripts/ai_issue_worker.py
+
+      - name: Run tests for AI patch
+        id: test_step
+        if: steps.ai_issue.outputs.decision == 'attempt_fix'
+        continue-on-error: true
+        run: |
+          mkdir -p ./test_data ./test_logs ./test_tmp
+          export PYTHONPATH=app
+          export DATA_DIR=./test_data
+          export LOG_FILE=./test_logs/system.log
+          export TEMP_IMAGE_DIR=./test_tmp
+          export REDIS_URL=redis://localhost:6379/0
+          pytest -q
+
+      - name: Create draft PR
+        id: create_pr
+        if: steps.ai_issue.outputs.decision == 'attempt_fix'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="ai/issue-${{ github.event.issue.number }}-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "${{ steps.ai_issue.outputs.commit_message }}"
+          git push origin "$BRANCH"
+          if [ "${{ steps.test_step.outcome }}" = "success" ]; then
+            TEST_RESULT="Tests passed in workflow."
+          else
+            TEST_RESULT="Tests did not pass in workflow. Review before merge."
+          fi
+          printf "\n\n## Workflow Verification\n%s\n" "$TEST_RESULT" >> "${{ steps.ai_issue.outputs.pr_body_file }}"
+          PR_URL=$(gh pr create --draft --title "${{ steps.ai_issue.outputs.pr_title }}" --body-file "${{ steps.ai_issue.outputs.pr_body_file }}" --base main --head "$BRANCH")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on issue with PR link
+        if: steps.ai_issue.outputs.decision == 'attempt_fix'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp "${{ steps.ai_issue.outputs.issue_comment_file }}" /tmp/issue-comment.md
+          printf "\n\nDraft PR: %s\n" "${{ steps.create_pr.outputs.pr_url }}" >> /tmp/issue-comment.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/issue-comment.md
