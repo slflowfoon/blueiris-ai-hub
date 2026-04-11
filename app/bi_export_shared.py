@@ -7,8 +7,10 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import time
 from urllib.parse import urljoin
+from logging.handlers import RotatingFileHandler
 
 import redis
 import requests
@@ -41,6 +43,27 @@ DELIVERY_QUEUE_STALE_AGE = 45
 
 r = redis.from_url(REDIS_URL)
 _session_cache = {}
+INSTANCE_ID = os.getenv("HOSTNAME") or socket.gethostname()
+
+
+def setup_service_logger(name, log_file):
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if os.path.dirname(log_file):
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=1)
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    return logger
 
 
 def safe_error_summary(exc):
@@ -75,6 +98,10 @@ def job_tag(job):
 
 def _job_log_fields(job=None, **extra):
     fields = {}
+    fields.update({
+        "instance": INSTANCE_ID,
+        "pid": os.getpid(),
+    })
     if job:
         fields.update({
             "camera": job.get("config_name", "?"),
@@ -100,8 +127,8 @@ def format_log_fields(job=None, **extra):
     return " ".join(ordered)
 
 
-def log_job_event(level, message, job=None, **extra):
-    logger = logging.getLogger()
+def log_job_event(level, message, job=None, logger=None, **extra):
+    logger = logger or logging.getLogger()
     line = message
     suffix = format_log_fields(job, **extra)
     if suffix:

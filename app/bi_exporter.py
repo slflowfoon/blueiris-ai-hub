@@ -6,9 +6,7 @@ Exporter service for staged Blue Iris clip processing.
 import json
 import logging
 import os
-import sys
 import time
-from logging.handlers import RotatingFileHandler
 from urllib.parse import urljoin
 
 from bi_export_shared import (
@@ -24,6 +22,7 @@ from bi_export_shared import (
     r,
     safe_error_summary,
     save_job,
+    setup_service_logger,
     write_result,
 )
 
@@ -33,14 +32,7 @@ LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_exporter.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout),
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = setup_service_logger("bi_exporter", LOG_FILE)
 
 
 def _prepare_export(req, tag):
@@ -71,7 +63,7 @@ def _prepare_export(req, tag):
     try:
         known_paths = {item.get("path") for item in bi_get_export_queue(sess, req["bi_url"], sid) if item.get("path")}
     except Exception as exc:
-        logging.warning(f"{tag} Failed to read export queue before enqueue: {safe_error_summary(exc)}")
+        logger.warning(f"{tag} Failed to read export queue before enqueue: {safe_error_summary(exc)}")
 
     target_path = None
     relative_uri = None
@@ -85,12 +77,12 @@ def _prepare_export(req, tag):
                     queue_data = bi_get_export_queue(sess, req["bi_url"], sid)
                     target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
                 except Exception as exc:
-                    logging.warning(f"{tag} Failed to refresh export queue after enqueue: {safe_error_summary(exc)}")
+                    logger.warning(f"{tag} Failed to refresh export queue after enqueue: {safe_error_summary(exc)}")
             if target_path and relative_uri:
                 break
 
         if "OpenBVR failed" in str(res.get("data", {})) and export_attempt == 0:
-            logging.warning(f"{tag} BI reported OpenBVR failed. Retrying in 2s...")
+            logger.warning(f"{tag} BI reported OpenBVR failed. Retrying in 2s...")
             time.sleep(2)
             continue
 
@@ -158,6 +150,7 @@ def _process_request(raw):
         logging.INFO,
         f"{tag} export submitted",
         job,
+        logger=logger,
         target_path=job["target_path"],
         relative_uri=job["relative_uri"],
         queue="bi:export:requests",
@@ -165,7 +158,7 @@ def _process_request(raw):
 
 
 def run_exporter():
-    logging.info("[bi_exporter] Waiting for requests on bi:export:requests")
+    logger.info("[bi_exporter] Waiting for requests on bi:export:requests")
     while True:
         item = r.blpop(EXPORT_REQUEST_QUEUE, timeout=5)
         if item:
