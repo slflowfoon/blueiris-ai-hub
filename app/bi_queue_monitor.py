@@ -202,7 +202,7 @@ def _poll_active_exports():
 
 
 def run_monitor():
-    logger.info("[bi_queue_monitor] Monitoring staged BI export queue")
+    logger.info("Monitoring staged BI export queue")
     while True:
         _poll_active_exports()
 

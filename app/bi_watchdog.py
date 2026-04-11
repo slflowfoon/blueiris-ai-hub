@@ -161,7 +161,7 @@ def _run_once():
 
 
 def run_watchdog():
-    logger.info("[bi_watchdog] Monitoring for stranded BI export and delivery jobs")
+    logger.info("Monitoring for stranded BI export and delivery jobs")
     while True:
         _run_once()
         time.sleep(WATCHDOG_INTERVAL)

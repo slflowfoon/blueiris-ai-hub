@@ -103,7 +103,7 @@ def _process_delivery_request(request_id):
 
 
 def run_video_delivery_worker():
-    logger.info("[video_delivery_worker] Waiting for downloaded BI videos")
+    logger.info("Waiting for downloaded BI videos")
     while True:
         item = r.blpop(VIDEO_DELIVERY_QUEUE, timeout=5)
         if not item:
