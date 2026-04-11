@@ -3,7 +3,14 @@ import os
 import pathlib
 import sys
 
-from ai_common import github_request, load_text, openai_chat_json, pr_comment, shorten
+from ai_common import (
+    OpenAIUnavailableError,
+    github_request,
+    load_text,
+    openai_chat_json,
+    pr_comment,
+    shorten,
+)
 
 
 def main():
@@ -20,10 +27,19 @@ def main():
     diff_text = shorten("\n\n".join(diff_chunks), max_chars=60000)
 
     system_prompt = load_text(".github/ai/pr_review_system_prompt.md")
-    review = openai_chat_json(
-        system_prompt,
-        f"PR #{pr_number}: {pr['title']}\n\n{pr.get('body') or ''}\n\nDiff:\n{diff_text}",
-    )
+    try:
+        review = openai_chat_json(
+            system_prompt,
+            f"PR #{pr_number}: {pr['title']}\n\n{pr.get('body') or ''}\n\nDiff:\n{diff_text}",
+        )
+    except OpenAIUnavailableError as exc:
+        pr_comment(
+            repo,
+            pr_number,
+            "AI review could not complete because the OpenAI API was unavailable "
+            f"or rate limited. {exc} Re-run the workflow later if review output is needed.",
+        )
+        return
     body = review.get("comment_body", "").strip()
     if not body:
         findings = review.get("findings") or []
