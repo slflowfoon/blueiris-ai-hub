@@ -20,7 +20,6 @@ from bi_export_shared import (
     MAX_DELIVERY_ATTEMPTS,
     MAX_EXPORT_ATTEMPTS,
     RETRY_QUEUE_STALE_AGE,
-    VIDEO_DELIVERY_QUEUE,
     WATCHDOG_INTERVAL,
     WATCHDOG_STALE_BUFFER,
     finish_delivery,
