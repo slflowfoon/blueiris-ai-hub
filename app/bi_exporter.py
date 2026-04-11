@@ -15,6 +15,7 @@ from bi_export_shared import (
     MAX_EXPORT_ATTEMPTS,
     STALE_REQUEST_AGE,
     bi_get_export_queue,
+    bi_instance_label,
     bi_resolve_export_target,
     get_session,
     job_tag,
@@ -63,7 +64,11 @@ def _prepare_export(req, tag):
     try:
         known_paths = {item.get("path") for item in bi_get_export_queue(sess, req["bi_url"], sid) if item.get("path")}
     except Exception as exc:
-        logger.warning(f"{tag} Failed to read export queue before enqueue: {safe_error_summary(exc)}")
+        logger.warning(
+            f"{tag} Failed to read export queue before enqueue | "
+            f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_snapshot "
+            f"error_code=queue_snapshot_failed error={safe_error_summary(exc)}"
+        )
 
     target_path = None
     relative_uri = None
@@ -77,12 +82,20 @@ def _prepare_export(req, tag):
                     queue_data = bi_get_export_queue(sess, req["bi_url"], sid)
                     target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
                 except Exception as exc:
-                    logger.warning(f"{tag} Failed to refresh export queue after enqueue: {safe_error_summary(exc)}")
+                    logger.warning(
+                        f"{tag} Failed to refresh export queue after enqueue | "
+                        f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_snapshot_refresh "
+                        f"error_code=queue_refresh_failed error={safe_error_summary(exc)}"
+                    )
             if target_path and relative_uri:
                 break
 
         if "OpenBVR failed" in str(res.get("data", {})) and export_attempt == 0:
-            logger.warning(f"{tag} BI reported OpenBVR failed. Retrying in 2s...")
+            logger.warning(
+                f"{tag} BI reported OpenBVR failed. Retrying in 2s... | "
+                f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_submit "
+                f"error_code=openbvr_failed"
+            )
             time.sleep(2)
             continue
 
@@ -151,6 +164,7 @@ def _process_request(raw):
         f"{tag} export submitted",
         job,
         logger=logger,
+        phase="export_submitted",
         target_path=job["target_path"],
         relative_uri=job["relative_uri"],
         queue="bi:export:requests",

@@ -66,9 +66,23 @@ def _process_delivery_request(request_id):
     job["delivery_status"] = "processing"
     job["last_transition_at"] = time.time()
     save_job(job)
-    log_job_event(logging.INFO, f"{tag} delivery processing started", job, logger=logger)
+    log_job_event(
+        logging.INFO,
+        f"{tag} delivery processing started",
+        job,
+        logger=logger,
+        phase="delivery_started",
+    )
 
     if not os.path.exists(raw_mp4):
+        log_job_event(
+            logging.ERROR,
+            f"{tag} delivery failed; downloaded video missing from disk",
+            job,
+            logger=logger,
+            phase="delivery_failed",
+            error_code="downloaded_video_missing",
+        )
         finish_delivery(job, False, "downloaded video missing from disk")
         return
 
@@ -82,9 +96,24 @@ def _process_delivery_request(request_id):
     )
     if not media_ok:
         if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
-            log_job_event(logging.WARNING, f"{tag} telegram media replace failed; retrying", job)
+            log_job_event(
+                logging.WARNING,
+                f"{tag} telegram media replace failed; retrying",
+                job,
+                logger=logger,
+                phase="delivery_retry",
+                error_code="telegram_replace_failed",
+            )
             requeue_delivery(job, "telegram media replace failed")
         else:
+            log_job_event(
+                logging.ERROR,
+                f"{tag} telegram media replace failed",
+                job,
+                logger=logger,
+                phase="delivery_failed",
+                error_code="telegram_replace_failed",
+            )
             finish_delivery(job, False, "telegram media replace failed")
             _cleanup_paths(optimised_mp4, raw_mp4)
         return
@@ -99,7 +128,14 @@ def _process_delivery_request(request_id):
 
     _cleanup_paths(optimised_mp4, raw_mp4)
     finish_delivery(load_job(request_id) or job, True, None)
-    log_job_event(logging.INFO, f"{tag} delivery completed", load_job(request_id) or job, logger=logger)
+    log_job_event(
+        logging.INFO,
+        f"{tag} delivery completed",
+        load_job(request_id) or job,
+        logger=logger,
+        phase="delivery_completed",
+        final_status="video_delivered",
+    )
 
 
 def run_video_delivery_worker():

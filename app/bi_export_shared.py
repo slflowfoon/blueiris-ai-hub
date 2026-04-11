@@ -9,7 +9,7 @@ import logging
 import os
 import socket
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from logging.handlers import RotatingFileHandler
 
 import redis
@@ -96,6 +96,11 @@ def job_tag(job):
     return f"[{job.get('config_name', '?')}][{correlation_id[:8]}]"
 
 
+def bi_instance_label(bi_url):
+    parsed = urlparse((bi_url or "").strip())
+    return parsed.netloc or parsed.path or "unknown"
+
+
 def _job_log_fields(job=None, **extra):
     fields = {}
     fields.update({
@@ -114,6 +119,8 @@ def _job_log_fields(job=None, **extra):
             "download_attempt": job.get("download_attempts", 0),
             "delivery_attempt": job.get("delivery_attempts", 0),
         })
+        if job.get("bi_url"):
+            fields["bi_instance"] = bi_instance_label(job["bi_url"])
     fields.update({k: v for k, v in extra.items() if v is not None and v != ""})
     return fields
 
