@@ -5,9 +5,7 @@ Asynchronous Telegram video delivery for completed Blue Iris exports.
 
 import logging
 import os
-import sys
 import time
-from logging.handlers import RotatingFileHandler
 
 from bi_export_shared import (
     MAX_DELIVERY_ATTEMPTS,
@@ -19,6 +17,7 @@ from bi_export_shared import (
     requeue_delivery,
     r,
     save_job,
+    setup_service_logger,
 )
 from tasks import (
     analyze_video_gemini,
@@ -33,14 +32,7 @@ LOG_FILE = os.getenv("LOG_FILE", "/app/logs/video_delivery_worker.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout),
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = setup_service_logger("video_delivery_worker", LOG_FILE)
 
 
 def _optimised_path(raw_mp4):
@@ -74,7 +66,7 @@ def _process_delivery_request(request_id):
     job["delivery_status"] = "processing"
     job["last_transition_at"] = time.time()
     save_job(job)
-    log_job_event(logging.INFO, f"{tag} delivery processing started", job)
+    log_job_event(logging.INFO, f"{tag} delivery processing started", job, logger=logger)
 
     if not os.path.exists(raw_mp4):
         finish_delivery(job, False, "downloaded video missing from disk")
@@ -86,6 +78,7 @@ def _process_delivery_request(request_id):
         optimised_mp4,
         delivery.get("still_caption", "Motion detected."),
         tag,
+        service_logger=logger,
     )
     if not media_ok:
         if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
@@ -101,15 +94,16 @@ def _process_delivery_request(request_id):
         update_telegram_caption(
             config,
             enrich_caption_with_dvla(video_caption, config, tag),
+            service_logger=logger,
         )
 
     _cleanup_paths(optimised_mp4, raw_mp4)
     finish_delivery(load_job(request_id) or job, True, None)
-    log_job_event(logging.INFO, f"{tag} delivery completed", load_job(request_id) or job)
+    log_job_event(logging.INFO, f"{tag} delivery completed", load_job(request_id) or job, logger=logger)
 
 
 def run_video_delivery_worker():
-    logging.info("[video_delivery_worker] Waiting for downloaded BI videos")
+    logger.info("[video_delivery_worker] Waiting for downloaded BI videos")
     while True:
         item = r.blpop(VIDEO_DELIVERY_QUEUE, timeout=5)
         if not item:

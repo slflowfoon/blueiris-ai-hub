@@ -5,9 +5,7 @@ Downloader service for staged Blue Iris exports.
 
 import logging
 import os
-import sys
 import time
-from logging.handlers import RotatingFileHandler
 
 from bi_export_shared import (
     VIDEO_DELIVERY_QUEUE,
@@ -24,6 +22,7 @@ from bi_export_shared import (
     r,
     safe_error_summary,
     save_job,
+    setup_service_logger,
     trigger_bi_recovery,
     queue_retry,
 )
@@ -34,14 +33,7 @@ LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_downloader.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout),
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = setup_service_logger("bi_downloader", LOG_FILE)
 
 
 def _download_export(job):
@@ -81,6 +73,7 @@ def _download_export(job):
                         logging.INFO,
                         f"{tag} download complete",
                         job,
+                        logger=logger,
                         elapsed=f"{attempt_elapsed:.1f}s",
                         size=final_size,
                     )
@@ -92,6 +85,7 @@ def _download_export(job):
                 logging.WARNING,
                 f"{tag} download attempt failed",
                 job,
+                logger=logger,
                 elapsed=f"{attempt_elapsed:.1f}s",
                 error=safe_error_summary(exc),
             )
@@ -126,6 +120,7 @@ def _process_download_request(request_id):
                 logging.INFO,
                 f"{tag} delivery queued after download",
                 load_job(job["request_id"]) or job,
+                logger=logger,
                 delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
             )
         return
@@ -139,6 +134,7 @@ def _process_download_request(request_id):
             logging.WARNING,
             f"{tag} download failed; retrying export after recovery",
             job,
+            logger=logger,
             error=error_msg,
         )
         job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
@@ -149,7 +145,7 @@ def _process_download_request(request_id):
 
 
 def run_downloader():
-    logging.info("[bi_downloader] Waiting for completed exports")
+    logger.info("[bi_downloader] Waiting for completed exports")
     while True:
         item = r.blpop(DOWNLOAD_REQUEST_QUEUE, timeout=5)
         if not item:

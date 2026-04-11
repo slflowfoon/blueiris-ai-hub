@@ -30,6 +30,10 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
 
+
+def _resolve_logger(service_logger=None):
+    return service_logger or logging
+
 # --- REDIS ---
 redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
@@ -511,9 +515,10 @@ def optimize_image(image_path):
         return None
 
 
-def optimize_video_for_telegram(input_path, output_path, tag):
+def optimize_video_for_telegram(input_path, output_path, tag, service_logger=None):
+    log = _resolve_logger(service_logger)
     try:
-        logging.info(f"{tag} Optimising video...")
+        log.info(f"{tag} Optimising video...")
         subprocess.run([
             'ffmpeg', '-y', '-i', input_path,
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
@@ -522,10 +527,10 @@ def optimize_video_for_telegram(input_path, output_path, tag):
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(output_path):
             size_mb = os.path.getsize(output_path) / (1024 * 1024)
-            logging.info(f"{tag} Video optimised ({size_mb:.2f} MB)")
+            log.info(f"{tag} Video optimised ({size_mb:.2f} MB)")
             return True
     except Exception as e:
-        logging.error(f"{tag} Video optimisation error: {e}")
+        log.error(f"{tag} Video optimisation error: {e}")
     return False
 
 
@@ -561,7 +566,8 @@ def send_telegram(config, img_path, caption):
         logging.error(f"{tag} Telegram error: {e}")
 
 
-def update_telegram_caption(config, text):
+def update_telegram_caption(config, text, service_logger=None):
+    log = _resolve_logger(service_logger)
     if 'last_msg_id' not in config:
         return False
 
@@ -575,11 +581,12 @@ def update_telegram_caption(config, text):
         resp = requests.post(f"https://api.telegram.org/bot{token}/editMessageCaption", data=data, timeout=10)
         return resp.ok
     except Exception as e:
-        logging.error(f"{tag} Caption update error: {e}")
+        log.error(f"{tag} Caption update error: {e}")
         return False
 
 
-def replace_telegram_media(config, media_path, caption):
+def replace_telegram_media(config, media_path, caption, service_logger=None):
+    log = _resolve_logger(service_logger)
     req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
@@ -596,24 +603,25 @@ def replace_telegram_media(config, media_path, caption):
                 data=data, files={'media_file': f}, timeout=60
             )
             if resp.ok:
-                logging.info(f"{tag} Replaced photo with video")
+                log.info(f"{tag} Replaced photo with video")
                 return True
             else:
-                logging.error(f"{tag} Replace media error: {resp.text}")
+                log.error(f"{tag} Replace media error: {resp.text}")
     except Exception as e:
-        logging.error(f"{tag} Replace media error: {e}")
+        log.error(f"{tag} Replace media error: {e}")
     return False
 
 
-def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
+def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag, service_logger=None):
+    log = _resolve_logger(service_logger)
     """
     Prepare Telegram-friendly media while Gemini analyzes the raw export.
     """
-    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
-        return optimised_mp4, replace_telegram_media(config, optimised_mp4, caption)
+    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag, service_logger=service_logger):
+        return optimised_mp4, replace_telegram_media(config, optimised_mp4, caption, service_logger=service_logger)
 
-    logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
-    return raw_mp4, replace_telegram_media(config, raw_mp4, caption)
+    log.warning(f"{tag} Video optimisation failed, sending raw MP4.")
+    return raw_mp4, replace_telegram_media(config, raw_mp4, caption, service_logger=service_logger)
 
 
 # =============================================================================

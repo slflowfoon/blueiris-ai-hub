@@ -5,9 +5,7 @@ Central queue monitor for staged Blue Iris exports.
 
 import logging
 import os
-import sys
 import time
-from logging.handlers import RotatingFileHandler
 
 from bi_export_shared import (
     ACTIVE_EXPORT_SET,
@@ -26,6 +24,7 @@ from bi_export_shared import (
     r,
     safe_error_summary,
     save_job,
+    setup_service_logger,
     trigger_bi_recovery,
     queue_retry,
     write_result,
@@ -37,14 +36,7 @@ LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_queue_monitor.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout),
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = setup_service_logger("bi_queue_monitor", LOG_FILE)
 
 
 def _poll_active_exports():
@@ -94,7 +86,7 @@ def _poll_active_exports():
         try:
             active_exports = bi_get_export_queue(sess, bi_url, sid)
         except Exception as exc:
-            logging.warning(
+            logger.warning(
                 f"{tag} export queue poll failed | bi_url={bi_url} error={safe_error_summary(exc)}"
             )
             continue
@@ -114,6 +106,7 @@ def _poll_active_exports():
                         logging.INFO,
                         f"{tag} export acknowledged",
                         job,
+                        logger=logger,
                         queue_size=queue_size,
                         target_path=job["target_path"],
                     )
@@ -123,6 +116,7 @@ def _poll_active_exports():
                         logging.INFO,
                         f"{tag} export in progress",
                         job,
+                        logger=logger,
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                         active_exports=len(request_ids),
@@ -144,6 +138,7 @@ def _poll_active_exports():
                     logging.INFO,
                     f"{tag} export ready for download",
                     job,
+                    logger=logger,
                     elapsed=f"{elapsed:.1f}s",
                     queue_size=queue_size,
                     download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
@@ -156,6 +151,7 @@ def _poll_active_exports():
                         logging.WARNING,
                         f"{tag} export acknowledgement timeout; retrying",
                         job,
+                        logger=logger,
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                     )
@@ -183,6 +179,7 @@ def _poll_active_exports():
                         logging.WARNING,
                         f"{tag} export queue timeout; retrying after recovery",
                         job,
+                        logger=logger,
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                     )
@@ -198,13 +195,14 @@ def _poll_active_exports():
                         logging.ERROR,
                         f"{tag} export failed waiting for queue",
                         job,
+                        logger=logger,
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                     )
 
 
 def run_monitor():
-    logging.info("[bi_queue_monitor] Monitoring staged BI export queue")
+    logger.info("[bi_queue_monitor] Monitoring staged BI export queue")
     while True:
         _poll_active_exports()
 

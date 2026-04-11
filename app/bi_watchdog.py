@@ -6,9 +6,7 @@ Watchdog for repairing stranded BI export and delivery jobs.
 import json
 import logging
 import os
-import sys
 import time
-from logging.handlers import RotatingFileHandler
 
 from bi_export_shared import (
     ACTIVE_EXPORT_SET,
@@ -32,6 +30,7 @@ from bi_export_shared import (
     queue_retry,
     r,
     save_job,
+    setup_service_logger,
     write_result,
 )
 
@@ -41,14 +40,7 @@ LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_watchdog.log")
 if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
-        logging.StreamHandler(sys.stdout),
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = setup_service_logger("bi_watchdog", LOG_FILE)
 
 
 def _repair_job(job):
@@ -61,7 +53,7 @@ def _repair_job(job):
     transition_age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
 
     if status in {"submitted", "queued"} and not r.sismember(ACTIVE_EXPORT_SET, request_id):
-        log_job_event(logging.WARNING, f"{tag} watchdog reattaching active export", job)
+        log_job_event(logging.WARNING, f"{tag} watchdog reattaching active export", job, logger=logger)
         r.sadd(ACTIVE_EXPORT_SET, request_id)
         job["next_poll_at"] = 0
         job["last_transition_at"] = now
@@ -74,6 +66,7 @@ def _repair_job(job):
                 logging.WARNING,
                 f"{tag} watchdog retrying unacknowledged export",
                 job,
+                logger=logger,
                 age=f"{submitted_age:.1f}s",
             )
             queue_retry(job, "watchdog: export acknowledgement stale")
@@ -92,6 +85,7 @@ def _repair_job(job):
                 logging.WARNING,
                 f"{tag} watchdog retrying stale queued export",
                 job,
+                logger=logger,
                 age=f"{submitted_age:.1f}s",
             )
             queue_retry(job, "watchdog: export queue stale")
@@ -109,6 +103,7 @@ def _repair_job(job):
             logging.WARNING,
             f"{tag} watchdog requeueing stale ready download",
             job,
+            logger=logger,
             age=f"{transition_age:.1f}s",
             download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
         )
@@ -122,6 +117,7 @@ def _repair_job(job):
             logging.WARNING,
             f"{tag} watchdog requeueing stalled export retry",
             job,
+            logger=logger,
             age=f"{transition_age:.1f}s",
         )
         job["last_transition_at"] = now
@@ -136,6 +132,7 @@ def _repair_job(job):
                     logging.WARNING,
                     f"{tag} watchdog requeueing stale delivery job",
                     job,
+                    logger=logger,
                     age=f"{transition_age:.1f}s",
                     delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
                 )
@@ -148,6 +145,7 @@ def _repair_job(job):
                         logging.WARNING,
                         f"{tag} watchdog requeueing stuck delivery processing",
                         job,
+                        logger=logger,
                         age=f"{transition_age:.1f}s",
                     )
                     mark_delivery_queued(job)
@@ -163,7 +161,7 @@ def _run_once():
 
 
 def run_watchdog():
-    logging.info("[bi_watchdog] Monitoring for stranded BI export and delivery jobs")
+    logger.info("[bi_watchdog] Monitoring for stranded BI export and delivery jobs")
     while True:
         _run_once()
         time.sleep(WATCHDOG_INTERVAL)
