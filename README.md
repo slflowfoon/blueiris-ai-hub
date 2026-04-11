@@ -153,99 +153,16 @@ docker compose up -d
 | `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
 | `redis` | Job queue and state store (mutes, caption modes, API key rotation, export jobs) |
 
-Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image and sends the initial Telegram photo → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → video delivery worker replaces the Telegram photo with video and updates the caption asynchronously → watchdog requeues stranded jobs when any BI stage stalls.
-
-### Service topology
-
 ```mermaid
 graph LR
-    BI[Blue Iris\nWindows]
-    subgraph Hub
-        web
-        worker
-        bi_exporter
-        bi_queue_monitor
-        bi_downloader
-        bi_watchdog
-        video_delivery_worker
-        mute_bot
-        redis[(Redis)]
-    end
-    TG[Telegram]
-    AI[Gemini / Grok / Groq]
-    DVLA[DVLA API]
-
-    BI -->|webhook POST| web
-    web -->|enqueue job| redis
-    redis -->|dequeue job| worker
-    worker -->|image analysis| AI
-    worker -->|send alert| TG
-    worker -->|DVLA lookup| DVLA
-    worker -->|export request| redis
-    redis -->|bi:export:requests| bi_exporter
-    bi_exporter -->|job state| redis
-    bi_exporter -->|submit export| BI
-    bi_queue_monitor -->|poll active exports| redis
-    bi_queue_monitor -->|poll export queue| BI
-    bi_queue_monitor -->|bi:download:requests| redis
-    redis -->|bi:download:requests| bi_downloader
-    bi_downloader -->|download MP4| BI
-    bi_downloader -->|bi:result + delivery queue| redis
-    redis -->|bi:delivery:requests| video_delivery_worker
-    video_delivery_worker -->|send video / update caption| TG
-    video_delivery_worker -->|video analysis| AI
-    video_delivery_worker -->|DVLA lookup| DVLA
-    bi_watchdog -->|scan jobs / repair stale state| redis
-    mute_bot -->|poll commands| TG
-    mute_bot -->|mute state| redis
-```
-
-### BI export pipeline
-
-```mermaid
-sequenceDiagram
-    participant W as worker
-    participant R as Redis
-    participant E as bi_exporter
-    participant Q as bi_queue_monitor
-    participant D as bi_downloader
-    participant V as video_delivery_worker
-    participant X as bi_watchdog
-    participant BI as Blue Iris
-    participant TG as Telegram
-
-    W->>R: RPUSH bi:export:requests
-    W->>TG: send initial still photo
-    R->>E: BLPOP bi:export:requests
-    E->>BI: POST /json?_export
-    E->>R: save job (status: submitted)<br/>SADD bi:exports:active
-
-    loop queue monitor
-        Q->>R: SMEMBERS bi:exports:active
-        Q->>BI: POST /json?_export
-        alt clip still in queue
-            Q->>R: update job (status: queued)
-        else clip left queue
-            Q->>R: update job (status: ready)<br/>SREM active set<br/>RPUSH bi:download:requests
-        else timeout / not acknowledged
-            Q->>R: queue retry or write failure result
-        end
-    end
-
-    R->>D: BLPOP bi:download:requests
-    D->>BI: GET /clips/...mp4
-    alt download success
-        D->>R: update job (status: downloaded)<br/>RPUSH bi:result:<id><br/>RPUSH bi:delivery:requests
-    else download failed
-        D->>R: queue retry or write failure result
-    end
-
-    R->>V: BLPOP bi:delivery:requests
-    V->>TG: replace still photo with video
-    V->>TG: update caption after video analysis
-
-    loop watchdog
-        X->>R: scan bi:job:*
-        X->>R: requeue stale submitted / ready / delivery jobs
-    end
+    BI[Blue Iris\nWindows] -->|motion alert| web
+    web -->|queue job| worker
+    worker -->|still photo + AI caption| TG[Telegram]
+    worker -->|triggers video pipeline| VP[Video Pipeline\nbi_exporter → bi_queue_monitor\n→ bi_downloader → video_delivery_worker]
+    VP -->|fetch clip| BI
+    VP -->|video + updated caption| TG
+    worker & VP -->|AI analysis| AI[Gemini / Grok / Groq]
+    worker & VP -->|plate lookup| DVLA[DVLA API]
+    mute_bot -->|/mute /unmute /caption| TG
+    bi_watchdog -. monitors .-> VP
 ```
