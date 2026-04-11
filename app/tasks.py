@@ -517,7 +517,7 @@ def optimize_video_for_telegram(input_path, output_path, tag):
         subprocess.run([
             'ffmpeg', '-y', '-i', input_path,
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-            '-r', '10', '-vf', 'scale=854:-2', '-an', '-movflags', '+faststart',
+            '-r', '10', '-vf', 'scale=640:-2', '-an', '-movflags', '+faststart',
             output_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(output_path):
