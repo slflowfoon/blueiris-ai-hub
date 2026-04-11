@@ -10,6 +10,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from bi_export_shared import (
+    VIDEO_DELIVERY_QUEUE,
     DOWNLOAD_REQUEST_QUEUE,
     DOWNLOAD_TIMEOUT,
     MAX_RECOVERY_ATTEMPTS,
@@ -17,6 +18,7 @@ from bi_export_shared import (
     finish_job,
     get_session,
     job_tag,
+    log_job_event,
     load_job,
     mark_delivery_queued,
     r,
@@ -75,12 +77,24 @@ def _download_export(job):
 
                 final_size = os.path.getsize(job["output_path"])
                 if final_size > 1024:
-                    logging.info(f"{tag} Download complete elapsed={attempt_elapsed:.1f}s size={final_size}")
+                    log_job_event(
+                        logging.INFO,
+                        f"{tag} download complete",
+                        job,
+                        elapsed=f"{attempt_elapsed:.1f}s",
+                        size=final_size,
+                    )
                     downloaded = True
                     break
                 time.sleep(2)
         except Exception as exc:
-            logging.warning(f"{tag} Download error: {safe_error_summary(exc)}")
+            log_job_event(
+                logging.WARNING,
+                f"{tag} download attempt failed",
+                job,
+                elapsed=f"{attempt_elapsed:.1f}s",
+                error=safe_error_summary(exc),
+            )
             time.sleep(2)
 
     if not downloaded:
@@ -101,21 +115,32 @@ def _process_download_request(request_id):
     job["download_attempts"] = int(job.get("download_attempts", 0)) + 1
     job["last_transition_at"] = time.time()
     save_job(job)
+    tag = job_tag(job)
 
     ok, error_msg = _download_export(job)
     if ok:
         finish_job(job, True, None)
         if job.get("delivery_context"):
             mark_delivery_queued(load_job(job["request_id"]) or job)
+            log_job_event(
+                logging.INFO,
+                f"{tag} delivery queued after download",
+                load_job(job["request_id"]) or job,
+                delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
+            )
         return
 
-    tag = job_tag(job)
     if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS and trigger_bi_recovery(
         job.get("restart_url", ""),
         job.get("restart_token", ""),
         tag,
     ):
-        logging.warning(f"{tag} Download failed; retrying export after BI recovery")
+        log_job_event(
+            logging.WARNING,
+            f"{tag} download failed; retrying export after recovery",
+            job,
+            error=error_msg,
+        )
         job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
         queue_retry(job, error_msg or "download failed")
         return

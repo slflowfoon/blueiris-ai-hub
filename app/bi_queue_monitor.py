@@ -20,6 +20,7 @@ from bi_export_shared import (
     bi_get_export_queue,
     get_session,
     job_tag,
+    log_job_event,
     load_job,
     queue_poll_interval,
     r,
@@ -93,7 +94,9 @@ def _poll_active_exports():
         try:
             active_exports = bi_get_export_queue(sess, bi_url, sid)
         except Exception as exc:
-            logging.warning(f"{tag} Error polling export queue: {safe_error_summary(exc)}")
+            logging.warning(
+                f"{tag} export queue poll failed | bi_url={bi_url} error={safe_error_summary(exc)}"
+            )
             continue
 
         active_paths = {item.get("path") for item in active_exports if item.get("path")}
@@ -107,10 +110,23 @@ def _poll_active_exports():
                     job["status"] = "queued"
                     job["queue_ack_at"] = now
                     job["last_transition_at"] = now
-                    logging.info(f"{tag} Export {job['target_path']} acknowledged in BI queue")
+                    log_job_event(
+                        logging.INFO,
+                        f"{tag} export acknowledged",
+                        job,
+                        queue_size=queue_size,
+                        target_path=job["target_path"],
+                    )
 
                 if (elapsed - job.get("last_progress_log", 0)) >= QUEUE_PROGRESS_LOG_INTERVAL:
-                    logging.info(f"{tag} Export still in progress after {elapsed:.1f}s (queue size: {queue_size})")
+                    log_job_event(
+                        logging.INFO,
+                        f"{tag} export in progress",
+                        job,
+                        elapsed=f"{elapsed:.1f}s",
+                        queue_size=queue_size,
+                        active_exports=len(request_ids),
+                    )
                     job["last_progress_log"] = elapsed
 
                 job["next_poll_at"] = now + queue_poll_interval(elapsed)
@@ -124,12 +140,25 @@ def _poll_active_exports():
                 save_job(job)
                 r.srem(ACTIVE_EXPORT_SET, job["request_id"])
                 r.rpush(DOWNLOAD_REQUEST_QUEUE, job["request_id"])
-                logging.info(f"{tag} Export {job['target_path']} left queue after {elapsed:.1f}s; queued for download")
+                log_job_event(
+                    logging.INFO,
+                    f"{tag} export ready for download",
+                    job,
+                    elapsed=f"{elapsed:.1f}s",
+                    queue_size=queue_size,
+                    download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
+                )
                 continue
 
             if job["status"] == "submitted" and elapsed >= EXPORT_QUEUE_ACK_TIMEOUT:
                 if job.get("export_attempts", 1) < MAX_EXPORT_ATTEMPTS:
-                    logging.warning(f"{tag} Export not acknowledged in queue; retrying submission")
+                    log_job_event(
+                        logging.WARNING,
+                        f"{tag} export acknowledgement timeout; retrying",
+                        job,
+                        elapsed=f"{elapsed:.1f}s",
+                        queue_size=queue_size,
+                    )
                     queue_retry(job, "export not acknowledged by queue monitor")
                 else:
                     job["status"] = "failed"
@@ -150,7 +179,13 @@ def _poll_active_exports():
                     job.get("restart_token", ""),
                     tag,
                 ):
-                    logging.warning(f"{tag} Export queue timeout; retrying after BI recovery")
+                    log_job_event(
+                        logging.WARNING,
+                        f"{tag} export queue timeout; retrying after recovery",
+                        job,
+                        elapsed=f"{elapsed:.1f}s",
+                        queue_size=queue_size,
+                    )
                     job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
                     queue_retry(job, "timed out waiting for BI queue")
                 else:
@@ -159,7 +194,13 @@ def _poll_active_exports():
                     save_job(job)
                     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
                     write_result(job["request_id"], job["output_path"], False, "timed out waiting for BI queue")
-                    logging.error(f"{tag} Export timed out waiting for BI queue")
+                    log_job_event(
+                        logging.ERROR,
+                        f"{tag} export failed waiting for queue",
+                        job,
+                        elapsed=f"{elapsed:.1f}s",
+                        queue_size=queue_size,
+                    )
 
 
 def run_monitor():

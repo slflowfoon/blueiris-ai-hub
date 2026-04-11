@@ -25,6 +25,7 @@ from bi_export_shared import (
     finish_delivery,
     iter_job_ids,
     job_tag,
+    log_job_event,
     load_job,
     mark_delivery_queued,
     queue_retry,
@@ -59,7 +60,7 @@ def _repair_job(job):
     transition_age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
 
     if status in {"submitted", "queued"} and not r.sismember(ACTIVE_EXPORT_SET, request_id):
-        logging.warning(f"{tag} Watchdog re-attaching active export tracking for {status} job")
+        log_job_event(logging.WARNING, f"{tag} watchdog reattaching active export", job)
         r.sadd(ACTIVE_EXPORT_SET, request_id)
         job["next_poll_at"] = 0
         job["last_transition_at"] = now
@@ -68,7 +69,12 @@ def _repair_job(job):
 
     if status == "submitted" and submitted_age >= (EXPORT_QUEUE_ACK_TIMEOUT + WATCHDOG_STALE_BUFFER):
         if job.get("export_attempts", 1) < MAX_EXPORT_ATTEMPTS:
-            logging.warning(f"{tag} Watchdog retrying unacknowledged export")
+            log_job_event(
+                logging.WARNING,
+                f"{tag} watchdog retrying unacknowledged export",
+                job,
+                age=f"{submitted_age:.1f}s",
+            )
             queue_retry(job, "watchdog: export acknowledgement stale")
         else:
             job["status"] = "failed"
@@ -81,7 +87,12 @@ def _repair_job(job):
 
     if status == "queued" and submitted_age >= (EXPORT_QUEUE_TIMEOUT + WATCHDOG_STALE_BUFFER):
         if job.get("export_attempts", 1) < MAX_EXPORT_ATTEMPTS:
-            logging.warning(f"{tag} Watchdog retrying stale queued export")
+            log_job_event(
+                logging.WARNING,
+                f"{tag} watchdog retrying stale queued export",
+                job,
+                age=f"{submitted_age:.1f}s",
+            )
             queue_retry(job, "watchdog: export queue stale")
         else:
             job["status"] = "failed"
@@ -93,14 +104,25 @@ def _repair_job(job):
         return
 
     if status == "ready" and transition_age >= (DOWNLOAD_TIMEOUT + WATCHDOG_STALE_BUFFER):
-        logging.warning(f"{tag} Watchdog requeueing stale ready job for download")
+        log_job_event(
+            logging.WARNING,
+            f"{tag} watchdog requeueing stale ready download",
+            job,
+            age=f"{transition_age:.1f}s",
+            download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
+        )
         job["last_transition_at"] = now
         save_job(job)
         r.rpush(DOWNLOAD_REQUEST_QUEUE, request_id)
         return
 
     if status == "retry_queued" and transition_age >= RETRY_QUEUE_STALE_AGE:
-        logging.warning(f"{tag} Watchdog requeueing stalled retry job")
+        log_job_event(
+            logging.WARNING,
+            f"{tag} watchdog requeueing stalled export retry",
+            job,
+            age=f"{transition_age:.1f}s",
+        )
         job["last_transition_at"] = now
         save_job(job)
         r.rpush("bi:export:requests", json.dumps(job["request"]))
@@ -109,13 +131,24 @@ def _repair_job(job):
     if status == "downloaded":
         if job.get("delivery_context") and delivery_status in {None, "queued", "retry_queued", "processing"}:
             if delivery_status in {None, "queued", "retry_queued"} and transition_age >= DELIVERY_QUEUE_STALE_AGE:
-                logging.warning(f"{tag} Watchdog requeueing stale delivery job")
+                log_job_event(
+                    logging.WARNING,
+                    f"{tag} watchdog requeueing stale delivery job",
+                    job,
+                    age=f"{transition_age:.1f}s",
+                    delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
+                )
                 mark_delivery_queued(job)
                 return
 
             if delivery_status == "processing" and transition_age >= (DELIVERY_QUEUE_STALE_AGE * 2):
                 if int(job.get("delivery_attempts", 0)) < MAX_DELIVERY_ATTEMPTS:
-                    logging.warning(f"{tag} Watchdog requeueing stuck delivery processing job")
+                    log_job_event(
+                        logging.WARNING,
+                        f"{tag} watchdog requeueing stuck delivery processing",
+                        job,
+                        age=f"{transition_age:.1f}s",
+                    )
                     mark_delivery_queued(job)
                 else:
                     finish_delivery(job, False, "watchdog: delivery processing stale")

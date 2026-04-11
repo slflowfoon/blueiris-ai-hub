@@ -19,6 +19,8 @@ from bi_export_shared import (
     bi_get_export_queue,
     bi_resolve_export_target,
     get_session,
+    job_tag,
+    log_job_event,
     r,
     safe_error_summary,
     save_job,
@@ -135,7 +137,7 @@ def _process_request(raw):
         return
 
     request_id = req.get("request_id", "unknown")
-    tag = f"[{req.get('config_name', '?')}][{request_id[:8]}]"
+    tag = job_tag(req)
     queued_at = req.get("queued_at", 0)
     if queued_at and (time.time() - queued_at) > STALE_REQUEST_AGE:
         write_result(request_id, req.get("output_path"), False, "stale request")
@@ -152,7 +154,14 @@ def _process_request(raw):
 
     save_job(job)
     r.sadd(ACTIVE_EXPORT_SET, request_id)
-    logging.info(f"{tag} Export queued as {job['target_path']}; awaiting queue monitor acknowledgement")
+    log_job_event(
+        logging.INFO,
+        f"{tag} export submitted",
+        job,
+        target_path=job["target_path"],
+        relative_uri=job["relative_uri"],
+        queue="bi:export:requests",
+    )
 
 
 def run_exporter():
