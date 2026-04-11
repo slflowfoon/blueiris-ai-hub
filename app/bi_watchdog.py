@@ -25,6 +25,7 @@ from bi_export_shared import (
     iter_job_ids,
     job_tag,
     log_job_event,
+    log_terminal_diagnosis,
     load_job,
     mark_delivery_queued,
     queue_retry,
@@ -85,6 +86,15 @@ def _repair_job(job):
             job["last_transition_at"] = now
             save_job(job)
             r.srem(ACTIVE_EXPORT_SET, request_id)
+            log_terminal_diagnosis(
+                logger,
+                tag,
+                job,
+                "watchdog_failed",
+                "queue_ack_timeout",
+                age=f"{submitted_age:.1f}s",
+                error=job["error"],
+            )
             write_result(request_id, job["output_path"], False, job["error"])
         return
 
@@ -106,6 +116,15 @@ def _repair_job(job):
             job["last_transition_at"] = now
             save_job(job)
             r.srem(ACTIVE_EXPORT_SET, request_id)
+            log_terminal_diagnosis(
+                logger,
+                tag,
+                job,
+                "watchdog_failed",
+                "queue_timeout",
+                age=f"{submitted_age:.1f}s",
+                error=job["error"],
+            )
             write_result(request_id, job["output_path"], False, job["error"])
         return
 
@@ -169,6 +188,15 @@ def _repair_job(job):
                     )
                     mark_delivery_queued(job)
                 else:
+                    log_terminal_diagnosis(
+                        logger,
+                        tag,
+                        job,
+                        "delivery_failed",
+                        "delivery_processing_stale",
+                        age=f"{transition_age:.1f}s",
+                        error="watchdog: delivery processing stale",
+                    )
                     finish_delivery(job, False, "watchdog: delivery processing stale")
 
 

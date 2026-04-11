@@ -20,6 +20,7 @@ from bi_export_shared import (
     get_session,
     job_tag,
     log_job_event,
+    log_terminal_diagnosis,
     load_job,
     queue_poll_interval,
     r,
@@ -81,6 +82,14 @@ def _poll_active_exports():
                     job["error"] = "BI login failed"
                     save_job(job)
                     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    log_terminal_diagnosis(
+                        logger,
+                        job_tag(job),
+                        job,
+                        "queue_failed",
+                        "bi_login_failed",
+                        error="BI login failed",
+                    )
                     write_result(job["request_id"], job["output_path"], False, "BI login failed")
             continue
 
@@ -168,6 +177,15 @@ def _poll_active_exports():
                     job["error"] = "export not acknowledged by queue monitor"
                     save_job(job)
                     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    log_terminal_diagnosis(
+                        logger,
+                        tag,
+                        job,
+                        "queue_failed",
+                        "queue_ack_timeout",
+                        elapsed=f"{elapsed:.1f}s",
+                        error="export not acknowledged by queue monitor",
+                    )
                     write_result(
                         job["request_id"],
                         job["output_path"],
@@ -199,6 +217,15 @@ def _poll_active_exports():
                     job["error"] = "timed out waiting for BI queue"
                     save_job(job)
                     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    log_terminal_diagnosis(
+                        logger,
+                        tag,
+                        job,
+                        "queue_failed",
+                        "queue_timeout",
+                        elapsed=f"{elapsed:.1f}s",
+                        error="timed out waiting for BI queue",
+                    )
                     write_result(job["request_id"], job["output_path"], False, "timed out waiting for BI queue")
                     log_job_event(
                         logging.ERROR,

@@ -17,6 +17,7 @@ from bi_export_shared import (
     get_session,
     job_tag,
     log_job_event,
+    log_terminal_diagnosis,
     load_job,
     mark_delivery_queued,
     r,
@@ -168,6 +169,14 @@ def _process_download_request(request_id):
         phase="download_failed",
         error=error_msg,
         error_code="download_not_ready",
+    )
+    log_terminal_diagnosis(
+        logger,
+        tag,
+        job,
+        "download_failed",
+        "download_not_ready",
+        error=error_msg,
     )
     finish_job(job, False, error_msg)
 

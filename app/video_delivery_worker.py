@@ -13,6 +13,7 @@ from bi_export_shared import (
     finish_delivery,
     job_tag,
     log_job_event,
+    log_terminal_diagnosis,
     load_job,
     requeue_delivery,
     r,
@@ -55,6 +56,14 @@ def _process_delivery_request(request_id):
     delivery = job.get("delivery_context") or {}
     config = delivery.get("config") or {}
     if not config or "last_msg_id" not in config:
+        log_terminal_diagnosis(
+            logger,
+            job_tag(job),
+            job,
+            "delivery_failed",
+            "missing_delivery_context",
+            error="missing Telegram delivery context",
+        )
         finish_delivery(job, False, "missing Telegram delivery context")
         return
 
@@ -82,6 +91,14 @@ def _process_delivery_request(request_id):
             logger=logger,
             phase="delivery_failed",
             error_code="downloaded_video_missing",
+        )
+        log_terminal_diagnosis(
+            logger,
+            tag,
+            job,
+            "delivery_failed",
+            "downloaded_video_missing",
+            error="downloaded video missing from disk",
         )
         finish_delivery(job, False, "downloaded video missing from disk")
         return
@@ -113,6 +130,14 @@ def _process_delivery_request(request_id):
                 logger=logger,
                 phase="delivery_failed",
                 error_code="telegram_replace_failed",
+            )
+            log_terminal_diagnosis(
+                logger,
+                tag,
+                job,
+                "delivery_failed",
+                "telegram_replace_failed",
+                error="telegram media replace failed",
             )
             finish_delivery(job, False, "telegram media replace failed")
             _cleanup_paths(optimised_mp4, raw_mp4)
