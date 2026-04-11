@@ -20,6 +20,7 @@ from bi_export_shared import (
     bi_resolve_export_target,
     get_session,
     r,
+    safe_error_summary,
     save_job,
     write_result,
 )
@@ -68,7 +69,7 @@ def _prepare_export(req, tag):
     try:
         known_paths = {item.get("path") for item in bi_get_export_queue(sess, req["bi_url"], sid) if item.get("path")}
     except Exception as exc:
-        logging.warning(f"{tag} Failed to read export queue before enqueue: {exc}")
+        logging.warning(f"{tag} Failed to read export queue before enqueue: {safe_error_summary(exc)}")
 
     target_path = None
     relative_uri = None
@@ -82,7 +83,7 @@ def _prepare_export(req, tag):
                     queue_data = bi_get_export_queue(sess, req["bi_url"], sid)
                     target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
                 except Exception as exc:
-                    logging.warning(f"{tag} Failed to refresh export queue after enqueue: {exc}")
+                    logging.warning(f"{tag} Failed to refresh export queue after enqueue: {safe_error_summary(exc)}")
             if target_path and relative_uri:
                 break
 
@@ -99,6 +100,7 @@ def _prepare_export(req, tag):
     now = time.time()
     job = {
         "request_id": req["request_id"],
+        "alert_request_id": req.get("alert_request_id"),
         "config_name": req.get("config_name", "?"),
         "request": req,
         "bi_url": req["bi_url"],
@@ -110,11 +112,16 @@ def _prepare_export(req, tag):
         "delete_after": req.get("delete_after", True),
         "restart_url": req.get("bi_restart_url", ""),
         "restart_token": req.get("bi_restart_token", ""),
+        "delivery_context": req.get("delivery_context"),
+        "delivery_status": "pending" if req.get("delivery_context") else None,
+        "delivery_attempts": 0,
+        "download_attempts": 0,
         "status": "submitted",
         "export_attempts": int(req.get("_export_attempts", 0)) + 1,
         "recovery_attempts": int(req.get("_recovery_attempts", 0)),
         "submitted_at": now,
         "monitor_started_at": now,
+        "last_transition_at": now,
         "last_progress_log": 0,
         "next_poll_at": now,
     }

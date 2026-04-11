@@ -23,6 +23,7 @@ from bi_export_shared import (
     load_job,
     queue_poll_interval,
     r,
+    safe_error_summary,
     save_job,
     trigger_bi_recovery,
     queue_retry,
@@ -92,7 +93,7 @@ def _poll_active_exports():
         try:
             active_exports = bi_get_export_queue(sess, bi_url, sid)
         except Exception as exc:
-            logging.warning(f"{tag} Error polling export queue: {exc}")
+            logging.warning(f"{tag} Error polling export queue: {safe_error_summary(exc)}")
             continue
 
         active_paths = {item.get("path") for item in active_exports if item.get("path")}
@@ -105,6 +106,7 @@ def _poll_active_exports():
                 if job["status"] == "submitted":
                     job["status"] = "queued"
                     job["queue_ack_at"] = now
+                    job["last_transition_at"] = now
                     logging.info(f"{tag} Export {job['target_path']} acknowledged in BI queue")
 
                 if (elapsed - job.get("last_progress_log", 0)) >= QUEUE_PROGRESS_LOG_INTERVAL:
@@ -118,6 +120,7 @@ def _poll_active_exports():
             if job["status"] == "queued":
                 job["status"] = "ready"
                 job["ready_at"] = now
+                job["last_transition_at"] = now
                 save_job(job)
                 r.srem(ACTIVE_EXPORT_SET, job["request_id"])
                 r.rpush(DOWNLOAD_REQUEST_QUEUE, job["request_id"])

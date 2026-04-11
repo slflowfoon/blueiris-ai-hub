@@ -18,6 +18,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 EXPORT_REQUEST_QUEUE     = "bi:export:requests"
 DOWNLOAD_REQUEST_QUEUE   = "bi:download:requests"
+VIDEO_DELIVERY_QUEUE     = "bi:delivery:requests"
 ACTIVE_EXPORT_SET        = "bi:exports:active"
 JOB_KEY_PREFIX           = "bi:job:"
 RESULT_KEY_PREFIX        = "bi:result:"
@@ -30,11 +31,24 @@ RECOVERY_PAUSE           = 15
 QUEUE_PROGRESS_LOG_INTERVAL = 15
 MAX_EXPORT_ATTEMPTS      = 2
 MAX_RECOVERY_ATTEMPTS    = 1
+MAX_DELIVERY_ATTEMPTS    = 3
 SESSION_KEY_PREFIX       = "bi:session:"
 SESSION_TTL              = 3600
+WATCHDOG_INTERVAL        = 15
+WATCHDOG_STALE_BUFFER    = 10
+RETRY_QUEUE_STALE_AGE    = 30
+DELIVERY_QUEUE_STALE_AGE = 45
 
 r = redis.from_url(REDIS_URL)
 _session_cache = {}
+
+
+def safe_error_summary(exc):
+    """Summarise request-related failures without logging raw exception text."""
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"{type(exc).__name__} status={response.status_code}"
+    return type(exc).__name__
 
 
 def _bi_protocol_hash(value: str) -> str:
@@ -55,7 +69,8 @@ def result_key(request_id):
 
 
 def job_tag(job):
-    return f"[{job.get('config_name', '?')}][{job.get('request_id', 'unknown')[:8]}]"
+    correlation_id = job.get("alert_request_id") or job.get("request_id") or "unknown"
+    return f"[{job.get('config_name', '?')}][{correlation_id[:8]}]"
 
 
 def session_key(bi_url, bi_user):
@@ -102,7 +117,7 @@ def bi_login(sess, base_url, user, password, tag):
             return None
         return sid
     except Exception as exc:
-        logging.error(f"{tag} BI login error: {exc}")
+        logging.error(f"{tag} BI login error: {safe_error_summary(exc)}")
         return None
 
 
@@ -156,7 +171,7 @@ def trigger_bi_recovery(restart_url, restart_token, tag):
             return True
         logging.error(f"{tag} BI recovery returned {resp.status_code}")
     except Exception as exc:
-        logging.error(f"{tag} BI recovery error: {exc}")
+        logging.error(f"{tag} BI recovery error: {safe_error_summary(exc)}")
     return False
 
 
@@ -205,7 +220,7 @@ def bi_delete_clip(sess, base_url, sid, clip_id, tag):
             logging.info(f"{tag} Deleted clip @{clean}")
             return True
     except Exception as exc:
-        logging.error(f"{tag} Delete clip error: {exc}")
+        logging.error(f"{tag} Delete clip error: {safe_error_summary(exc)}")
     return False
 
 
@@ -225,6 +240,7 @@ def load_job(request_id):
 
 
 def save_job(job):
+    job["updated_at"] = time.time()
     r.set(job_key(job["request_id"]), json.dumps(job))
 
 
@@ -245,9 +261,39 @@ def finish_job(job, ok, error_msg=None):
     else:
         job["status"] = "failed"
         job["error"] = error_msg
+    job["last_transition_at"] = time.time()
     save_job(job)
     r.srem(ACTIVE_EXPORT_SET, request_id)
     write_result(request_id, job.get("output_path"), ok, error_msg)
+
+
+def mark_delivery_queued(job):
+    job["delivery_status"] = "queued"
+    job["delivery_queued_at"] = time.time()
+    job["last_transition_at"] = job["delivery_queued_at"]
+    save_job(job)
+    r.rpush(VIDEO_DELIVERY_QUEUE, job["request_id"])
+
+
+def finish_delivery(job, ok, error_msg=None):
+    if ok:
+        job["delivery_status"] = "completed"
+        job["status"] = "completed"
+    else:
+        job["delivery_status"] = "failed"
+        job["status"] = "delivery_failed"
+        job["delivery_error"] = error_msg
+    job["last_transition_at"] = time.time()
+    save_job(job)
+
+
+def requeue_delivery(job, reason):
+    job["delivery_status"] = "retry_queued"
+    job["delivery_error"] = reason
+    job["delivery_attempts"] = int(job.get("delivery_attempts", 0))
+    job["last_transition_at"] = time.time()
+    save_job(job)
+    r.rpush(VIDEO_DELIVERY_QUEUE, job["request_id"])
 
 
 def queue_retry(job, reason):
@@ -259,6 +305,19 @@ def queue_retry(job, reason):
 
     job["status"] = "retry_queued"
     job["last_error"] = reason
+    job["last_transition_at"] = time.time()
     save_job(job)
     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(retry_request))
+
+
+def iter_job_ids():
+    cursor = 0
+    pattern = f"{JOB_KEY_PREFIX}*"
+    while True:
+        cursor, keys = r.scan(cursor=cursor, match=pattern, count=100)
+        for key in keys:
+            decoded = key.decode() if isinstance(key, bytes) else key
+            yield decoded.removeprefix(JOB_KEY_PREFIX)
+        if cursor == 0:
+            break

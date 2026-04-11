@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 
@@ -6,6 +7,8 @@ import bi_downloader
 import bi_export_shared
 import bi_exporter
 import bi_queue_monitor
+import bi_watchdog
+import video_delivery_worker
 
 
 _r = bi_export_shared.r
@@ -14,6 +17,7 @@ _r = bi_export_shared.r
 def _request_payload(**overrides):
     payload = {
         "request_id": str(uuid.uuid4()),
+        "alert_request_id": "webhook42",
         "config_name": "TestCam",
         "bi_url": "http://192.168.1.1:81",
         "bi_user": "admin",
@@ -33,14 +37,16 @@ def _request_payload(**overrides):
 
 
 def _clear_pipeline_state():
-    active_ids = [
+    active_ids = set(
         rid.decode() if isinstance(rid, bytes) else rid
         for rid in _r.smembers(bi_export_shared.ACTIVE_EXPORT_SET)
-    ]
+    )
+    active_ids.update(bi_export_shared.iter_job_ids())
     keys = [
         bi_export_shared.ACTIVE_EXPORT_SET,
         bi_export_shared.EXPORT_REQUEST_QUEUE,
         bi_export_shared.DOWNLOAD_REQUEST_QUEUE,
+        bi_export_shared.VIDEO_DELIVERY_QUEUE,
     ]
     for request_id in active_ids:
         keys.append(bi_export_shared.job_key(request_id))
@@ -69,6 +75,7 @@ class TestExporter:
             lambda req, _tag: (
                 {
                     "request_id": req["request_id"],
+                    "alert_request_id": req["alert_request_id"],
                     "config_name": req["config_name"],
                     "request": req,
                     "bi_url": req["bi_url"],
@@ -96,8 +103,14 @@ class TestExporter:
 
         stored = bi_export_shared.load_job(payload["request_id"])
         assert stored["status"] == "submitted"
+        assert stored["alert_request_id"] == payload["alert_request_id"]
         assert stored["target_path"] == "@queued"
         assert _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, payload["request_id"])
+
+    def test_job_tag_prefers_alert_request_id(self):
+        payload = _request_payload()
+
+        assert bi_export_shared.job_tag(payload) == "[TestCam][webhook4]"
 
     def test_result_key_has_ttl_on_failure(self, monkeypatch):
         payload = _request_payload()
@@ -259,6 +272,38 @@ class TestDownloader:
         assert stored["status"] == "downloaded"
         assert json.loads(result[1])["ok"] is True
 
+    def test_download_success_queues_async_delivery(self, monkeypatch):
+        payload = _request_payload(output_path="/tmp/test_delivery_raw.mp4")
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "ready",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "delivery_context": {"config": {"last_msg_id": 123}},
+            "delivery_status": "pending",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        monkeypatch.setattr(bi_downloader, "_download_export", lambda current_job: (True, None))
+
+        bi_downloader._process_download_request(job["request_id"])
+
+        queued_delivery = _r.blpop(bi_export_shared.VIDEO_DELIVERY_QUEUE, timeout=1)
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert queued_delivery[1].decode() == job["request_id"]
+        assert stored["delivery_status"] == "queued"
+
     def test_download_failure_requeues_after_recovery(self, monkeypatch):
         payload = _request_payload()
         job = {
@@ -319,3 +364,96 @@ class TestSharedSessionCache:
 
         assert sid1 == "shared-sid"
         assert sid2 == "shared-sid"
+
+
+class TestWatchdog:
+    def setup_method(self):
+        _clear_pipeline_state()
+
+    def test_watchdog_requeues_stale_ready_job_for_download(self):
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "ready",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "last_transition_at": time.time() - (bi_export_shared.DOWNLOAD_TIMEOUT + 20),
+        }
+        bi_export_shared.save_job(job)
+
+        bi_watchdog._run_once()
+
+        queued_download = _r.blpop(bi_export_shared.DOWNLOAD_REQUEST_QUEUE, timeout=1)
+        assert queued_download[1].decode() == job["request_id"]
+
+
+class TestVideoDeliveryWorker:
+    def setup_method(self):
+        _clear_pipeline_state()
+
+    def test_video_delivery_completes_downloaded_job(self, monkeypatch):
+        raw_mp4 = "/tmp/video_delivery_worker_raw.mp4"
+        with open(raw_mp4, "wb") as fh:
+            fh.write(b"video-data")
+
+        payload = _request_payload(output_path=raw_mp4)
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": raw_mp4,
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {
+                "config": {
+                    "id": 1,
+                    "name": "TestCam",
+                    "request_id": "req",
+                    "telegram_token": "token",
+                    "chat_id": "chat",
+                    "last_msg_id": 42,
+                    "dvla_api_key": "",
+                    "gemini_api_key1": "",
+                    "gemini_api_key2": "",
+                    "gemini_api_key3": "",
+                },
+                "prompt": "describe this",
+                "still_caption": "Motion detected.",
+            },
+            "delivery_status": "queued",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        monkeypatch.setattr(
+            video_delivery_worker,
+            "deliver_video_to_telegram",
+            lambda *args, **kwargs: (raw_mp4.replace("_raw.mp4", ".mp4"), True),
+        )
+        monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: "Car on drive")
+        monkeypatch.setattr(video_delivery_worker, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
+        monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
+
+        video_delivery_worker._process_delivery_request(job["request_id"])
+
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert stored["status"] == "completed"
+        assert stored["delivery_status"] == "completed"
+        assert not os.path.exists(raw_mp4)

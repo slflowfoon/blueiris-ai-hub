@@ -148,10 +148,12 @@ docker compose up -d
 | `bi_exporter` | Blue Iris export submitter — starts BI exports and records staged export jobs |
 | `bi_queue_monitor` | Shared BI queue poller — watches `_export` and promotes finished jobs to download |
 | `bi_downloader` | Blue Iris downloader — validates and downloads completed exports |
+| `bi_watchdog` | Stranded-job watchdog — repairs stale export, download, and delivery states |
+| `video_delivery_worker` | Telegram delivery worker — replaces the still image with video and updates the caption after BI download completes |
 | `mute_bot` | Telegram bot polling loop — handles `/mute`, `/unmute`, `/caption` commands |
 | `redis` | Job queue and state store (mutes, caption modes, API key rotation, export jobs) |
 
-Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image with AI → Telegram notification sent with caption → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → worker optimises the Telegram media and analyses the raw clip with AI in parallel → caption updated and photo replaced with video clip.
+Alert flow: Blue Iris → `curl` POST to `/webhook/<id>` → image saved → job queued → worker analyses still image and sends the initial Telegram photo → (if video enabled) exporter submits BI export → queue monitor watches `_export` until the clip leaves the queue → downloader validates and downloads the MP4 → video delivery worker replaces the Telegram photo with video and updates the caption asynchronously → watchdog requeues stranded jobs when any BI stage stalls.
 
 ### Service topology
 
@@ -164,6 +166,8 @@ graph LR
         bi_exporter
         bi_queue_monitor
         bi_downloader
+        bi_watchdog
+        video_delivery_worker
         mute_bot
         redis[(Redis)]
     end
@@ -186,9 +190,12 @@ graph LR
     bi_queue_monitor -->|bi:download:requests| redis
     redis -->|bi:download:requests| bi_downloader
     bi_downloader -->|download MP4| BI
-    bi_downloader -->|bi:result| redis
-    redis -->|bi:result| worker
-    worker -->|send video| TG
+    bi_downloader -->|bi:result + delivery queue| redis
+    redis -->|bi:delivery:requests| video_delivery_worker
+    video_delivery_worker -->|send video / update caption| TG
+    video_delivery_worker -->|video analysis| AI
+    video_delivery_worker -->|DVLA lookup| DVLA
+    bi_watchdog -->|scan jobs / repair stale state| redis
     mute_bot -->|poll commands| TG
     mute_bot -->|mute state| redis
 ```
@@ -202,16 +209,20 @@ sequenceDiagram
     participant E as bi_exporter
     participant Q as bi_queue_monitor
     participant D as bi_downloader
+    participant V as video_delivery_worker
+    participant X as bi_watchdog
     participant BI as Blue Iris
+    participant TG as Telegram
 
     W->>R: RPUSH bi:export:requests
-    E->>R: BLPOP bi:export:requests
+    W->>TG: send initial still photo
+    R->>E: BLPOP bi:export:requests
     E->>BI: POST /json?_export
     E->>R: save job (status: submitted)<br/>SADD bi:exports:active
 
-    loop poll every ~1s
+    loop queue monitor
         Q->>R: SMEMBERS bi:exports:active
-        Q->>BI: GET export queue
+        Q->>BI: POST /json?_export
         alt clip still in queue
             Q->>R: update job (status: queued)
         else clip left queue
@@ -221,13 +232,20 @@ sequenceDiagram
         end
     end
 
-    D->>R: BLPOP bi:download:requests
+    R->>D: BLPOP bi:download:requests
     D->>BI: GET /clips/...mp4
     alt download success
-        D->>R: update job (status: downloaded)<br/>RPUSH bi:result:<id>
+        D->>R: update job (status: downloaded)<br/>RPUSH bi:result:<id><br/>RPUSH bi:delivery:requests
     else download failed
         D->>R: queue retry or write failure result
     end
 
-    W->>R: BLPOP bi:result:<id>
+    R->>V: BLPOP bi:delivery:requests
+    V->>TG: replace still photo with video
+    V->>TG: update caption after video analysis
+
+    loop watchdog
+        X->>R: scan bi:job:*
+        X->>R: requeue stale submitted / ready / delivery jobs
+    end
 ```

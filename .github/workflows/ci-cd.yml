@@ -111,6 +111,12 @@ jobs:
           echo "Verifying BI Downloader..."
           docker run --rm $IMAGE python3 -c "import bi_downloader; print('BI Downloader OK')"
 
+          echo "Verifying BI Watchdog..."
+          docker run --rm $IMAGE python3 -c "import bi_watchdog; print('BI Watchdog OK')"
+
+          echo "Verifying Video Delivery Worker..."
+          docker run --rm $IMAGE python3 -c "import video_delivery_worker; print('Video Delivery Worker OK')"
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
