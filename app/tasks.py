@@ -11,7 +11,7 @@ import subprocess
 import sqlite3
 import redis
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
@@ -304,7 +304,7 @@ def analyze_image_gemini(config, encoded_image, prompt):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
 
-    start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
+    start_idx = r.incr(f'gemini_key_idx:{config_id}') % len(keys)
 
     for attempt in range(len(keys) * len(GEMINI_MODELS)):
         key_i = (start_idx + attempt // len(GEMINI_MODELS)) % len(keys)
@@ -320,7 +320,6 @@ def analyze_image_gemini(config, encoded_image, prompt):
             logging.info(f"{tag} Gemini image: key {key_i + 1}/{len(keys)}, {model}")
             resp = requests.post(url, json=payload, timeout=30)
             if resp.status_code == 200:
-                r.set(f'gemini_key_idx:{config_id}', (key_i + 1) % len(keys))
                 return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             elif resp.status_code == 429:
                 logging.warning(f"{tag} Rate limited: key {key_i + 1}, {model}")
@@ -347,7 +346,7 @@ def analyze_video_gemini(config, video_path, prompt):
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
 
-    start_idx = int(r.get(f'gemini_key_idx:{config_id}') or 0)
+    start_idx = r.incr(f'gemini_key_idx:{config_id}') % len(keys)
 
     for ki in range(len(keys)):
         key_i = (start_idx + ki) % len(keys)
@@ -412,7 +411,6 @@ def analyze_video_gemini(config, video_path, prompt):
                 try:
                     resp = requests.post(url, json=payload, timeout=60)
                     if resp.status_code == 200:
-                        r.set(f'gemini_key_idx:{config_id}', (key_i + 1) % len(keys))
                         result = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
                         logging.info(f"{tag} Video analysis succeeded with {model}")
                         return result
@@ -735,17 +733,38 @@ def request_bi_export(config, output_path, tag, timeout=300):
 # Image / Still fallback analysis
 # =============================================================================
 
+def analyze_image_parallel(config, encoded_image, prompt):
+    """Run all configured AI providers concurrently; return the first successful result."""
+    providers = []
+    if config.get('gemini_key', '').strip():
+        providers.append(lambda: analyze_image_gemini(config, encoded_image, prompt))
+    if config.get('grok_api_key', '').strip():
+        providers.append(lambda: analyze_image_grok(config, encoded_image, prompt))
+    if config.get('groq_api_key', '').strip():
+        providers.append(lambda: analyze_image_groq(config, encoded_image, prompt))
+    if not providers:
+        return None
+    ex = ThreadPoolExecutor(max_workers=len(providers))
+    try:
+        futures = {ex.submit(fn): fn for fn in providers}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    return result
+            except Exception as e:
+                logging.warning(f"[parallel AI] provider error: {e}")
+    finally:
+        ex.shutdown(wait=False)  # Don't block on remaining providers once we have a result
+    return None
+
+
 def analyze_still_image_fallback(image_path, prompt, config):
-    """PLAN C: Fallback to Still image AI models if Gemini Video fails."""
+    """PLAN C: Fallback to still image analysis if Gemini Video fails."""
     encoded = optimize_image(image_path)
     if not encoded:
         return None
-    ai_text = analyze_image_gemini(config, encoded, prompt)
-    if not ai_text:
-        ai_text = analyze_image_grok(config, encoded, prompt)
-    if not ai_text:
-        ai_text = analyze_image_groq(config, encoded, prompt)
-    return ai_text
+    return analyze_image_parallel(config, encoded, prompt)
 
 
 # =============================================================================
@@ -772,13 +791,7 @@ def process_alert(image_path, config):
         encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
-        ai_text = None
-        if encoded:
-            ai_text = analyze_image_gemini(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_grok(config, encoded, prompt)
-            if not ai_text:
-                ai_text = analyze_image_groq(config, encoded, prompt)
+        ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
 
         still_caption = ai_text or "Motion detected."
 
@@ -802,6 +815,8 @@ def process_alert(image_path, config):
         still_caption = enriched_still
 
         # Video handling
+        raw_mp4 = None
+        optimised_mp4 = None
         if config.get('send_video') == 1 and config.get('trigger_filename'):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
                 raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
@@ -848,5 +863,6 @@ def process_alert(image_path, config):
     except Exception as e:
         logging.error(f"{tag} Task failed: {e}")
     finally:
-        if os.path.exists(image_path):
-            os.remove(image_path)
+        for p in [image_path, raw_mp4, optimised_mp4]:
+            if p and os.path.exists(p):
+                os.remove(p)
