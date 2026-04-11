@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 import redis
 import requests
+from service_health import start_heartbeat_thread
 
 LOG_FILE = "/app/logs/mute_bot.log"
 DB_FILE = "/app/data/configs.db"
@@ -303,6 +304,7 @@ def run_bot(session):
 
 
 def main():
+    start_heartbeat_thread("mute_bot")
     logging.info("Mute bot starting...")
     while True:
         try:

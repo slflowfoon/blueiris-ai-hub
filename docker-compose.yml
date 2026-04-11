@@ -8,6 +8,11 @@ services:
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   web:
@@ -24,6 +29,12 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       #- BASE_URL=https://example.com
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   worker:
@@ -37,6 +48,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/worker.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     deploy:
       replicas: 4  # Increase for more concurrent camera alerts (1 per simultaneous camera)
@@ -51,6 +68,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/mute_bot.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   bi_exporter:
@@ -64,6 +87,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/bi_exporter.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Single replica is intentional — export submission must stay ordered.
 
@@ -78,6 +107,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/bi_queue_monitor.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Single replica is intentional — one shared queue poller per BI instance.
 
@@ -92,6 +127,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/bi_downloader.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Keep single replica until per-job file path ownership is expanded.
 
@@ -106,6 +147,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/bi_watchdog.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   video_delivery_worker:
@@ -119,4 +166,10 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='/app/data/health/video_delivery_worker.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<45 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
