@@ -35,6 +35,8 @@ docker compose up -d
 
 The web UI will be available at `http://your-host:5000`.
 
+Redis now stores durable BI export job state, session reuse data, and queue coordination. The default Compose file persists this in the named Docker volume `redis_data`, so do not remove that volume unless you intentionally want to discard in-flight BI pipeline state.
+
 ### 2. Add a camera configuration
 
 Open the web UI and click **+ New Configuration**. Fill in:
@@ -138,6 +140,19 @@ When a new version is released, the web UI shows an update banner. Run:
 docker compose pull
 docker compose up -d
 ```
+
+Do not run `docker compose down -v` unless you intentionally want to delete persisted Redis state, including staged BI export jobs.
+
+## Redis Persistence
+
+The staged BI export pipeline stores active export/download/delivery coordination in Redis. This is not just a transient cache anymore.
+
+The default `docker-compose.yml` now enables Redis append-only persistence and mounts a named Docker volume:
+
+- `redis_data:/data`
+- `redis-server --appendonly yes --appendfsync everysec`
+
+That means normal container restarts and `docker compose down` / `up -d` cycles keep BI pipeline state intact. If you remove Docker volumes, you also remove Redis state and may orphan in-flight BI jobs.
 
 ## Architecture
 
