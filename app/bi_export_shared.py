@@ -69,7 +69,8 @@ def result_key(request_id):
 
 
 def job_tag(job):
-    return f"[{job.get('config_name', '?')}][{job.get('request_id', 'unknown')[:8]}]"
+    correlation_id = job.get("alert_request_id") or job.get("request_id") or "unknown"
+    return f"[{job.get('config_name', '?')}][{correlation_id[:8]}]"
 
 
 def session_key(bi_url, bi_user):

@@ -17,6 +17,7 @@ _r = bi_export_shared.r
 def _request_payload(**overrides):
     payload = {
         "request_id": str(uuid.uuid4()),
+        "alert_request_id": "webhook42",
         "config_name": "TestCam",
         "bi_url": "http://192.168.1.1:81",
         "bi_user": "admin",
@@ -74,6 +75,7 @@ class TestExporter:
             lambda req, _tag: (
                 {
                     "request_id": req["request_id"],
+                    "alert_request_id": req["alert_request_id"],
                     "config_name": req["config_name"],
                     "request": req,
                     "bi_url": req["bi_url"],
@@ -101,8 +103,14 @@ class TestExporter:
 
         stored = bi_export_shared.load_job(payload["request_id"])
         assert stored["status"] == "submitted"
+        assert stored["alert_request_id"] == payload["alert_request_id"]
         assert stored["target_path"] == "@queued"
         assert _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, payload["request_id"])
+
+    def test_job_tag_prefers_alert_request_id(self):
+        payload = _request_payload()
+
+        assert bi_export_shared.job_tag(payload) == "[TestCam][webhook4]"
 
     def test_result_key_has_ttl_on_failure(self, monkeypatch):
         payload = _request_payload()

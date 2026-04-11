@@ -695,6 +695,7 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
 
     return {
         "request_id":       request_id,
+        "alert_request_id": config.get("request_id", "unknown"),
         "config_name":      config.get("name", "?"),
         "bi_url":           config["bi_url"],
         "bi_user":          config["bi_user"],

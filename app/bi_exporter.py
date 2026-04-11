@@ -100,6 +100,7 @@ def _prepare_export(req, tag):
     now = time.time()
     job = {
         "request_id": req["request_id"],
+        "alert_request_id": req.get("alert_request_id"),
         "config_name": req.get("config_name", "?"),
         "request": req,
         "bi_url": req["bi_url"],
