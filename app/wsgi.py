@@ -10,6 +10,8 @@ from datetime import datetime
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from db_utils import connect as sqlite_connect
+from bi_export_shared import ACTIVE_EXPORT_SET, DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE, iter_job_ids, load_job
+from service_health import HEARTBEAT_STALE_AFTER, heartbeat_status
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -234,6 +236,74 @@ def get_log_entries():
             "alert_tag": None,
             "is_trigger": False,
         }]
+
+
+def get_redis_health():
+    try:
+        r.ping()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": type(e).__name__}
+
+
+def get_service_health():
+    return {
+        "worker": heartbeat_status("worker"),
+        "mute_bot": heartbeat_status("mute_bot"),
+        "bi_exporter": heartbeat_status("bi_exporter"),
+        "bi_queue_monitor": heartbeat_status("bi_queue_monitor"),
+        "bi_downloader": heartbeat_status("bi_downloader"),
+        "bi_watchdog": heartbeat_status("bi_watchdog"),
+        "video_delivery_worker": heartbeat_status("video_delivery_worker"),
+    }
+
+
+def get_pipeline_status():
+    try:
+        queue_depths = {
+            "export_requests": r.llen(EXPORT_REQUEST_QUEUE),
+            "download_requests": r.llen(DOWNLOAD_REQUEST_QUEUE),
+            "video_delivery_requests": r.llen(VIDEO_DELIVERY_QUEUE),
+            "active_exports": r.scard(ACTIVE_EXPORT_SET),
+        }
+    except Exception:
+        return {
+            "queue_depths": None,
+            "stale_jobs": None,
+            "services": get_service_health(),
+        }
+
+    stale_jobs = {
+        "submitted": 0,
+        "queued": 0,
+        "ready": 0,
+        "retry_queued": 0,
+        "delivery_processing": 0,
+    }
+    now = datetime.now().timestamp()
+    for request_id in iter_job_ids():
+        job = load_job(request_id)
+        if not job:
+            continue
+        age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
+        status = job.get("status")
+        delivery_status = job.get("delivery_status")
+        if status == "submitted" and age > 30:
+            stale_jobs["submitted"] += 1
+        elif status == "queued" and age > 60:
+            stale_jobs["queued"] += 1
+        elif status == "ready" and age > 60:
+            stale_jobs["ready"] += 1
+        elif status == "retry_queued" and age > 30:
+            stale_jobs["retry_queued"] += 1
+        if delivery_status == "processing" and age > (HEARTBEAT_STALE_AFTER * 2):
+            stale_jobs["delivery_processing"] += 1
+
+    return {
+        "queue_depths": queue_depths,
+        "stale_jobs": stale_jobs,
+        "services": get_service_health(),
+    }
 
 
 def load_known_plates():
@@ -892,6 +962,25 @@ def index():
         known_plates=load_known_plates(),
         current_version=CURRENT_VERSION,
     )
+
+
+@app.route('/health')
+def health():
+    redis_health = get_redis_health()
+    status_code = 200 if redis_health["status"] == "ok" else 503
+    return jsonify({"status": "ok" if status_code == 200 else "degraded", "redis": redis_health}), status_code
+
+
+@app.route('/status')
+def status():
+    redis_health = get_redis_health()
+    pipeline = get_pipeline_status()
+    return jsonify({
+        "status": "ok" if redis_health["status"] == "ok" else "degraded",
+        "version": CURRENT_VERSION,
+        "redis": redis_health,
+        "pipeline": pipeline,
+    }), 200 if redis_health["status"] == "ok" else 503
 
 
 @app.route('/api/check-update')
