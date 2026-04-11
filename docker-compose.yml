@@ -87,3 +87,29 @@ services:
       - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
     # Keep single replica until per-job file path ownership is expanded.
+
+  bi_watchdog:
+    image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 bi_watchdog.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+  video_delivery_worker:
+    image: ghcr.io/slflowfoon/blueiris-ai-hub:latest
+    command: python3 video_delivery_worker.py
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - /dev/shm:/tmp_images
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped

@@ -105,6 +105,7 @@ def _poll_active_exports():
                 if job["status"] == "submitted":
                     job["status"] = "queued"
                     job["queue_ack_at"] = now
+                    job["last_transition_at"] = now
                     logging.info(f"{tag} Export {job['target_path']} acknowledged in BI queue")
 
                 if (elapsed - job.get("last_progress_log", 0)) >= QUEUE_PROGRESS_LOG_INTERVAL:
@@ -118,6 +119,7 @@ def _poll_active_exports():
             if job["status"] == "queued":
                 job["status"] = "ready"
                 job["ready_at"] = now
+                job["last_transition_at"] = now
                 save_job(job)
                 r.srem(ACTIVE_EXPORT_SET, job["request_id"])
                 r.rpush(DOWNLOAD_REQUEST_QUEUE, job["request_id"])

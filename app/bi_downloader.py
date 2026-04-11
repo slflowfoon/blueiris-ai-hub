@@ -18,7 +18,9 @@ from bi_export_shared import (
     get_session,
     job_tag,
     load_job,
+    mark_delivery_queued,
     r,
+    save_job,
     trigger_bi_recovery,
     queue_retry,
 )
@@ -95,9 +97,15 @@ def _process_download_request(request_id):
     if not job:
         return
 
+    job["download_attempts"] = int(job.get("download_attempts", 0)) + 1
+    job["last_transition_at"] = time.time()
+    save_job(job)
+
     ok, error_msg = _download_export(job)
     if ok:
         finish_job(job, True, None)
+        if job.get("delivery_context"):
+            mark_delivery_queued(load_job(job["request_id"]) or job)
         return
 
     tag = job_tag(job)

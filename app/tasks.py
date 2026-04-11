@@ -563,7 +563,7 @@ def send_telegram(config, img_path, caption):
 
 def update_telegram_caption(config, text):
     if 'last_msg_id' not in config:
-        return
+        return False
 
     req_id = config.get('request_id', 'legacy')
     tag = f"[{config['name']}][{req_id}]"
@@ -572,9 +572,11 @@ def update_telegram_caption(config, text):
     chat_id = config['chat_id']
     data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'caption': text}
     try:
-        requests.post(f"https://api.telegram.org/bot{token}/editMessageCaption", data=data, timeout=10)
+        resp = requests.post(f"https://api.telegram.org/bot{token}/editMessageCaption", data=data, timeout=10)
+        return resp.ok
     except Exception as e:
         logging.error(f"{tag} Caption update error: {e}")
+        return False
 
 
 def replace_telegram_media(config, media_path, caption):
@@ -582,7 +584,7 @@ def replace_telegram_media(config, media_path, caption):
     tag = f"[{config['name']}][{req_id}]"
 
     if 'last_msg_id' not in config:
-        return
+        return False
     token = config['telegram_token']
     chat_id = config['chat_id']
     media_json = json.dumps({"type": "animation", "media": "attach://media_file", "caption": caption})
@@ -595,10 +597,12 @@ def replace_telegram_media(config, media_path, caption):
             )
             if resp.ok:
                 logging.info(f"{tag} Replaced photo with video")
+                return True
             else:
                 logging.error(f"{tag} Replace media error: {resp.text}")
     except Exception as e:
         logging.error(f"{tag} Replace media error: {e}")
+    return False
 
 
 def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
@@ -606,12 +610,10 @@ def deliver_video_to_telegram(config, raw_mp4, optimised_mp4, caption, tag):
     Prepare Telegram-friendly media while Gemini analyzes the raw export.
     """
     if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag):
-        replace_telegram_media(config, optimised_mp4, caption)
-        return optimised_mp4
+        return optimised_mp4, replace_telegram_media(config, optimised_mp4, caption)
 
     logging.warning(f"{tag} Video optimisation failed, sending raw MP4.")
-    replace_telegram_media(config, raw_mp4, caption)
-    return raw_mp4
+    return raw_mp4, replace_telegram_media(config, raw_mp4, caption)
 
 
 # =============================================================================
@@ -651,11 +653,8 @@ def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
     return None
 
 
-def request_bi_export(config, output_path, tag, timeout=300):
-    """
-    Queue a BI export request to the staged BI exporter service and block until done.
-    Returns True on success, False on failure.
-    """
+def build_bi_export_payload(config, output_path, tag, delivery_context=None):
+    """Build the staged BI export request payload after resolving clip metadata."""
     request_id = str(uuid.uuid4())
 
     # Pre-queue alertlist lookup: resolve clip details while the alert is fresh.
@@ -679,10 +678,10 @@ def request_bi_export(config, output_path, tag, timeout=300):
                     logging.info(f"{tag} Alert not in alertlist — bvr fallback: clip={clip_path} offset={offset}")
                 else:
                     logging.warning(f"{tag} Alert not in alertlist and offset unparseable — skipping export")
-                    return False
+                    return None
             else:
                 logging.warning(f"{tag} Alert not in BI alertlist at queue time -- skipping export")
-                return False
+                return None
         except Exception as e:
             logging.warning(f"{tag} Pre-queue BI lookup failed ({e})")
             if bvr_clip:
@@ -694,7 +693,7 @@ def request_bi_export(config, output_path, tag, timeout=300):
                 else:
                     logging.warning(f"{tag} bvr fallback unavailable (offset unparseable) -- queuing anyway")
 
-    payload = json.dumps({
+    return {
         "request_id":       request_id,
         "config_name":      config.get("name", "?"),
         "bi_url":           config["bi_url"],
@@ -710,9 +709,29 @@ def request_bi_export(config, output_path, tag, timeout=300):
         "verbose":          config.get("verbose_logging") == 1,
         "delete_after":     config.get("delete_after_send") == 1,
         "queued_at":        time.time(),
-    })
-    r.rpush(EXPORT_REQUEST_QUEUE, payload)
+        "delivery_context": delivery_context,
+    }
+
+
+def queue_bi_export(config, output_path, tag, delivery_context=None):
+    payload = build_bi_export_payload(config, output_path, tag, delivery_context=delivery_context)
+    if not payload:
+        return None
+
+    request_id = payload["request_id"]
+    r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(payload))
     logging.info(f"{tag} BI export request queued (id={request_id})")
+    return request_id
+
+
+def request_bi_export(config, output_path, tag, timeout=300):
+    """
+    Queue a BI export request to the staged BI exporter service and block until done.
+    Returns True on success, False on failure.
+    """
+    request_id = queue_bi_export(config, output_path, tag)
+    if not request_id:
+        return False
 
     result_key = f"bi:result:{request_id}"
     item = r.blpop(result_key, timeout=timeout)
@@ -820,43 +839,30 @@ def process_alert(image_path, config):
         if config.get('send_video') == 1 and config.get('trigger_filename'):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
                 raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
-                optimised_mp4 = image_path.replace(".jpg", ".mp4")
-                success = request_bi_export(config, raw_mp4, tag)
+                delivery_context = {
+                    "config": {
+                        "id": config["id"],
+                        "name": config["name"],
+                        "request_id": config.get("request_id", "legacy"),
+                        "telegram_token": config["telegram_token"],
+                        "chat_id": config["chat_id"],
+                        "message_thread_id": config.get("message_thread_id"),
+                        "last_msg_id": config.get("last_msg_id"),
+                        "dvla_api_key": config.get("dvla_api_key", ""),
+                        "gemini_api_key1": config.get("gemini_api_key1", ""),
+                        "gemini_api_key2": config.get("gemini_api_key2", ""),
+                        "gemini_api_key3": config.get("gemini_api_key3", ""),
+                    },
+                    "prompt": prompt,
+                    "still_caption": still_caption,
+                }
+                request_id = queue_bi_export(config, raw_mp4, tag, delivery_context=delivery_context)
 
-                if success:
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        delivery_future = executor.submit(
-                            deliver_video_to_telegram,
-                            config,
-                            raw_mp4,
-                            optimised_mp4,
-                            still_caption,
-                            tag,
-                        )
-                        video_caption_future = executor.submit(
-                            analyze_video_gemini,
-                            config,
-                            raw_mp4,
-                            prompt,
-                        )
-
-                        delivery_future.result()
-                        video_caption = video_caption_future.result()
-
-                    if video_caption:
-                        update_telegram_caption(config, enrich_caption_with_dvla(video_caption, config, tag, image_path=image_path))
-                    else:
-                        logging.info(f"{tag} Video analysis failed, falling back to image caption.")
-                        fallback_text = analyze_still_image_fallback(image_path, prompt, config)
-                        if fallback_text:
-                            logging.info(f"{tag} Successfully recovered using Still Image fallback.")
-                            update_telegram_caption(config, enrich_caption_with_dvla(fallback_text, config, tag, image_path=image_path))
-
-                    for f_path in [optimised_mp4, raw_mp4]:
-                        if os.path.exists(f_path):
-                            os.remove(f_path)
-                else:
+                if not request_id:
                     logging.warning(f"{tag} Video export failed, keeping photo.")
+                else:
+                    logging.info(f"{tag} Video export queued for asynchronous delivery (id={request_id})")
+                    raw_mp4 = None
             else:
                 logging.warning(f"{tag} Send video enabled but BI credentials missing.")
 
