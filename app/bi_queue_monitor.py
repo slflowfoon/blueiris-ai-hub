@@ -23,6 +23,7 @@ from bi_export_shared import (
     load_job,
     queue_poll_interval,
     r,
+    safe_error_summary,
     save_job,
     trigger_bi_recovery,
     queue_retry,
@@ -92,7 +93,7 @@ def _poll_active_exports():
         try:
             active_exports = bi_get_export_queue(sess, bi_url, sid)
         except Exception as exc:
-            logging.warning(f"{tag} Error polling export queue: {exc}")
+            logging.warning(f"{tag} Error polling export queue: {safe_error_summary(exc)}")
             continue
 
         active_paths = {item.get("path") for item in active_exports if item.get("path")}

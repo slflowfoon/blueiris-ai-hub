@@ -20,6 +20,7 @@ from bi_export_shared import (
     bi_resolve_export_target,
     get_session,
     r,
+    safe_error_summary,
     save_job,
     write_result,
 )
@@ -68,7 +69,7 @@ def _prepare_export(req, tag):
     try:
         known_paths = {item.get("path") for item in bi_get_export_queue(sess, req["bi_url"], sid) if item.get("path")}
     except Exception as exc:
-        logging.warning(f"{tag} Failed to read export queue before enqueue: {exc}")
+        logging.warning(f"{tag} Failed to read export queue before enqueue: {safe_error_summary(exc)}")
 
     target_path = None
     relative_uri = None
@@ -82,7 +83,7 @@ def _prepare_export(req, tag):
                     queue_data = bi_get_export_queue(sess, req["bi_url"], sid)
                     target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
                 except Exception as exc:
-                    logging.warning(f"{tag} Failed to refresh export queue after enqueue: {exc}")
+                    logging.warning(f"{tag} Failed to refresh export queue after enqueue: {safe_error_summary(exc)}")
             if target_path and relative_uri:
                 break
 

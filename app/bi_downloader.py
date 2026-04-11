@@ -20,6 +20,7 @@ from bi_export_shared import (
     load_job,
     mark_delivery_queued,
     r,
+    safe_error_summary,
     save_job,
     trigger_bi_recovery,
     queue_retry,
@@ -79,7 +80,7 @@ def _download_export(job):
                     break
                 time.sleep(2)
         except Exception as exc:
-            logging.warning(f"{tag} Download error: {exc}")
+            logging.warning(f"{tag} Download error: {safe_error_summary(exc)}")
             time.sleep(2)
 
     if not downloaded:

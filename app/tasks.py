@@ -720,7 +720,7 @@ def queue_bi_export(config, output_path, tag, delivery_context=None):
 
     request_id = payload["request_id"]
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(payload))
-    logging.info(f"{tag} BI export request queued (id={request_id})")
+    logging.info(f"{tag} BI export request queued")
     return request_id
 
 
@@ -861,7 +861,7 @@ def process_alert(image_path, config):
                 if not request_id:
                     logging.warning(f"{tag} Video export failed, keeping photo.")
                 else:
-                    logging.info(f"{tag} Video export queued for asynchronous delivery (id={request_id})")
+                    logging.info(f"{tag} Video export queued for asynchronous delivery")
                     raw_mp4 = None
             else:
                 logging.warning(f"{tag} Send video enabled but BI credentials missing.")

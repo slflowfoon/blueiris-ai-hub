@@ -43,6 +43,14 @@ r = redis.from_url(REDIS_URL)
 _session_cache = {}
 
 
+def safe_error_summary(exc):
+    """Summarise request-related failures without logging raw exception text."""
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None):
+        return f"{type(exc).__name__} status={response.status_code}"
+    return type(exc).__name__
+
+
 def _bi_protocol_hash(value: str) -> str:
     """
     Blue Iris requires an MD5 digest of `user:session:password` for JSON API
@@ -108,7 +116,7 @@ def bi_login(sess, base_url, user, password, tag):
             return None
         return sid
     except Exception as exc:
-        logging.error(f"{tag} BI login error: {exc}")
+        logging.error(f"{tag} BI login error: {safe_error_summary(exc)}")
         return None
 
 
@@ -162,7 +170,7 @@ def trigger_bi_recovery(restart_url, restart_token, tag):
             return True
         logging.error(f"{tag} BI recovery returned {resp.status_code}")
     except Exception as exc:
-        logging.error(f"{tag} BI recovery error: {exc}")
+        logging.error(f"{tag} BI recovery error: {safe_error_summary(exc)}")
     return False
 
 
@@ -211,7 +219,7 @@ def bi_delete_clip(sess, base_url, sid, clip_id, tag):
             logging.info(f"{tag} Deleted clip @{clean}")
             return True
     except Exception as exc:
-        logging.error(f"{tag} Delete clip error: {exc}")
+        logging.error(f"{tag} Delete clip error: {safe_error_summary(exc)}")
     return False
 
 
