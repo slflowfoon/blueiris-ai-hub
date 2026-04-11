@@ -38,8 +38,19 @@ def test_status_endpoint(client, monkeypatch):
         wsgi,
         "get_pipeline_status",
         lambda: {
-            "queue_depths": {"export_requests": 1, "download_requests": 0, "video_delivery_requests": 0, "active_exports": 1},
-            "stale_jobs": {"submitted": 0, "queued": 0, "ready": 0, "retry_queued": 0, "delivery_processing": 0},
+            "queue_depths": {
+                "export_requests": 1,
+                "download_requests": 0,
+                "video_delivery_requests": 0,
+                "active_exports": 1,
+            },
+            "stale_jobs": {
+                "submitted": 0,
+                "queued": 0,
+                "ready": 0,
+                "retry_queued": 0,
+                "delivery_processing": 0,
+            },
             "services": {"worker": {"status": "ok", "age_seconds": 1.0}},
         },
     )
