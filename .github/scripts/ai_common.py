@@ -3,12 +3,15 @@ import os
 import pathlib
 import subprocess
 import textwrap
+import time
 import urllib.error
 import urllib.request
 
 
 REPO_ROOT = pathlib.Path(os.getcwd())
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+OPENAI_RETRY_STATUSES = {429, 500, 502, 503, 504}
+OPENAI_BACKOFF_SECONDS = [2, 5, 10, 20]
 
 
 def github_request(path, method="GET", data=None):
@@ -50,10 +53,35 @@ def openai_chat_json(system_prompt, user_prompt):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    content = data["choices"][0]["message"]["content"]
-    return json.loads(content)
+    last_error = None
+    for attempt, delay in enumerate([0] + OPENAI_BACKOFF_SECONDS, start=1):
+        if delay:
+            print(f"OpenAI request retrying after {delay}s backoff (attempt {attempt}/{len(OPENAI_BACKOFF_SECONDS) + 1})")
+            time.sleep(delay)
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"]
+            return json.loads(content)
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            if exc.code in OPENAI_RETRY_STATUSES and attempt < len(OPENAI_BACKOFF_SECONDS) + 1:
+                if retry_after:
+                    try:
+                        retry_delay = max(1, int(retry_after))
+                        print(f"OpenAI returned {exc.code}; honoring Retry-After={retry_delay}s")
+                        time.sleep(retry_delay)
+                    except ValueError:
+                        pass
+                continue
+            raise
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if attempt < len(OPENAI_BACKOFF_SECONDS) + 1:
+                continue
+            raise
+    raise last_error
 
 
 def repo_manifest():
