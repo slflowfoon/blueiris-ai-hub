@@ -1,3 +1,5 @@
+import sqlite3
+
 import wsgi
 
 
@@ -8,6 +10,7 @@ def test_dashboard_loads(client):
     assert b"Blue Iris AI Hub" in response.data
     assert b"Copy Trace" in response.data
     assert b"copyWebhookTrace(this)" in response.data
+
 
 def test_api_check_update(client, monkeypatch):
     """Test that the update API endpoint returns JSON."""
@@ -54,3 +57,10 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[0]["is_trigger"] is True
     assert entries[1]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[1]["is_trigger"] is False
+
+
+def test_sqlite_wal_mode_enabled(client):
+    """Test that the application database is configured for WAL mode."""
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
