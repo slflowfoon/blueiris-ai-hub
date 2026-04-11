@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
+from sqlite_utils import connect as sqlite_connect
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -94,13 +95,11 @@ def get_update_status():
 # --- DATABASE ---
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return sqlite_connect(DB_FILE, row_factory=sqlite3.Row)
 
 
 def init_db():
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite_connect(DB_FILE) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS configs (
                 id TEXT PRIMARY KEY,
