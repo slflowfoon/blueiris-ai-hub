@@ -145,7 +145,7 @@ def _process_download_request(request_id):
 
 
 def run_downloader():
-    logger.info("[bi_downloader] Waiting for completed exports")
+    logger.info("Waiting for completed exports")
     while True:
         item = r.blpop(DOWNLOAD_REQUEST_QUEUE, timeout=5)
         if not item:

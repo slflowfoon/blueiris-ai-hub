@@ -158,7 +158,7 @@ def _process_request(raw):
 
 
 def run_exporter():
-    logger.info("[bi_exporter] Waiting for requests on bi:export:requests")
+    logger.info("Waiting for requests on bi:export:requests")
     while True:
         item = r.blpop(EXPORT_REQUEST_QUEUE, timeout=5)
         if item:
