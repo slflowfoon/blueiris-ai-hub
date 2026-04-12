@@ -746,9 +746,9 @@ function buildGroupedLogs(entries){
             const group=grouped.get(entry.alert_tag)||[];
             const trigger=group.find(e=>e.is_trigger)||group[0];
             const body=group.map(renderLogLine).join('');
-            const copyText=JSON.stringify(group.map(e=>e.display).join('\n'));
+            const copyTrace=encodeURIComponent(group.map(e=>e.display).join('\n'));
             blocks.push(
-                `<details class="log-group"><summary><div class="log-group-summary"><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.preventDefault();event.stopPropagation();copyTextToClipboard(${copyText}, this)">📋 Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
+                `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">📋 Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
             );
         }else{
             blocks.push(renderLogLine(entry));
@@ -810,6 +810,11 @@ function copyTextToClipboard(text,btn){
             document.body.removeChild(ta);
         }
     }
+}
+function copyWebhookTrace(btn){
+    const group=btn.closest('.log-group');
+    if(!group||!group.dataset.copyTrace)return;
+    copyTextToClipboard(decodeURIComponent(group.dataset.copyTrace),btn);
 }
 function copyToClipboard(id,btn){copyTextToClipboard(document.getElementById(id).innerText.trim(),btn);}
 function openEditModal(c){
