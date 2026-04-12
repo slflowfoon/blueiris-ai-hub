@@ -52,6 +52,52 @@ def log_alert_event(level, tag, message, phase, error_code=None, **extra):
         line = f"{line} | {suffix}"
     logging.log(level, line)
 
+
+def _telegram_log_fields(config, text=None, caption_source=None, caption_changed=None, message_id=None):
+    fields = {}
+    if caption_source:
+        fields["caption_source"] = caption_source
+    if caption_changed is not None:
+        fields["caption_changed"] = str(bool(caption_changed)).lower()
+    if text is not None:
+        fields["caption_length"] = len(text)
+        if config.get("verbose_logging") == 1:
+            fields["caption_text"] = text
+    if message_id is not None:
+        fields["message_id"] = message_id
+    return fields
+
+
+def log_telegram_event(
+    level,
+    tag,
+    message,
+    phase,
+    config,
+    service_logger=None,
+    error_code=None,
+    text=None,
+    caption_source=None,
+    caption_changed=None,
+    message_id=None,
+):
+    log = _resolve_logger(service_logger)
+    suffix = _format_log_fields(
+        phase=phase,
+        error_code=error_code,
+        **_telegram_log_fields(
+            config,
+            text=text,
+            caption_source=caption_source,
+            caption_changed=caption_changed,
+            message_id=message_id,
+        ),
+    )
+    line = f"{tag} {message}"
+    if suffix:
+        line = f"{line} | {suffix}"
+    log.log(level, line)
+
 # --- REDIS ---
 redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
 r = redis.from_url(redis_url)
@@ -561,7 +607,7 @@ def _tg_thread(config):
     return str(t) if t else None
 
 
-def send_telegram(config, img_path, caption):
+def send_telegram(config, img_path, caption, service_logger=None):
     req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
@@ -577,16 +623,56 @@ def send_telegram(config, img_path, caption):
         with open(img_path, 'rb') as f:
             resp = requests.post(url, files={'photo': f}, data=data, timeout=15)
             if resp.ok:
-                config['last_msg_id'] = resp.json()['result']['message_id']
+                message_id = resp.json()['result']['message_id']
+                config['last_msg_id'] = message_id
+                log_telegram_event(
+                    logging.INFO,
+                    tag,
+                    "Telegram photo sent",
+                    "telegram_photo_sent",
+                    config,
+                    service_logger=service_logger,
+                    text=caption,
+                    caption_source="still",
+                    message_id=message_id,
+                )
             else:
-                logging.error(f"{tag} Telegram send error: {resp.text}")
-    except Exception as e:
-        logging.error(f"{tag} Telegram error: {e}")
+                log_telegram_event(
+                    logging.ERROR,
+                    tag,
+                    "Telegram photo send failed",
+                    "telegram_photo_send_failed",
+                    config,
+                    service_logger=service_logger,
+                    error_code="telegram_photo_send_failed",
+                )
+    except Exception:
+        log_telegram_event(
+            logging.ERROR,
+            tag,
+            "Telegram photo send error",
+            "telegram_photo_send_failed",
+            config,
+            service_logger=service_logger,
+            error_code="telegram_photo_send_failed",
+        )
 
 
-def update_telegram_caption(config, text, service_logger=None):
-    log = _resolve_logger(service_logger)
+def update_telegram_caption(config, text, service_logger=None, caption_source="unknown", previous_text=None):
     if 'last_msg_id' not in config:
+        req_id = config.get('request_id', 'unknown')
+        tag = f"[{config['name']}][{req_id}]"
+        log_telegram_event(
+            logging.WARNING,
+            tag,
+            "Telegram caption update skipped; message id missing",
+            "telegram_caption_update_skipped",
+            config,
+            service_logger=service_logger,
+            error_code="telegram_message_id_missing",
+            text=text,
+            caption_source=caption_source,
+        )
         return False
 
     req_id = config.get('request_id', 'unknown')
@@ -596,15 +682,65 @@ def update_telegram_caption(config, text, service_logger=None):
     chat_id = config['chat_id']
     data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'caption': text}
     try:
+        log_telegram_event(
+            logging.INFO,
+            tag,
+            "Telegram caption update started",
+            "telegram_caption_update_started",
+            config,
+            service_logger=service_logger,
+            text=text,
+            caption_source=caption_source,
+            caption_changed=(previous_text != text) if previous_text is not None else None,
+            message_id=config['last_msg_id'],
+        )
         resp = requests.post(f"https://api.telegram.org/bot{token}/editMessageCaption", data=data, timeout=10)
-        return resp.ok
-    except Exception as e:
-        log.error(f"{tag} Caption update error: {e}")
+        if resp.ok:
+            log_telegram_event(
+                logging.INFO,
+                tag,
+                "Telegram caption updated",
+                "telegram_caption_updated",
+                config,
+                service_logger=service_logger,
+                text=text,
+                caption_source=caption_source,
+                caption_changed=(previous_text != text) if previous_text is not None else None,
+                message_id=config['last_msg_id'],
+            )
+            return True
+        log_telegram_event(
+            logging.ERROR,
+            tag,
+            "Telegram caption update failed",
+            "telegram_caption_update_failed",
+            config,
+            service_logger=service_logger,
+            error_code="telegram_caption_update_failed",
+            text=text,
+            caption_source=caption_source,
+            caption_changed=(previous_text != text) if previous_text is not None else None,
+            message_id=config['last_msg_id'],
+        )
+        return False
+    except Exception:
+        log_telegram_event(
+            logging.ERROR,
+            tag,
+            "Telegram caption update error",
+            "telegram_caption_update_failed",
+            config,
+            service_logger=service_logger,
+            error_code="telegram_caption_update_failed",
+            text=text,
+            caption_source=caption_source,
+            caption_changed=(previous_text != text) if previous_text is not None else None,
+            message_id=config['last_msg_id'],
+        )
         return False
 
 
 def replace_telegram_media(config, media_path, caption, service_logger=None):
-    log = _resolve_logger(service_logger)
     req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
@@ -615,18 +751,61 @@ def replace_telegram_media(config, media_path, caption, service_logger=None):
     media_json = json.dumps({"type": "animation", "media": "attach://media_file", "caption": caption})
     data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'media': media_json}
     try:
+        log_telegram_event(
+            logging.INFO,
+            tag,
+            "Telegram media replace started",
+            "telegram_media_replace_started",
+            config,
+            service_logger=service_logger,
+            text=caption,
+            caption_source="video",
+            message_id=config['last_msg_id'],
+        )
         with open(media_path, 'rb') as f:
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/editMessageMedia",
                 data=data, files={'media_file': f}, timeout=60
             )
             if resp.ok:
-                log.info(f"{tag} Replaced photo with video")
+                log_telegram_event(
+                    logging.INFO,
+                    tag,
+                    "Replaced photo with video",
+                    "telegram_media_replaced",
+                    config,
+                    service_logger=service_logger,
+                    text=caption,
+                    caption_source="video",
+                    message_id=config['last_msg_id'],
+                )
                 return True
             else:
-                log.error(f"{tag} Replace media error: {resp.text}")
-    except Exception as e:
-        log.error(f"{tag} Replace media error: {e}")
+                log_telegram_event(
+                    logging.ERROR,
+                    tag,
+                    "Telegram media replace failed",
+                    "telegram_media_replace_failed",
+                    config,
+                    service_logger=service_logger,
+                    error_code="telegram_media_replace_failed",
+                    text=caption,
+                    caption_source="video",
+                    message_id=config['last_msg_id'],
+                )
+    except Exception:
+        log_telegram_event(
+            logging.ERROR,
+            tag,
+            "Telegram media replace error",
+            "telegram_media_replace_failed",
+            config,
+            service_logger=service_logger,
+            error_code="telegram_media_replace_failed",
+            text=caption,
+            caption_source="video",
+            message_id=config['last_msg_id'],
+        )
     return False
 
 
@@ -883,14 +1062,35 @@ def process_alert(image_path, config):
         if instant_notify:
             send_telegram(config, image_path, "Motion detected.")
             if ai_text:
-                update_telegram_caption(config, still_caption)
+                update_telegram_caption(
+                    config,
+                    still_caption,
+                    caption_source="still",
+                    previous_text="Motion detected.",
+                )
         else:
             send_telegram(config, image_path, still_caption)
 
         # DVLA enrichment after Telegram send — edits the caption if plates are found (#66)
         enriched_still = enrich_caption_with_dvla(still_caption, config, tag, image_path=image_path)
+        log_telegram_event(
+            logging.INFO,
+            tag,
+            "DVLA still-caption enrichment complete",
+            "dvla_caption_enriched",
+            config,
+            text=enriched_still,
+            caption_source="dvla",
+            caption_changed=(enriched_still != still_caption),
+            message_id=config.get("last_msg_id"),
+        )
         if enriched_still != still_caption:
-            update_telegram_caption(config, enriched_still)
+            update_telegram_caption(
+                config,
+                enriched_still,
+                caption_source="dvla",
+                previous_text=still_caption,
+            )
         still_caption = enriched_still
 
         # Video handling

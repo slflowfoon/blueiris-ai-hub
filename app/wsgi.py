@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import re
 import sqlite3
 import redis
 import logging
@@ -176,9 +177,32 @@ init_db()
 
 # --- HELPERS ---
 
-def get_log_content():
+_LOG_TAG_RE = re.compile(r'(\[[^\]]+\]\[[^\]]+\])')
+
+
+def _parse_log_line(source_name, line):
+    line = line.rstrip("\n")
+    if not line:
+        return None
+
+    timestamp = line[:23] if len(line) >= 23 else ""
+    message = line[33:] if " - " in line else line
+    tag_match = _LOG_TAG_RE.search(message)
+    alert_tag = tag_match.group(1) if tag_match else None
+
+    return {
+        "source": source_name,
+        "timestamp": timestamp,
+        "line": line,
+        "display": f"[{source_name}] {line}",
+        "alert_tag": alert_tag,
+        "is_trigger": source_name == "system.log" and "Webhook triggered." in message,
+    }
+
+
+def get_log_entries():
     if not os.path.isdir(LOG_DIR):
-        return "No logs yet."
+        return []
 
     try:
         entries = []
@@ -187,24 +211,30 @@ def get_log_content():
             if name.endswith(".log") and os.path.isfile(os.path.join(LOG_DIR, name))
         )
         if not log_files:
-            return "No logs yet."
+            return []
 
         for name in log_files:
             path = os.path.join(LOG_DIR, name)
             with open(path) as f:
                 for line in f.readlines()[-200:]:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    entries.append((line[:23], f"[{name}] {line}"))
+                    parsed = _parse_log_line(name, line)
+                    if parsed:
+                        entries.append(parsed)
 
         if not entries:
-            return "No logs yet."
+            return []
 
-        entries.sort(key=lambda item: item[0])
-        return "\n".join(line for _, line in entries[-200:])
+        entries.sort(key=lambda item: item["timestamp"])
+        return entries[-200:]
     except Exception as e:
-        return f"Error reading logs: {e}"
+        return [{
+            "source": "system",
+            "timestamp": "",
+            "line": f"Error reading logs: {e}",
+            "display": f"[system] Error reading logs: {e}",
+            "alert_tag": None,
+            "is_trigger": False,
+        }]
 
 
 def load_known_plates():
@@ -293,6 +323,9 @@ HTML_TEMPLATE = r"""
         .nav-tabs .nav-link.active { font-weight: bold; }
         .status-badge { font-size: 0.8em; }
         .last-seen { font-size: 0.85em; color: var(--bs-secondary-color); }
+        .log-group { border: 1px solid var(--bs-border-color); border-radius: 6px; margin-bottom: 8px; padding: 6px 8px; }
+        .log-group summary { cursor: pointer; font-weight: 500; }
+        .log-group-body { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--bs-border-color); }
         body, .card, .webhook-box, .modal-content { transition: background-color 0.3s, color 0.3s; }
         .mute-badge { font-size: 0.75em; }
         .modal-footer .btn { border-radius: 6px; padding: 8px 20px; font-weight: 500; }
@@ -482,7 +515,7 @@ HTML_TEMPLATE = r"""
                     </form>
                 </div>
             </div>
-            <div class="log-viewer" id="logViewer">{{ logs }}</div>
+            <div class="log-viewer" id="logViewer" data-log-entries='{{ log_entries|tojson|safe }}'></div>
         </div>
 
         <!-- Plate Audit tab -->
@@ -667,31 +700,78 @@ const colors = [
     '#afeeee', '#ee82ee', '#98fb98'
 ];
 function stringToColor(s){let h=0;for(let i=0;i<s.length;i++){h=s.charCodeAt(i)+((h<<5)-h);}return colors[Math.abs(h)%colors.length];}
-function escapeHtml(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
-function logSource(line){const match=line.match(/^\[([^\]]+)\]/);return match?match[1]:'unknown';}
-function populateLogSourceFilter(lines){
+function escapeHtml(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
+function logSource(entry){return entry&&entry.source?entry.source:'unknown';}
+function logTag(entry){return entry&&entry.alert_tag?entry.alert_tag:'';}
+function colorKey(entry){
+    const tag=logTag(entry);
+    if(tag)return tag;
+    return entry&&entry.source?entry.source:'';
+}
+function populateLogSourceFilter(entries){
     const select=document.getElementById('logSourceFilter');
     if(!select)return;
     const current=select.value||'all';
-    const sources=[...new Set(lines.map(logSource).filter(Boolean))].sort();
+    const sources=[...new Set(entries.map(logSource).filter(Boolean))].sort();
     select.innerHTML='<option value="all">All sources</option>'+sources.map(s=>`<option value="${s}">${s}</option>`).join('');
     select.value=sources.includes(current)||current==='all'?current:'all';
+}
+function renderLogLine(entry){
+    const key=colorKey(entry);
+    return `<div data-source="${escapeHtml(entry.source)}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(entry.display)}</div>`;
+}
+function buildGroupedLogs(entries){
+    const triggerTags=new Set(entries.filter(e=>e.is_trigger&&e.alert_tag).map(e=>e.alert_tag));
+    const grouped=new Map();
+    const ungrouped=[];
+
+    entries.forEach(entry=>{
+        if(entry.alert_tag && triggerTags.has(entry.alert_tag)){
+            if(!grouped.has(entry.alert_tag))grouped.set(entry.alert_tag, []);
+            grouped.get(entry.alert_tag).push(entry);
+        }else{
+            ungrouped.push(entry);
+        }
+    });
+
+    const blocks=[];
+    const seenGroups=new Set();
+    entries.forEach(entry=>{
+        if(entry.alert_tag && triggerTags.has(entry.alert_tag)){
+            if(seenGroups.has(entry.alert_tag))return;
+            seenGroups.add(entry.alert_tag);
+            const group=grouped.get(entry.alert_tag)||[];
+            const trigger=group.find(e=>e.is_trigger)||group[0];
+            const body=group.map(renderLogLine).join('');
+            blocks.push(
+                `<details class="log-group"><summary style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</summary><div class="log-group-body">${body}</div></details>`
+            );
+        }else{
+            blocks.push(renderLogLine(entry));
+        }
+    });
+    return blocks.join('');
 }
 function renderLogs(){
     const v=document.getElementById('logViewer');
     if(!v)return;
-    if(!v.dataset.rawLogs){v.dataset.rawLogs=v.innerText;}
-    const lines=v.dataset.rawLogs.split('\n').filter(l=>l.trim());
-    populateLogSourceFilter(lines);
+    let entries=[];
+    try{
+        entries=JSON.parse(v.dataset.logEntries||'[]');
+    }catch(_e){
+        entries=[];
+    }
+    populateLogSourceFilter(entries);
     const selected=(document.getElementById('logSourceFilter')||{}).value||'all';
+    const filtered=selected==='all'?entries:entries.filter(e=>e.source===selected);
     let html='';
-    lines.forEach(l=>{
-        const source=logSource(l);
-        if(selected!=='all'&&source!==selected)return;
-        const matches=[...l.matchAll(/\[([^\]]+)\]/g)];
-        const key=matches.length?matches[matches.length-1][1]:'';
-        html+=`<div data-source="${source}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(l)}</div>`;
-    });
+    if(!filtered.length){
+        html='<div class="text-muted">No logs yet.</div>';
+    }else if(selected==='all'){
+        html=buildGroupedLogs(filtered);
+    }else{
+        html=filtered.map(renderLogLine).join('');
+    }
     v.innerHTML=html;
     v.scrollTop=v.scrollHeight;
 }
@@ -769,7 +849,7 @@ def index():
         HTML_TEMPLATE,
         configs=configs,
         plate_audit=plate_audit,
-        logs=get_log_content(),
+        log_entries=get_log_entries(),
         base_url=BASE_URL,
         mutes=mutes,
         caption_mode=caption_mode,

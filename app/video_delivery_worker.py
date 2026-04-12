@@ -24,6 +24,7 @@ from tasks import (
     analyze_video_gemini,
     deliver_video_to_telegram,
     enrich_caption_with_dvla,
+    log_telegram_event,
     update_telegram_caption,
 )
 
@@ -145,10 +146,36 @@ def _process_delivery_request(request_id):
 
     video_caption = analyze_video_gemini(config, raw_mp4, delivery.get("prompt", "Describe the clip."))
     if video_caption:
+        log_telegram_event(
+            logging.INFO,
+            tag,
+            "Video caption generated",
+            "video_caption_generated",
+            config,
+            service_logger=logger,
+            text=video_caption,
+            caption_source="video",
+            message_id=config.get("last_msg_id"),
+        )
+        enriched_caption = enrich_caption_with_dvla(video_caption, config, tag)
+        log_telegram_event(
+            logging.INFO,
+            tag,
+            "DVLA video-caption enrichment complete",
+            "dvla_caption_enriched",
+            config,
+            service_logger=logger,
+            text=enriched_caption,
+            caption_source="dvla",
+            caption_changed=(enriched_caption != video_caption),
+            message_id=config.get("last_msg_id"),
+        )
         update_telegram_caption(
             config,
-            enrich_caption_with_dvla(video_caption, config, tag),
+            enriched_caption,
             service_logger=logger,
+            caption_source="video",
+            previous_text=delivery.get("still_caption"),
         )
 
     _cleanup_paths(optimised_mp4, raw_mp4)
