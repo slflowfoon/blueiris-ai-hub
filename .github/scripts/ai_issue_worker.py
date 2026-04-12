@@ -4,18 +4,45 @@ import pathlib
 import sys
 
 from ai_common import (
-    OpenAIUnavailableError,
+    LLMUnavailableError,
     REPO_ROOT,
     apply_patch_text,
     git_has_changes,
     issue_comment,
+    llm_chat_json,
     load_text,
-    openai_chat_json,
     read_files,
     repo_manifest,
     write_file,
     write_output,
 )
+
+
+TRIAGE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "decision": {"type": "STRING", "enum": ["comment_only", "attempt_fix"]},
+        "reason": {"type": "STRING"},
+        "comment_body": {"type": "STRING"},
+        "relevant_files": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "pr_title": {"type": "STRING"},
+        "commit_message": {"type": "STRING"},
+        "pr_body": {"type": "STRING"},
+    },
+    "required": ["decision", "comment_body", "relevant_files", "pr_title", "commit_message", "pr_body"],
+}
+
+FIX_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "patch": {"type": "STRING"},
+        "pr_title": {"type": "STRING"},
+        "commit_message": {"type": "STRING"},
+        "pr_body": {"type": "STRING"},
+        "issue_comment": {"type": "STRING"},
+    },
+    "required": ["patch", "pr_title", "commit_message", "pr_body", "issue_comment"],
+}
 
 
 def main():
@@ -29,15 +56,16 @@ def main():
     system_prompt = load_text(".github/ai/issue_system_prompt.md")
     manifest = "\n".join(repo_manifest()[:400])
     try:
-        triage = openai_chat_json(
+        triage = llm_chat_json(
             system_prompt,
             f"Issue #{issue_number}: {title}\n\n{body}\n\nRepo manifest:\n{manifest}",
+            schema=TRIAGE_SCHEMA,
         )
-    except OpenAIUnavailableError as exc:
+    except LLMUnavailableError as exc:
         issue_comment(
             repo,
             issue_number,
-            "AI triage could not complete because the OpenAI API was unavailable "
+            "AI triage could not complete because the Gemini API was unavailable "
             f"or rate limited. {exc} No automatic fix was created; retry the workflow later.",
         )
         write_output("decision", "comment_only")
@@ -68,20 +96,20 @@ Return strict JSON with:
 - pr_body
 - issue_comment
 
-Constraints:
+    Constraints:
 - keep the fix narrow
 - edit only relevant files
 - do not invent large refactors
 - include tests if behavior changes
 """
     try:
-        fix = openai_chat_json(system_prompt, fix_prompt)
-    except OpenAIUnavailableError as exc:
+        fix = llm_chat_json(system_prompt, fix_prompt, schema=FIX_SCHEMA)
+    except LLMUnavailableError as exc:
         issue_comment(
             repo,
             issue_number,
             "AI triage marked this issue as fixable, but patch generation could not "
-            f"complete because the OpenAI API was unavailable or rate limited. {exc}",
+            f"complete because the Gemini API was unavailable or rate limited. {exc}",
         )
         write_output("decision", "comment_only")
         return
