@@ -157,19 +157,35 @@ def _process_delivery_request(request_id):
             caption_source="video",
             message_id=config.get("last_msg_id"),
         )
-        enriched_caption = enrich_caption_with_dvla(video_caption, config, tag)
-        log_telegram_event(
-            logging.INFO,
-            tag,
-            "DVLA video-caption enrichment complete",
-            "dvla_caption_enriched",
-            config,
-            service_logger=logger,
-            text=enriched_caption,
-            caption_source="dvla",
-            caption_changed=(enriched_caption != video_caption),
-            message_id=config.get("last_msg_id"),
-        )
+        dvla_key = (config.get("dvla_api_key") or "").strip()
+        if dvla_key:
+            enriched_caption = enrich_caption_with_dvla(video_caption, config, tag)
+            log_telegram_event(
+                logging.INFO,
+                tag,
+                "DVLA video-caption enrichment complete",
+                "dvla_caption_enriched",
+                config,
+                service_logger=logger,
+                text=enriched_caption,
+                caption_source="dvla",
+                caption_changed=(enriched_caption != video_caption),
+                message_id=config.get("last_msg_id"),
+            )
+        else:
+            enriched_caption = video_caption
+            log_telegram_event(
+                logging.INFO,
+                tag,
+                "DVLA video-caption enrichment skipped",
+                "dvla_caption_skipped",
+                config,
+                service_logger=logger,
+                caption_source="dvla",
+                caption_changed=False,
+                message_id=config.get("last_msg_id"),
+                reason="no_api_key",
+            )
         update_telegram_caption(
             config,
             enriched_caption,

@@ -80,11 +80,13 @@ def log_telegram_event(
     caption_source=None,
     caption_changed=None,
     message_id=None,
+    reason=None,
 ):
     log = _resolve_logger(service_logger)
     suffix = _format_log_fields(
         phase=phase,
         error_code=error_code,
+        reason=reason,
         **_telegram_log_fields(
             config,
             text=text,
