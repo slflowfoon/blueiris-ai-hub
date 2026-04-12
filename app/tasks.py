@@ -124,7 +124,7 @@ _PLATE_RE = re.compile(
     r'|[A-Z][0-9]{1,3}\s?[A-Z]{3}'     # Prefix (1983-01): A123 BCD
     r'|[A-Z]{3}\s?[0-9]{1,3}[A-Z])\b'  # Suffix (1963-83): ABC 123D
 )
-_DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiries/v1/vehicles"
+_DVLA_URL = "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles"
 
 
 def _save_plate_thumbnail(image_path, plate):
