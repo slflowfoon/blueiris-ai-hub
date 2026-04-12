@@ -7,6 +7,7 @@ def test_dashboard_loads(client):
     assert response.status_code == 200
     assert b"Blue Iris AI Hub" in response.data
     assert b"Copy Trace" in response.data
+    assert b"copyWebhookTrace(this)" in response.data
 
 def test_api_check_update(client, monkeypatch):
     """Test that the update API endpoint returns JSON."""
