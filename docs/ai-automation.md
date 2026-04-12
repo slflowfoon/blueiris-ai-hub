@@ -38,12 +38,12 @@ No PR is merged automatically.
 
 Add this repository secret:
 
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 
 Optional repository variable:
 
-- `OPENAI_MODEL`
-  - default in workflows: `gpt-5.2`
+- `GEMINI_MODEL`
+  - default in workflows: `gemini-2.5-flash`
 
 ## Important boundary
 

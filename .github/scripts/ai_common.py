@@ -9,12 +9,12 @@ import urllib.request
 
 
 REPO_ROOT = pathlib.Path(os.getcwd())
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
-OPENAI_RETRY_STATUSES = {429, 500, 502, 503, 504}
-OPENAI_BACKOFF_SECONDS = [2, 5, 10, 20]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+API_RETRY_STATUSES = {429, 500, 502, 503, 504}
+API_BACKOFF_SECONDS = [2, 5, 10, 20]
 
 
-class OpenAIUnavailableError(RuntimeError):
+class LLMUnavailableError(RuntimeError):
     pass
 
 
@@ -38,47 +38,56 @@ def github_request(path, method="GET", data=None):
         return json.loads(raw)
 
 
-def openai_chat_json(system_prompt, user_prompt):
-    api_key = os.environ["OPENAI_API_KEY"]
+def llm_chat_json(system_prompt, user_prompt, schema=None):
+    api_key = os.environ["GEMINI_API_KEY"]
     payload = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+        "systemInstruction": {
+            "parts": [{"text": system_prompt}],
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user_prompt}],
+            }
         ],
-        "response_format": {"type": "json_object"},
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json",
+        },
     }
+    if schema:
+        payload["generationConfig"]["responseSchema"] = schema
     req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
     last_error = None
-    total_attempts = len(OPENAI_BACKOFF_SECONDS) + 1
-    for attempt, delay in enumerate([0] + OPENAI_BACKOFF_SECONDS, start=1):
+    total_attempts = len(API_BACKOFF_SECONDS) + 1
+    for attempt, delay in enumerate([0] + API_BACKOFF_SECONDS, start=1):
         if delay:
             print(
-                f"OpenAI request retrying after {delay}s backoff "
+                f"Gemini request retrying after {delay}s backoff "
                 f"(attempt {attempt}/{total_attempts})"
             )
             time.sleep(delay)
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
+            parts = data["candidates"][0]["content"]["parts"]
+            content = "".join(part.get("text", "") for part in parts)
             return json.loads(content)
         except urllib.error.HTTPError as exc:
             last_error = exc
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            if exc.code in OPENAI_RETRY_STATUSES and attempt < len(OPENAI_BACKOFF_SECONDS) + 1:
+            if exc.code in API_RETRY_STATUSES and attempt < len(API_BACKOFF_SECONDS) + 1:
                 if retry_after:
                     try:
                         retry_delay = max(1, int(retry_after))
-                        print(f"OpenAI returned {exc.code}; honoring Retry-After={retry_delay}s")
+                        print(f"Gemini returned {exc.code}; honoring Retry-After={retry_delay}s")
                         time.sleep(retry_delay)
                     except ValueError:
                         pass
@@ -86,22 +95,22 @@ def openai_chat_json(system_prompt, user_prompt):
             break
         except urllib.error.URLError as exc:
             last_error = exc
-            if attempt < len(OPENAI_BACKOFF_SECONDS) + 1:
+            if attempt < len(API_BACKOFF_SECONDS) + 1:
                 continue
             break
 
     if isinstance(last_error, urllib.error.HTTPError):
-        raise OpenAIUnavailableError(
-            f"OpenAI API unavailable after {total_attempts} attempts "
+        raise LLMUnavailableError(
+            f"Gemini API unavailable after {total_attempts} attempts "
             f"(HTTP {last_error.code})."
         ) from last_error
     if isinstance(last_error, urllib.error.URLError):
-        raise OpenAIUnavailableError(
-            f"OpenAI API unavailable after {total_attempts} attempts "
+        raise LLMUnavailableError(
+            f"Gemini API unavailable after {total_attempts} attempts "
             f"({type(last_error.reason).__name__ if getattr(last_error, 'reason', None) else 'network error'})."
         ) from last_error
-    raise OpenAIUnavailableError(
-        f"OpenAI API unavailable after {total_attempts} attempts."
+    raise LLMUnavailableError(
+        f"Gemini API unavailable after {total_attempts} attempts."
     ) from last_error
 
 
