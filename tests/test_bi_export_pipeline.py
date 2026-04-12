@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -440,11 +441,8 @@ class TestVideoDeliveryWorker:
             "delivery_attempts": 0,
         }
         bi_export_shared.save_job(job)
-        monkeypatch.setattr(
-            video_delivery_worker,
-            "deliver_video_to_telegram",
-            lambda *args, **kwargs: (raw_mp4.replace("_raw.mp4", ".mp4"), True),
-        )
+        monkeypatch.setattr(video_delivery_worker, "optimize_video_for_telegram", lambda *args, **kwargs: True)
+        monkeypatch.setattr(video_delivery_worker, "replace_telegram_media", lambda *args, **kwargs: True)
         monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: "Car on drive")
         monkeypatch.setattr(video_delivery_worker, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
         monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
@@ -494,11 +492,8 @@ class TestVideoDeliveryWorker:
             "delivery_attempts": 0,
         }
         bi_export_shared.save_job(job)
-        monkeypatch.setattr(
-            video_delivery_worker,
-            "deliver_video_to_telegram",
-            lambda *args, **kwargs: (raw_mp4.replace("_raw.mp4", ".mp4"), True),
-        )
+        monkeypatch.setattr(video_delivery_worker, "optimize_video_for_telegram", lambda *args, **kwargs: True)
+        monkeypatch.setattr(video_delivery_worker, "replace_telegram_media", lambda *args, **kwargs: True)
         monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: None)
         logged = []
         monkeypatch.setattr(
@@ -558,11 +553,8 @@ class TestVideoDeliveryWorker:
             "delivery_attempts": 0,
         }
         bi_export_shared.save_job(job)
-        monkeypatch.setattr(
-            video_delivery_worker,
-            "deliver_video_to_telegram",
-            lambda *args, **kwargs: (raw_mp4.replace("_raw.mp4", ".mp4"), True),
-        )
+        monkeypatch.setattr(video_delivery_worker, "optimize_video_for_telegram", lambda *args, **kwargs: True)
+        monkeypatch.setattr(video_delivery_worker, "replace_telegram_media", lambda *args, **kwargs: True)
         monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: "Car on drive")
         monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
         logged = []
@@ -585,3 +577,62 @@ class TestVideoDeliveryWorker:
         assert any(item["phase"] == "dvla_caption_skipped" for item in logged)
         assert any(item["kwargs"].get("reason") == "no_api_key" for item in logged)
         assert not any(item["phase"] == "dvla_caption_enriched" for item in logged)
+
+    def test_video_delivery_starts_caption_analysis_before_media_replace_finishes(self, monkeypatch):
+        raw_mp4 = "/tmp/video_delivery_worker_parallel_raw.mp4"
+        with open(raw_mp4, "wb") as fh:
+            fh.write(b"video-data")
+
+        payload = _request_payload(output_path=raw_mp4)
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": raw_mp4,
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {
+                "config": {
+                    "id": 1,
+                    "name": "TestCam",
+                    "request_id": "req",
+                    "telegram_token": "token",
+                    "chat_id": "chat",
+                    "last_msg_id": 42,
+                    "dvla_api_key": "",
+                    "gemini_key": "gemini-key",
+                },
+                "prompt": "describe this",
+                "still_caption": "Motion detected.",
+            },
+            "delivery_status": "queued",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        analysis_started = threading.Event()
+
+        monkeypatch.setattr(video_delivery_worker, "optimize_video_for_telegram", lambda *args, **kwargs: True)
+
+        def fake_replace(*_args, **_kwargs):
+            assert analysis_started.wait(1)
+            return True
+
+        def fake_analyze(*_args, **_kwargs):
+            analysis_started.set()
+            return "Car on drive"
+
+        monkeypatch.setattr(video_delivery_worker, "replace_telegram_media", fake_replace)
+        monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", fake_analyze)
+        monkeypatch.setattr(video_delivery_worker, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
+        monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
+
+        video_delivery_worker._process_delivery_request(job["request_id"])
+
+        assert analysis_started.is_set()

@@ -6,6 +6,7 @@ Asynchronous Telegram video delivery for completed Blue Iris exports.
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from bi_export_shared import (
     MAX_DELIVERY_ATTEMPTS,
@@ -22,9 +23,10 @@ from bi_export_shared import (
 )
 from tasks import (
     analyze_video_gemini,
-    deliver_video_to_telegram,
     enrich_caption_with_dvla,
     log_telegram_event,
+    optimize_video_for_telegram,
+    replace_telegram_media,
     update_telegram_caption,
 )
 
@@ -104,14 +106,28 @@ def _process_delivery_request(request_id):
         finish_delivery(job, False, "downloaded video missing from disk")
         return
 
-    _sent_path, media_ok = deliver_video_to_telegram(
-        config,
-        raw_mp4,
-        optimised_mp4,
-        delivery.get("still_caption", "Motion detected."),
-        tag,
-        service_logger=logger,
-    )
+    if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag, service_logger=logger):
+        sent_path = optimised_mp4
+    else:
+        sent_path = raw_mp4
+        logger.warning(f"{tag} Video optimisation failed, sending raw MP4.")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        media_future = executor.submit(
+            replace_telegram_media,
+            config,
+            sent_path,
+            delivery.get("still_caption", "Motion detected."),
+            logger,
+        )
+        caption_future = executor.submit(
+            analyze_video_gemini,
+            config,
+            sent_path,
+            delivery.get("prompt", "Describe the clip."),
+        )
+        media_ok = media_future.result()
+
     if not media_ok:
         if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
             log_job_event(
@@ -144,7 +160,7 @@ def _process_delivery_request(request_id):
             _cleanup_paths(optimised_mp4, raw_mp4)
         return
 
-    video_caption = analyze_video_gemini(config, raw_mp4, delivery.get("prompt", "Describe the clip."))
+    video_caption = caption_future.result()
     if video_caption:
         log_telegram_event(
             logging.INFO,

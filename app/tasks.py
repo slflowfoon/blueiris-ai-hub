@@ -989,6 +989,10 @@ def queue_bi_export(config, output_path, tag, delivery_context=None):
     if not payload:
         return None
 
+    return enqueue_bi_export_payload(payload, tag)
+
+
+def enqueue_bi_export_payload(payload, tag):
     request_id = payload["request_id"]
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(payload))
     log_alert_event(
@@ -1060,6 +1064,24 @@ def process_alert(image_path, config):
         ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
 
         still_caption = ai_text or "Motion detected."
+        export_payload_future = None
+        if (
+            config.get('send_video') == 1
+            and config.get('trigger_filename')
+            and config.get('bi_url')
+            and config.get('bi_user')
+            and config.get('bi_pass')
+        ):
+            raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
+            export_prepare_executor = ThreadPoolExecutor(max_workers=1)
+            export_payload_future = export_prepare_executor.submit(
+                build_bi_export_payload,
+                config,
+                raw_mp4,
+                tag,
+            )
+        else:
+            export_prepare_executor = None
 
         if instant_notify:
             send_telegram(config, image_path, "Motion detected.")
@@ -1099,7 +1121,6 @@ def process_alert(image_path, config):
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
-                raw_mp4 = image_path.replace(".jpg", "_raw.mp4")
                 delivery_context = {
                     "config": {
                         "id": config["id"],
@@ -1116,7 +1137,18 @@ def process_alert(image_path, config):
                     "prompt": prompt,
                     "still_caption": still_caption,
                 }
-                request_id = queue_bi_export(config, raw_mp4, tag, delivery_context=delivery_context)
+                payload = export_payload_future.result() if export_payload_future else build_bi_export_payload(
+                    config,
+                    raw_mp4,
+                    tag,
+                )
+                if export_prepare_executor is not None:
+                    export_prepare_executor.shutdown(wait=False)
+
+                request_id = None
+                if payload:
+                    payload["delivery_context"] = delivery_context
+                    request_id = enqueue_bi_export_payload(payload, tag)
 
                 if not request_id:
                     final_status = "photo_only"
@@ -1140,6 +1172,8 @@ def process_alert(image_path, config):
                     )
                     raw_mp4 = None
             else:
+                if export_prepare_executor is not None:
+                    export_prepare_executor.shutdown(wait=False)
                 final_status = "photo_only"
                 summary_error_code = "bi_credentials_missing"
                 log_alert_event(
@@ -1151,6 +1185,8 @@ def process_alert(image_path, config):
                     final_status=final_status,
                 )
         elif final_status == "unknown":
+            if export_prepare_executor is not None:
+                export_prepare_executor.shutdown(wait=False)
             final_status = "photo_only"
 
     except Exception as e:
