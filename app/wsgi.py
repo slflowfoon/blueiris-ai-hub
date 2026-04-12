@@ -324,7 +324,10 @@ HTML_TEMPLATE = r"""
         .status-badge { font-size: 0.8em; }
         .last-seen { font-size: 0.85em; color: var(--bs-secondary-color); }
         .log-group { border: 1px solid var(--bs-border-color); border-radius: 6px; margin-bottom: 8px; padding: 6px 8px; }
-        .log-group summary { cursor: pointer; font-weight: 500; }
+        .log-group summary { cursor: pointer; font-weight: 500; list-style: none; }
+        .log-group summary::-webkit-details-marker { display: none; }
+        .log-group-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .log-group-summary-text { flex: 1; min-width: 0; }
         .log-group-body { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--bs-border-color); }
         body, .card, .webhook-box, .modal-content { transition: background-color 0.3s, color 0.3s; }
         .mute-badge { font-size: 0.75em; }
@@ -743,8 +746,9 @@ function buildGroupedLogs(entries){
             const group=grouped.get(entry.alert_tag)||[];
             const trigger=group.find(e=>e.is_trigger)||group[0];
             const body=group.map(renderLogLine).join('');
+            const copyText=JSON.stringify(group.map(e=>e.display).join('\n'));
             blocks.push(
-                `<details class="log-group"><summary style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</summary><div class="log-group-body">${body}</div></details>`
+                `<details class="log-group"><summary><div class="log-group-summary"><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.preventDefault();event.stopPropagation();copyTextToClipboard(${copyText}, this)">📋 Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
             );
         }else{
             blocks.push(renderLogLine(entry));
@@ -780,7 +784,34 @@ function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
 setTheme(localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'));
 function togglePassword(id){const el=document.getElementById(id);el.type=el.type==='password'?'text':'password';}
-function copyToClipboard(id,btn){const text=document.getElementById(id).innerText.trim();const orig=btn.innerHTML;const origClass=btn.className;function success(){btn.innerHTML='✅ Copied!';btn.className='btn btn-sm btn-success';setTimeout(()=>{btn.innerHTML=orig;btn.className=origClass;},1500);}if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(success);}else{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy');success();}finally{document.body.removeChild(ta);}}}
+function withCopySuccess(btn){
+    const orig=btn.innerHTML;
+    const origClass=btn.className;
+    btn.innerHTML='✅ Copied!';
+    btn.className='btn btn-sm btn-success';
+    setTimeout(()=>{btn.innerHTML=orig;btn.className=origClass;},1500);
+}
+function copyTextToClipboard(text,btn){
+    function success(){if(btn)withCopySuccess(btn);}
+    if(navigator.clipboard&&window.isSecureContext){
+        navigator.clipboard.writeText(text).then(success);
+    }else{
+        const ta=document.createElement('textarea');
+        ta.value=text;
+        ta.style.position='fixed';
+        ta.style.opacity='0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try{
+            document.execCommand('copy');
+            success();
+        }finally{
+            document.body.removeChild(ta);
+        }
+    }
+}
+function copyToClipboard(id,btn){copyTextToClipboard(document.getElementById(id).innerText.trim(),btn);}
 function openEditModal(c){
     document.getElementById('edit_name').value=c.name;
     document.getElementById('edit_gemini_key').value=c.gemini_key;
