@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import tasks
 
@@ -99,3 +100,58 @@ def test_process_alert_does_not_log_dvla_enrichment_without_key(tmp_path, monkey
         tasks.process_alert(str(image_path), config)
 
     assert "phase=dvla_caption_enriched" not in caplog.text
+
+
+def test_process_alert_starts_bi_export_prep_before_still_send_finishes(tmp_path, monkeypatch):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "id": "cfg1",
+        "name": "Front",
+        "request_id": "req12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "prompt": "Describe motion.",
+        "instant_notify": 0,
+        "send_video": 1,
+        "trigger_filename": "Front.20260412_160001.2973364.3-1.jpg",
+        "bi_url": "http://bi.local:81",
+        "bi_user": "admin",
+        "bi_pass": "pw",
+        "dvla_api_key": "",
+        "verbose_logging": 0,
+    }
+
+    build_started = threading.Event()
+    allow_build_finish = threading.Event()
+    enqueued = {}
+
+    monkeypatch.setattr(tasks, "is_muted", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "check_auto_mute", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "build_prompt", lambda *_args, **_kwargs: "Describe motion.")
+    monkeypatch.setattr(tasks, "optimize_image", lambda *_args, **_kwargs: "encoded")
+    monkeypatch.setattr(tasks, "analyze_image_parallel", lambda *_args, **_kwargs: "Vehicle arrived")
+    monkeypatch.setattr(tasks, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
+
+    def fake_build_payload(*_args, **_kwargs):
+        build_started.set()
+        assert allow_build_finish.wait(1)
+        return {"request_id": "export-123"}
+
+    def fake_send(cfg, *_args, **_kwargs):
+        assert build_started.is_set()
+        cfg["last_msg_id"] = 321
+        allow_build_finish.set()
+
+    monkeypatch.setattr(tasks, "build_bi_export_payload", fake_build_payload)
+    monkeypatch.setattr(tasks, "send_telegram", fake_send)
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_bi_export_payload",
+        lambda payload, _tag: enqueued.setdefault("payload", payload) or payload["request_id"],
+    )
+
+    tasks.process_alert(str(image_path), config)
+
+    assert enqueued["payload"]["delivery_context"]["config"]["last_msg_id"] == 321
