@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import subprocess
 import sys
 
 from ai_common import (
@@ -126,10 +127,19 @@ Return strict JSON with:
     try:
         apply_patch_text(patch)
     except Exception as exc:
+        detail = type(exc).__name__
+        if isinstance(exc, subprocess.CalledProcessError):
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            summary = stderr or stdout
+            if summary:
+                first_line = summary.splitlines()[0][:240]
+                detail = f"{detail}: {first_line}"
         issue_comment(
             repo,
             issue_number,
-            f"{comment_body}\n\nPatch application failed automatically: `{type(exc).__name__}`.",
+            "AI triage marked this issue as fixable, but automatic patch application failed. "
+            f"No draft PR was created.\n\nPatch application failed automatically: `{detail}`.",
         )
         write_output("decision", "comment_only")
         return
