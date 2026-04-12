@@ -201,3 +201,111 @@ def test_enrich_caption_without_plate_returns_original_text(monkeypatch):
     )
 
     assert caption == "Vehicle arrived on driveway"
+
+
+# ---------------------------------------------------------------------------
+# replace_telegram_media — fallback to sendAnimation when last_msg_id is None
+# ---------------------------------------------------------------------------
+
+def _make_video_config(**overrides):
+    cfg = {
+        "name": "Driveway",
+        "request_id": "de12f077",
+        "telegram_token": "token",
+        "chat_id": "123",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_replace_telegram_media_falls_back_to_send_when_no_msg_id(tmp_path, monkeypatch):
+    """When last_msg_id is None, sendAnimation is called instead of editMessageMedia."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-video")
+
+    captured = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        captured["url"] = url
+        captured["files"] = list(files.keys()) if files else []
+        return _DummyResponse(ok=True, payload={"result": {"message_id": 999}})
+
+    config = _make_video_config(last_msg_id=None)
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    result = tasks.replace_telegram_media(config, str(video), "Motion detected.")
+
+    assert result is True
+    assert "sendAnimation" in captured["url"]
+    assert "editMessageMedia" not in captured["url"]
+    assert "animation" in captured["files"]
+    assert config["last_msg_id"] == 999
+
+
+def test_replace_telegram_media_falls_back_when_key_missing(tmp_path, monkeypatch):
+    """When last_msg_id key is absent entirely, sendAnimation is called."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-video")
+
+    captured = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        captured["url"] = url
+        return _DummyResponse(ok=True, payload={"result": {"message_id": 42}})
+
+    config = _make_video_config()  # no last_msg_id key at all
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    result = tasks.replace_telegram_media(config, str(video), "Motion detected.")
+
+    assert result is True
+    assert "sendAnimation" in captured["url"]
+    assert config["last_msg_id"] == 42
+
+
+def test_replace_telegram_media_uses_edit_when_msg_id_present(tmp_path, monkeypatch):
+    """Normal path: last_msg_id present → editMessageMedia, no sendAnimation."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-video")
+
+    captured = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        captured["url"] = url
+        return _DummyResponse(ok=True, payload={})
+
+    config = _make_video_config(last_msg_id=555)
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    result = tasks.replace_telegram_media(config, str(video), "Motion detected.")
+
+    assert result is True
+    assert "editMessageMedia" in captured["url"]
+    assert "sendAnimation" not in captured["url"]
+
+
+def test_replace_telegram_media_fallback_sets_last_msg_id_for_caption_update(tmp_path, monkeypatch):
+    """After fallback send, last_msg_id is updated so caption updates work."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-video")
+
+    calls = []
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        calls.append(url)
+        if "sendAnimation" in url:
+            return _DummyResponse(ok=True, payload={"result": {"message_id": 777}})
+        if "editMessageCaption" in url:
+            assert data.get("message_id") == 777
+            return _DummyResponse(ok=True, payload={})
+        return _DummyResponse(ok=False)
+
+    config = _make_video_config(last_msg_id=None)
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    tasks.replace_telegram_media(config, str(video), "Motion detected.")
+    tasks.update_telegram_caption(config, "Car in driveway.")
+
+    assert any("sendAnimation" in c for c in calls)
+    assert any("editMessageCaption" in c for c in calls)
+
