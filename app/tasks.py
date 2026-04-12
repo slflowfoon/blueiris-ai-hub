@@ -1073,17 +1073,18 @@ def process_alert(image_path, config):
 
         # DVLA enrichment after Telegram send — edits the caption if plates are found (#66)
         enriched_still = enrich_caption_with_dvla(still_caption, config, tag, image_path=image_path)
-        log_telegram_event(
-            logging.INFO,
-            tag,
-            "DVLA still-caption enrichment complete",
-            "dvla_caption_enriched",
-            config,
-            text=enriched_still,
-            caption_source="dvla",
-            caption_changed=(enriched_still != still_caption),
-            message_id=config.get("last_msg_id"),
-        )
+        if (config.get("dvla_api_key") or "").strip():
+            log_telegram_event(
+                logging.INFO,
+                tag,
+                "DVLA still-caption enrichment complete",
+                "dvla_caption_enriched",
+                config,
+                text=enriched_still,
+                caption_source="dvla",
+                caption_changed=(enriched_still != still_caption),
+                message_id=config.get("last_msg_id"),
+            )
         if enriched_still != still_caption:
             update_telegram_caption(
                 config,
@@ -1107,9 +1108,8 @@ def process_alert(image_path, config):
                         "message_thread_id": config.get("message_thread_id"),
                         "last_msg_id": config.get("last_msg_id"),
                         "dvla_api_key": config.get("dvla_api_key", ""),
-                        "gemini_api_key1": config.get("gemini_api_key1", ""),
-                        "gemini_api_key2": config.get("gemini_api_key2", ""),
-                        "gemini_api_key3": config.get("gemini_api_key3", ""),
+                        "gemini_key": config.get("gemini_key", ""),
+                        "verbose_logging": config.get("verbose_logging", 0),
                     },
                     "prompt": prompt,
                     "still_caption": still_caption,
