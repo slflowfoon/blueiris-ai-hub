@@ -4,6 +4,7 @@ import pathlib
 import sys
 
 from ai_common import (
+    OpenAIUnavailableError,
     REPO_ROOT,
     apply_patch_text,
     git_has_changes,
@@ -27,10 +28,20 @@ def main():
 
     system_prompt = load_text(".github/ai/issue_system_prompt.md")
     manifest = "\n".join(repo_manifest()[:400])
-    triage = openai_chat_json(
-        system_prompt,
-        f"Issue #{issue_number}: {title}\n\n{body}\n\nRepo manifest:\n{manifest}",
-    )
+    try:
+        triage = openai_chat_json(
+            system_prompt,
+            f"Issue #{issue_number}: {title}\n\n{body}\n\nRepo manifest:\n{manifest}",
+        )
+    except OpenAIUnavailableError as exc:
+        issue_comment(
+            repo,
+            issue_number,
+            "AI triage could not complete because the OpenAI API was unavailable "
+            f"or rate limited. {exc} No automatic fix was created; retry the workflow later.",
+        )
+        write_output("decision", "comment_only")
+        return
 
     decision = triage.get("decision", "comment_only")
     comment_body = triage.get("comment_body", "").strip()
@@ -63,7 +74,17 @@ Constraints:
 - do not invent large refactors
 - include tests if behavior changes
 """
-    fix = openai_chat_json(system_prompt, fix_prompt)
+    try:
+        fix = openai_chat_json(system_prompt, fix_prompt)
+    except OpenAIUnavailableError as exc:
+        issue_comment(
+            repo,
+            issue_number,
+            "AI triage marked this issue as fixable, but patch generation could not "
+            f"complete because the OpenAI API was unavailable or rate limited. {exc}",
+        )
+        write_output("decision", "comment_only")
+        return
     patch = (fix.get("patch") or "").strip()
     if not patch:
         issue_comment(

@@ -14,6 +14,10 @@ OPENAI_RETRY_STATUSES = {429, 500, 502, 503, 504}
 OPENAI_BACKOFF_SECONDS = [2, 5, 10, 20]
 
 
+class OpenAIUnavailableError(RuntimeError):
+    pass
+
+
 def github_request(path, method="GET", data=None):
     token = os.environ["GITHUB_TOKEN"]
     url = f"https://api.github.com{path}"
@@ -54,9 +58,9 @@ def openai_chat_json(system_prompt, user_prompt):
         method="POST",
     )
     last_error = None
+    total_attempts = len(OPENAI_BACKOFF_SECONDS) + 1
     for attempt, delay in enumerate([0] + OPENAI_BACKOFF_SECONDS, start=1):
         if delay:
-            total_attempts = len(OPENAI_BACKOFF_SECONDS) + 1
             print(
                 f"OpenAI request retrying after {delay}s backoff "
                 f"(attempt {attempt}/{total_attempts})"
@@ -79,13 +83,26 @@ def openai_chat_json(system_prompt, user_prompt):
                     except ValueError:
                         pass
                 continue
-            raise
+            break
         except urllib.error.URLError as exc:
             last_error = exc
             if attempt < len(OPENAI_BACKOFF_SECONDS) + 1:
                 continue
-            raise
-    raise last_error
+            break
+
+    if isinstance(last_error, urllib.error.HTTPError):
+        raise OpenAIUnavailableError(
+            f"OpenAI API unavailable after {total_attempts} attempts "
+            f"(HTTP {last_error.code})."
+        ) from last_error
+    if isinstance(last_error, urllib.error.URLError):
+        raise OpenAIUnavailableError(
+            f"OpenAI API unavailable after {total_attempts} attempts "
+            f"({type(last_error.reason).__name__ if getattr(last_error, 'reason', None) else 'network error'})."
+        ) from last_error
+    raise OpenAIUnavailableError(
+        f"OpenAI API unavailable after {total_attempts} attempts."
+    ) from last_error
 
 
 def repo_manifest():
