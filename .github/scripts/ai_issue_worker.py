@@ -1,13 +1,12 @@
 import json
 import os
 import pathlib
-import subprocess
 import sys
 
 from ai_common import (
     LLMUnavailableError,
     REPO_ROOT,
-    apply_patch_text,
+    apply_file_edits,
     git_has_changes,
     issue_comment,
     llm_chat_json,
@@ -36,13 +35,23 @@ TRIAGE_SCHEMA = {
 FIX_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "patch": {"type": "STRING"},
+        "file_edits": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "path": {"type": "STRING"},
+                    "content": {"type": "STRING"},
+                },
+                "required": ["path", "content"],
+            },
+        },
         "pr_title": {"type": "STRING"},
         "commit_message": {"type": "STRING"},
         "pr_body": {"type": "STRING"},
         "issue_comment": {"type": "STRING"},
     },
-    "required": ["patch", "pr_title", "commit_message", "pr_body", "issue_comment"],
+    "required": ["file_edits", "pr_title", "commit_message", "pr_body", "issue_comment"],
 }
 
 
@@ -91,17 +100,20 @@ Relevant files:
 {inspected}
 
 Return strict JSON with:
-- patch: unified diff patch to apply with git apply
+- file_edits: array of objects with:
+  - path: repo-relative file path
+  - content: full replacement file contents
 - pr_title
 - commit_message
 - pr_body
 - issue_comment
 
-    Constraints:
+Constraints:
 - keep the fix narrow
 - edit only relevant files
 - do not invent large refactors
 - include tests if behavior changes
+- return full file contents for every edited file
 """
     try:
         fix = llm_chat_json(system_prompt, fix_prompt, schema=FIX_SCHEMA)
@@ -114,27 +126,23 @@ Return strict JSON with:
         )
         write_output("decision", "comment_only")
         return
-    patch = (fix.get("patch") or "").strip()
-    if not patch:
+    file_edits = fix.get("file_edits") or []
+    if not file_edits:
         issue_comment(
             repo,
             issue_number,
-            comment_body or "AI triage marked this as fixable, but no patch was generated safely.",
+            comment_body or "AI triage marked this as fixable, but no file edits were generated safely.",
         )
         write_output("decision", "comment_only")
         return
 
     try:
-        apply_patch_text(patch)
+        apply_file_edits(file_edits)
     except Exception as exc:
         detail = type(exc).__name__
-        if isinstance(exc, subprocess.CalledProcessError):
-            stderr = (exc.stderr or "").strip()
-            stdout = (exc.stdout or "").strip()
-            summary = stderr or stdout
-            if summary:
-                first_line = summary.splitlines()[0][:240]
-                detail = f"{detail}: {first_line}"
+        message = str(exc).strip()
+        if message:
+            detail = f"{detail}: {message[:240]}"
         issue_comment(
             repo,
             issue_number,
