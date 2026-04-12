@@ -177,6 +177,21 @@ def _process_delivery_request(request_id):
             caption_source="video",
             previous_text=delivery.get("still_caption"),
         )
+    else:
+        error_code = "video_caption_unavailable"
+        if not (config.get("gemini_key") or "").strip():
+            error_code = "missing_gemini_key"
+        log_telegram_event(
+            logging.WARNING,
+            tag,
+            "Video caption unavailable; keeping still caption",
+            "video_caption_unavailable",
+            config,
+            service_logger=logger,
+            error_code=error_code,
+            caption_source="video",
+            message_id=config.get("last_msg_id"),
+        )
 
     _cleanup_paths(optimised_mp4, raw_mp4)
     finish_delivery(load_job(request_id) or job, True, None)
