@@ -519,3 +519,69 @@ class TestVideoDeliveryWorker:
 
         assert any(item["phase"] == "video_caption_unavailable" for item in logged)
         assert any(item["kwargs"].get("error_code") == "missing_gemini_key" for item in logged)
+
+    def test_video_delivery_logs_dvla_skip_when_no_key_configured(self, monkeypatch):
+        raw_mp4 = "/tmp/video_delivery_worker_dvla_skip_raw.mp4"
+        with open(raw_mp4, "wb") as fh:
+            fh.write(b"video-data")
+
+        payload = _request_payload(output_path=raw_mp4)
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": raw_mp4,
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {
+                "config": {
+                    "id": 1,
+                    "name": "TestCam",
+                    "request_id": "req",
+                    "telegram_token": "token",
+                    "chat_id": "chat",
+                    "last_msg_id": 42,
+                    "dvla_api_key": "",
+                    "gemini_key": "gemini-key",
+                },
+                "prompt": "describe this",
+                "still_caption": "Motion detected.",
+            },
+            "delivery_status": "queued",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        monkeypatch.setattr(
+            video_delivery_worker,
+            "deliver_video_to_telegram",
+            lambda *args, **kwargs: (raw_mp4.replace("_raw.mp4", ".mp4"), True),
+        )
+        monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: "Car on drive")
+        monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
+        logged = []
+        monkeypatch.setattr(
+            video_delivery_worker,
+            "log_telegram_event",
+            lambda level, tag, message, phase, config, **kwargs: logged.append(
+                {
+                    "level": level,
+                    "tag": tag,
+                    "message": message,
+                    "phase": phase,
+                    "kwargs": kwargs,
+                }
+            ),
+        )
+
+        video_delivery_worker._process_delivery_request(job["request_id"])
+
+        assert any(item["phase"] == "dvla_caption_skipped" for item in logged)
+        assert any(item["kwargs"].get("reason") == "no_api_key" for item in logged)
+        assert not any(item["phase"] == "dvla_caption_enriched" for item in logged)
