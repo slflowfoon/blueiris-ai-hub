@@ -1,7 +1,6 @@
 import json
 import os
 import pathlib
-import subprocess
 import textwrap
 import time
 import urllib.error
@@ -159,13 +158,26 @@ def write_file(path, content):
 
 
 def run(cmd, check=True):
+    import subprocess
+
     return subprocess.run(cmd, check=check, text=True, capture_output=True)
 
 
-def apply_patch_text(patch_text):
-    patch_file = REPO_ROOT / ".github" / "ai-output" / "issue.patch"
-    write_file(patch_file, patch_text)
-    return run(["git", "apply", "--index", "--reject", str(patch_file)])
+def apply_file_edits(file_edits):
+    changed = []
+    for item in file_edits:
+        path = (item.get("path") or "").strip()
+        if not path:
+            continue
+        target = REPO_ROOT / path
+        if not str(target.resolve()).startswith(str(REPO_ROOT.resolve())):
+            raise ValueError(f"Refusing to write outside repo: {path}")
+        content = item.get("content")
+        if content is None:
+            raise ValueError(f"Missing content for file edit: {path}")
+        write_file(target, content)
+        changed.append(path)
+    return changed
 
 
 def git_has_changes():
