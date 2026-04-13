@@ -456,6 +456,7 @@ def queue_retry(job, reason):
     job["status"] = "retry_queued"
     job["last_error"] = reason
     job["last_transition_at"] = time.time()
+    job["request"] = retry_request
     save_job(job)
     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(retry_request))

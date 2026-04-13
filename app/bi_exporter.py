@@ -108,7 +108,7 @@ def _prepare_export(req, tag):
                 "delivery_attempts": 0,
                 "download_attempts": 0,
                 "status": "queued",
-                "export_attempts": int(req.get("_export_attempts", 0)) + 1,
+                "export_attempts": int(req.get("_export_attempts", 0)),
                 "recovery_attempts": int(req.get("_recovery_attempts", 0)),
                 "submitted_at": now,
                 "monitor_started_at": now,
