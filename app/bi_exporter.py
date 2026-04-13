@@ -61,15 +61,62 @@ def _prepare_export(req, tag):
         "session": sid,
     }
 
+    current_queue = []
     known_paths = set()
     try:
-        known_paths = {item.get("path") for item in bi_get_export_queue(sess, req["bi_url"], sid) if item.get("path")}
+        current_queue = bi_get_export_queue(sess, req["bi_url"], sid)
+        known_paths = {item.get("path") for item in current_queue if item.get("path")}
     except Exception as exc:
         logger.warning(
             f"{tag} Failed to read export queue before enqueue | "
             f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_snapshot "
             f"error_code=queue_snapshot_failed error={safe_error_summary(exc)}"
         )
+
+    # On retry, if the original export is still in BI's queue, reattach to it
+    # rather than submitting a new export and compounding the queue depth.
+    previous_target = req.get("_previous_target_path")
+    if previous_target and previous_target in known_paths:
+        existing = next((item for item in current_queue if item.get("path") == previous_target), None)
+        existing_uri = (existing.get("uri") or "").replace("\\", "/") if existing else ""
+        if existing_uri:
+            log_job_event(
+                logging.INFO,
+                f"{tag} reattaching to existing BI export",
+                req,
+                logger=logger,
+                phase="export_reattach",
+                target_path=previous_target,
+            )
+            now = time.time()
+            job = {
+                "request_id": req["request_id"],
+                "alert_request_id": req.get("alert_request_id"),
+                "config_name": req.get("config_name", "?"),
+                "request": req,
+                "bi_url": req["bi_url"],
+                "bi_user": req["bi_user"],
+                "bi_pass": req["bi_pass"],
+                "output_path": req["output_path"],
+                "target_path": previous_target,
+                "relative_uri": existing_uri,
+                "delete_after": req.get("delete_after", True),
+                "restart_url": req.get("bi_restart_url", ""),
+                "restart_token": req.get("bi_restart_token", ""),
+                "delivery_context": req.get("delivery_context"),
+                "delivery_status": "pending" if req.get("delivery_context") else None,
+                "delivery_attempts": 0,
+                "download_attempts": 0,
+                "status": "queued",
+                "export_attempts": int(req.get("_export_attempts", 0)) + 1,
+                "recovery_attempts": int(req.get("_recovery_attempts", 0)),
+                "submitted_at": now,
+                "monitor_started_at": now,
+                "last_transition_at": now,
+                "last_progress_log": 0,
+                "next_poll_at": now,
+            }
+            return job, None
 
     target_path = None
     relative_uri = None

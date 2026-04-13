@@ -451,6 +451,7 @@ def queue_retry(job, reason):
     retry_request["queued_at"] = time.time()
     retry_request["_export_attempts"] = job.get("export_attempts", 1)
     retry_request["_recovery_attempts"] = job.get("recovery_attempts", 0)
+    retry_request["_previous_target_path"] = job.get("target_path")
 
     job["status"] = "retry_queued"
     job["last_error"] = reason
