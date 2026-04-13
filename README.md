@@ -37,6 +37,8 @@ The web UI will be available at `http://your-host:5000`.
 
 Redis now stores durable BI export job state, session reuse data, and queue coordination. The default Compose file persists this in the named Docker volume `redis_data`, so do not remove that volume unless you intentionally want to discard in-flight BI pipeline state.
 
+Containers now run as a dedicated non-root user (`uid 1000`). This improves runtime isolation, and the image also avoids `apt-get upgrade` in favor of a tighter, more reproducible build that should be kept current by regularly rebasing onto updated base images. If you bind-mount host directories such as `./data` or `./logs`, ensure they are writable by that user on the host.
+
 ### 2. Add a camera configuration
 
 Open the web UI and click **+ New Configuration**. Fill in:
