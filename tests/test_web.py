@@ -1,6 +1,84 @@
+import io
 import sqlite3
-
+import uuid
+from unittest.mock import MagicMock, patch
 import wsgi
+
+
+def _insert_config(config_id):
+    """Insert a minimal camera config row for webhook tests."""
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            "INSERT INTO configs (id, name, gemini_key, telegram_token, chat_id, prompt) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (config_id, "TestCam", "gk", "ttoken", "123", "describe"),
+        )
+
+
+def _fake_image():
+    return (io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 16), "alert_20240101_120000.jpg")
+
+
+def test_webhook_dedup_same_alert(client):
+    """Second request with same bvr+trigger_filename returns duplicate and does not enqueue."""
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    fake_redis = MagicMock()
+    fake_redis.set.side_effect = [1, None]  # first succeeds, second blocked
+    fake_queue = MagicMock()
+
+    with patch.object(wsgi, "r", fake_redis), patch.object(wsgi, "q", fake_queue):
+        img1, name1 = _fake_image()
+        r1 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img1, name1), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r1.status_code == 200
+        assert r1.get_json()["status"] == "queued"
+
+        img2, name2 = _fake_image()
+        r2 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img2, name2), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r2.status_code == 200
+        assert r2.get_json()["status"] == "duplicate"
+
+    assert fake_queue.enqueue.call_count == 1
+
+
+def test_webhook_dedup_different_trigger_on_same_bvr(client):
+    """Two alerts sharing the same .bvr but different trigger filenames both queue normally."""
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    fake_redis = MagicMock()
+    fake_redis.set.return_value = 1  # always succeeds — different keys
+    fake_queue = MagicMock()
+
+    with patch.object(wsgi, "r", fake_redis), patch.object(wsgi, "q", fake_queue):
+        img1, _ = _fake_image()
+        r1 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img1, "alert_20240101_120000.jpg"), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r1.status_code == 200
+        assert r1.get_json()["status"] == "queued"
+
+        img2, _ = _fake_image()
+        r2 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img2, "alert_20240101_120040.jpg"), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r2.status_code == 200
+        assert r2.get_json()["status"] == "queued"
+
+    assert fake_queue.enqueue.call_count == 2
 
 
 def test_dashboard_loads(client):
