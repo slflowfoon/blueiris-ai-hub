@@ -11,11 +11,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app /app
+COPY --chown=appuser:appuser app /app
 ARG APP_VERSION=dev
 RUN echo "$APP_VERSION" > /app/VERSION
-
-RUN chown -R appuser:appuser /app /tmp_images
 
 USER appuser
 
