@@ -247,18 +247,20 @@ def get_redis_health():
 
 
 def get_service_health():
-    return {
-        "worker": heartbeat_status("worker"),
-        "mute_bot": heartbeat_status("mute_bot"),
-        "bi_exporter": heartbeat_status("bi_exporter"),
-        "bi_queue_monitor": heartbeat_status("bi_queue_monitor"),
-        "bi_downloader": heartbeat_status("bi_downloader"),
-        "bi_watchdog": heartbeat_status("bi_watchdog"),
-        "video_delivery_worker": heartbeat_status("video_delivery_worker"),
-    }
+    service_names = [
+        "worker",
+        "mute_bot",
+        "bi_exporter",
+        "bi_queue_monitor",
+        "bi_downloader",
+        "bi_watchdog",
+        "video_delivery_worker",
+    ]
+    return {name: heartbeat_status(name) for name in service_names}
 
 
 def get_pipeline_status():
+    services = get_service_health()
     try:
         queue_depths = {
             "export_requests": r.llen(EXPORT_REQUEST_QUEUE),
@@ -270,7 +272,7 @@ def get_pipeline_status():
         return {
             "queue_depths": None,
             "stale_jobs": None,
-            "services": get_service_health(),
+            "services": services,
         }
 
     stale_jobs = {
@@ -302,7 +304,7 @@ def get_pipeline_status():
     return {
         "queue_depths": queue_depths,
         "stale_jobs": stale_jobs,
-        "services": get_service_health(),
+        "services": services,
     }
 
 

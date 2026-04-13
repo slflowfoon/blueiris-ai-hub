@@ -14,7 +14,6 @@ def ensure_health_dir():
 
 
 def heartbeat_path(service_name):
-    ensure_health_dir()
     return os.path.join(HEALTH_DIR, f"{service_name}.json")
 
 
