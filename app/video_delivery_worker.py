@@ -58,7 +58,7 @@ def _process_delivery_request(request_id):
 
     delivery = job.get("delivery_context") or {}
     config = delivery.get("config") or {}
-    if not config or "last_msg_id" not in config:
+    if not config or not config.get("telegram_token") or not config.get("chat_id"):
         log_terminal_diagnosis(
             logger,
             job_tag(job),
@@ -127,6 +127,10 @@ def _process_delivery_request(request_id):
             delivery.get("prompt", "Describe the clip."),
         )
         media_ok = media_future.result()
+
+    # Persist config.last_msg_id back onto the job so that a crash/restart
+    # after a successful fallback sendAnimation doesn't trigger a duplicate send.
+    save_job(job)
 
     if not media_ok:
         if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
