@@ -9,7 +9,7 @@ import requests
 from datetime import datetime
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
-from sqlite_utils import connect as sqlite_connect
+from db_utils import connect as sqlite_connect
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 

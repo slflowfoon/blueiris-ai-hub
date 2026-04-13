@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 import redis
 import requests
-from sqlite_utils import connect as sqlite_connect
+from db_utils import connect as sqlite_connect
 
 LOG_FILE = "/app/logs/mute_bot.log"
 DB_FILE = "/app/data/configs.db"

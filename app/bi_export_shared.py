@@ -14,7 +14,7 @@ from logging.handlers import RotatingFileHandler
 
 import redis
 import requests
-from sqlite_utils import connect as sqlite_connect
+from db_utils import connect as sqlite_connect
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")

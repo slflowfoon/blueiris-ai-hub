@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
 from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
-from sqlite_utils import connect as sqlite_connect
+from db_utils import connect as sqlite_connect
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
