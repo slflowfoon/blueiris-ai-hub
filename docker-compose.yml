@@ -8,6 +8,11 @@ services:
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   web:
@@ -24,6 +29,12 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       #- BASE_URL=https://example.com
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys, urllib.request, urllib.error; url='http://localhost:5000/health';\ntry: urllib.request.urlopen(url, timeout=5).read(); sys.exit(0)\nexcept urllib.error.HTTPError: sys.exit(0)\nexcept Exception: sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   worker:
@@ -37,7 +48,14 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('worker')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    # All worker replicas share one heartbeat file, so this is a service-level signal.
     deploy:
       replicas: 4  # Increase for more concurrent camera alerts (1 per simultaneous camera)
 
@@ -51,6 +69,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('mute_bot')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   bi_exporter:
@@ -64,6 +88,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('bi_exporter')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Single replica is intentional — export submission must stay ordered.
 
@@ -78,6 +108,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('bi_queue_monitor')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Single replica is intentional — one shared queue poller per BI instance.
 
@@ -92,6 +128,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('bi_downloader')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     # Keep single replica until per-job file path ownership is expanded.
 
@@ -106,6 +148,12 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('bi_watchdog')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   video_delivery_worker:
@@ -119,4 +167,10 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('video_delivery_worker')['status'] == 'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped

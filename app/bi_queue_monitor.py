@@ -31,6 +31,7 @@ from bi_export_shared import (
     queue_retry,
     write_result,
 )
+from service_health import start_heartbeat_thread
 
 
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/bi_queue_monitor.log")
@@ -240,6 +241,7 @@ def _poll_active_exports():
 
 
 def run_monitor():
+    start_heartbeat_thread("bi_queue_monitor")
     logger.info("Monitoring staged BI export queue")
     while True:
         _poll_active_exports()

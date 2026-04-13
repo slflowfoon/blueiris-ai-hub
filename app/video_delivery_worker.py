@@ -21,6 +21,7 @@ from bi_export_shared import (
     save_job,
     setup_service_logger,
 )
+from service_health import start_heartbeat_thread
 from tasks import (
     analyze_video_gemini,
     enrich_caption_with_dvla,
@@ -238,6 +239,7 @@ def _process_delivery_request(request_id):
 
 
 def run_video_delivery_worker():
+    start_heartbeat_thread("video_delivery_worker")
     logger.info("Waiting for downloaded BI videos")
     while True:
         item = r.blpop(VIDEO_DELIVERY_QUEUE, timeout=5)
