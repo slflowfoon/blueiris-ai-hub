@@ -8,13 +8,13 @@ import json
 import logging
 import os
 import socket
-import sqlite3
 import time
 from urllib.parse import urljoin, urlparse
 from logging.handlers import RotatingFileHandler
 
 import redis
 import requests
+from db_utils import connect as sqlite_connect
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -113,7 +113,7 @@ def should_log_bi_instance():
 
     enabled = True
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite_connect(DB_FILE) as conn:
             count = conn.execute(
                 """
                 SELECT COUNT(DISTINCT TRIM(bi_url))

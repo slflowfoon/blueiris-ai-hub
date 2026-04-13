@@ -8,7 +8,6 @@ import io
 import json
 import hashlib
 import subprocess
-import sqlite3
 import redis
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
 from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
+from db_utils import connect as sqlite_connect
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -194,7 +194,7 @@ def _audit_plate(plate, dvla_data, camera_name, image_path, tag):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     image_filename = _save_plate_thumbnail(image_path, plate) if image_path else None
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite_connect(DB_FILE) as conn:
             existing = conn.execute(
                 "SELECT id, image_filename FROM plate_audit WHERE plate=?", (plate,)
             ).fetchone()

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 import redis
 import requests
+from db_utils import connect as sqlite_connect
 
 LOG_FILE = "/app/logs/mute_bot.log"
 DB_FILE = "/app/data/configs.db"
@@ -39,8 +40,7 @@ r = redis.from_url(REDIS_URL)
 
 def get_configs():
     try:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite_connect(DB_FILE, row_factory=sqlite3.Row)
         rows = conn.execute("SELECT * FROM configs").fetchall()
         conn.close()
         return [dict(row) for row in rows]
