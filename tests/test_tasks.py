@@ -189,3 +189,15 @@ def test_enrich_caption_uses_correct_dvla_endpoint(monkeypatch):
     assert captured["json"] == {"registrationNumber": "AB12CDE"}
     assert captured["timeout"] == 10
     assert "(Ford, Blue, 2019)" in caption
+
+
+def test_enrich_caption_without_plate_returns_original_text(monkeypatch):
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {})
+
+    caption = tasks.enrich_caption_with_dvla(
+        "Vehicle arrived on driveway",
+        {"name": "Driveway", "dvla_api_key": "test-key"},
+        tag="[Driveway][abc12345]",
+    )
+
+    assert caption == "Vehicle arrived on driveway"
