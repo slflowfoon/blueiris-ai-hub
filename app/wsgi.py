@@ -7,6 +7,7 @@ import redis
 import logging
 import requests
 from datetime import datetime
+from collections import deque
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from db_utils import connect as sqlite_connect
@@ -179,6 +180,7 @@ init_db()
 # --- HELPERS ---
 
 _LOG_TAG_RE = re.compile(r'(\[[^\]]+\]\[[^\]]+\])')
+_WEBHOOK_TRIGGER_LIMIT = 100
 
 
 def _parse_log_line(source_name, line):
@@ -201,12 +203,23 @@ def _parse_log_line(source_name, line):
     }
 
 
+def _get_recent_trigger_tags(system_log_path):
+    recent = deque(maxlen=_WEBHOOK_TRIGGER_LIMIT)
+
+    with open(system_log_path) as f:
+        for line in f:
+            parsed = _parse_log_line("system.log", line)
+            if parsed and parsed["is_trigger"] and parsed["alert_tag"]:
+                recent.append(parsed["alert_tag"])
+
+    return list(recent)
+
+
 def get_log_entries():
     if not os.path.isdir(LOG_DIR):
         return []
 
     try:
-        entries = []
         log_files = sorted(
             name for name in os.listdir(LOG_DIR)
             if name.endswith(".log") and os.path.isfile(os.path.join(LOG_DIR, name))
@@ -214,19 +227,29 @@ def get_log_entries():
         if not log_files:
             return []
 
+        system_log_path = os.path.join(LOG_DIR, "system.log")
+        if not os.path.isfile(system_log_path):
+            return []
+
+        trigger_tags = _get_recent_trigger_tags(system_log_path)
+        if not trigger_tags:
+            return []
+
+        selected_tags = set(trigger_tags)
+        entries = []
         for name in log_files:
             path = os.path.join(LOG_DIR, name)
             with open(path) as f:
-                for line in f.readlines()[-200:]:
+                for line in f:
                     parsed = _parse_log_line(name, line)
-                    if parsed:
+                    if parsed and parsed["alert_tag"] in selected_tags:
                         entries.append(parsed)
 
         if not entries:
             return []
 
         entries.sort(key=lambda item: item["timestamp"])
-        return entries[-200:]
+        return entries
     except Exception as e:
         return [{
             "source": "system",

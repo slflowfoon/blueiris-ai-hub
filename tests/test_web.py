@@ -137,6 +137,36 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[1]["is_trigger"] is False
 
 
+def test_get_log_entries_keeps_last_100_trigger_groups(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    system_lines = []
+    worker_lines = []
+    for idx in range(105):
+        tag = f"[Driveway][tag{idx:04d}]"
+        second = idx % 60
+        minute = idx // 60
+        timestamp = f"2026-04-13 12:{minute:02d}:{second:02d},000"
+        system_lines.append(f"{timestamp} - INFO - {tag} Webhook triggered. File: test-{idx}.jpg")
+        worker_lines.append(f"{timestamp} - INFO - {tag} delivery completed | phase=delivery_completed")
+
+    (log_dir / "system.log").write_text("\n".join(system_lines))
+    (log_dir / "video_delivery_worker.log").write_text("\n".join(worker_lines))
+
+    monkeypatch.setattr(wsgi, "LOG_DIR", str(log_dir))
+
+    entries = wsgi.get_log_entries()
+    tags = {entry["alert_tag"] for entry in entries}
+
+    assert "[Driveway][tag0000]" not in tags
+    assert "[Driveway][tag0004]" not in tags
+    assert "[Driveway][tag0005]" in tags
+    assert "[Driveway][tag0104]" in tags
+    assert len({entry["alert_tag"] for entry in entries if entry["is_trigger"]}) == 100
+    assert any(entry["source"] == "video_delivery_worker.log" for entry in entries)
+
+
 def test_sqlite_wal_mode_enabled(client):
     """Test that the application database is configured for WAL mode."""
     with sqlite3.connect(wsgi.DB_FILE) as conn:
