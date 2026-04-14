@@ -22,6 +22,7 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 
 EXPORT_REQUEST_QUEUE     = "bi:export:requests"
+OPENBVR_RETRY_QUEUE      = "bi:export:openbvr:retry"
 DOWNLOAD_REQUEST_QUEUE   = "bi:download:requests"
 VIDEO_DELIVERY_QUEUE     = "bi:delivery:requests"
 ACTIVE_EXPORT_SET        = "bi:exports:active"
@@ -35,6 +36,7 @@ DOWNLOAD_TIMEOUT         = 60
 RECOVERY_PAUSE           = 15
 QUEUE_PROGRESS_LOG_INTERVAL = 15
 MAX_EXPORT_ATTEMPTS      = 2
+MAX_OPENBVR_DEFER_ATTEMPTS = 1
 MAX_RECOVERY_ATTEMPTS    = 1
 MAX_DELIVERY_ATTEMPTS    = 3
 SESSION_KEY_PREFIX       = "bi:session:"
@@ -192,6 +194,7 @@ def recommended_action_for(error_code):
         "missing_clip_path": "check_prequeue_lookup_and_bvr_clip_fallback",
         "offset_unparseable": "check_alert_filename_format_and_offset_parser",
         "openbvr_failed": "check_blue_iris_clip_integrity_and_source_bvr_path",
+        "openbvr_lookup_refresh_failed": "check_bi_alert_lookup_freshness_and_source_clip_path_after_openbvr_failure",
         "persistent_404": "check_bi_clip_endpoint_visibility_after_export_completion",
         "queue_ack_timeout": "check_bi_export_queue_acknowledgement_and_export_submission",
         "queue_poll_failed": "check_bi_queue_monitor_connectivity_and_session_validity",
@@ -322,6 +325,28 @@ def trigger_bi_recovery(restart_url, restart_token, tag):
     except Exception as exc:
         logging.error(f"{tag} BI recovery error: {safe_error_summary(exc)}")
     return False
+
+
+def bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
+    """
+    Look up an alert in BI's alert list using the shared session cache.
+    Returns (clip, offset, msec) or None if the alert is not present.
+    """
+    json_url = urljoin(bi_url.rstrip("/") + "/", "json")
+    sess, sid = get_session(bi_url, bi_user, bi_pass, tag)
+    if not sid:
+        raise RuntimeError("BI login failed")
+
+    alert_list = sess.post(
+        json_url,
+        json={"cmd": "alertlist", "camera": "Index", "session": sid},
+        timeout=10,
+    )
+    alert_list.raise_for_status()
+    for alert in alert_list.json().get("data", []):
+        if alert.get("file") == trigger_filename:
+            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
+    return None
 
 
 def bi_get_export_queue(sess, base_url, sid):

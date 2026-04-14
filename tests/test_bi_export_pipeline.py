@@ -810,3 +810,168 @@ class TestVideoDeliveryWorker:
 
         stored = bi_export_shared.load_job(job["request_id"])
         assert stored["delivery_context"]["config"]["last_msg_id"] == 888
+
+
+def test_refreshes_alert_lookup_after_openbvr_failed(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="alert.jpg",
+    )
+
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        bi_exporter,
+        "bi_lookup_alert",
+        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+    )
+
+    posted = []
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            posted.append(dict(json))
+
+            class R:
+                def __init__(self, body):
+                    self._body = body
+
+                def json(self):
+                    return self._body
+
+            if len(posted) == 1:
+                return R({"result": "fail", "data": {"reason": "OpenBVR failed"}})
+            return R({"result": "success", "data": {"path": "@22842", "uri": "Clipboard\\new.mp4"}})
+
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    job, error = bi_exporter._prepare_export(payload, "[T]")
+
+    assert error is None
+    assert job["request"]["clip_path"] == "@clip/refreshed"
+    assert job["request"]["offset"] == 222
+    assert job["request"]["duration"] == 33333
+    assert posted[0]["path"] == "@clip/original.bvr"
+    assert posted[1]["path"] == "@clip/refreshed.bvr"
+    assert posted[1]["startms"] == 222
+    assert posted[1]["msec"] == 33333
+
+
+def test_openbvr_refresh_failure_returns_specific_error(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="alert.jpg",
+    )
+
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+    monkeypatch.setattr(bi_exporter, "bi_lookup_alert", lambda *args, **kwargs: None)
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            class R:
+                def json(self):
+                    return {"result": "fail", "data": {"reason": "OpenBVR failed"}}
+
+            return R()
+
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    job, error = bi_exporter._prepare_export(payload, "[T]")
+
+    assert job is None
+    assert error == "BI alert lookup refresh found no matching alert after OpenBVR error"
+
+
+def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="alert.jpg",
+    )
+
+    monkeypatch.setattr(
+        bi_exporter,
+        "bi_lookup_alert",
+        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+    )
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+
+    queued = {}
+
+    class FakeRedis:
+        def scard(self, key):
+            assert key == bi_export_shared.ACTIVE_EXPORT_SET
+            return 2
+
+        def llen(self, key):
+            assert key == bi_export_shared.OPENBVR_RETRY_QUEUE
+            return 0
+
+        def rpush(self, key, value):
+            queued["key"] = key
+            queued["value"] = json.loads(value)
+            return 1
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            class R:
+                def json(self):
+                    return {"result": "fail", "data": {"reason": "OpenBVR failed"}}
+
+            return R()
+
+    monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    job, error = bi_exporter._prepare_export(payload, "[T]")
+
+    assert job is None
+    assert error == "openbvr deferred retry queued"
+    assert queued["key"] == bi_export_shared.OPENBVR_RETRY_QUEUE
+    assert queued["value"]["clip_path"] == "@clip/refreshed"
+    assert queued["value"]["_openbvr_deferred_attempts"] == 1
+
+
+def test_run_exporter_only_drains_openbvr_retry_queue_when_idle(monkeypatch):
+    calls = []
+
+    class FakeRedis:
+        def __init__(self):
+            self.export_blpop_calls = 0
+
+        def blpop(self, key, timeout=0):
+            calls.append(("blpop", key, timeout))
+            if key == bi_export_shared.EXPORT_REQUEST_QUEUE:
+                self.export_blpop_calls += 1
+                if self.export_blpop_calls == 1:
+                    return None
+                raise RuntimeError("stop")
+            if key == bi_export_shared.OPENBVR_RETRY_QUEUE:
+                return (key, b'{"request_id":"deferred"}')
+            raise AssertionError(f"unexpected queue {key}")
+
+        def scard(self, key):
+            calls.append(("scard", key))
+            assert key == bi_export_shared.ACTIVE_EXPORT_SET
+            return 0
+
+    monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "start_heartbeat_thread", lambda *_args, **_kwargs: None)
+
+    def fake_process(raw):
+        calls.append(("process", raw))
+
+    monkeypatch.setattr(bi_exporter, "_process_request", fake_process)
+
+    try:
+        bi_exporter.run_exporter()
+    except RuntimeError as exc:
+        assert str(exc) == "stop"
+
+    assert ("scard", bi_export_shared.ACTIVE_EXPORT_SET) in calls
+    assert ("blpop", bi_export_shared.OPENBVR_RETRY_QUEUE, 1) in calls
+    assert ("process", b'{"request_id":"deferred"}') in calls
