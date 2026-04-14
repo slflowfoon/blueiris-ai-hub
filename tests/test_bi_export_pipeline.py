@@ -113,6 +113,63 @@ class TestExporter:
 
         assert bi_export_shared.job_tag(payload) == "[TestCam][webhook4]"
 
+    def test_reattach_to_existing_export_when_previous_target_still_in_queue(self, monkeypatch):
+        payload = _request_payload(
+            _export_attempts=1,
+            _previous_target_path="@22833",
+        )
+
+        monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (object(), "sid"))
+        monkeypatch.setattr(
+            bi_exporter,
+            "bi_get_export_queue",
+            lambda *args, **kwargs: [{"path": "@22833", "uri": "Clipboard\\foo.mp4"}],
+        )
+
+        job, error = bi_exporter._prepare_export(payload, "[T]")
+
+        assert error is None
+        assert job["target_path"] == "@22833"
+        assert job["relative_uri"] == "Clipboard/foo.mp4"
+        assert job["status"] == "queued"
+        assert job["export_attempts"] == 1  # reattach does not increment; no new export was submitted
+
+    def test_submits_new_export_when_previous_target_left_queue(self, monkeypatch):
+        payload = _request_payload(
+            _export_attempts=1,
+            _previous_target_path="@22833",
+        )
+
+        call_count = {"n": 0}
+
+        def fake_get_queue(*args, **kwargs):
+            call_count["n"] += 1
+            return []  # previous target no longer present
+
+        monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (object(), "sid"))
+        monkeypatch.setattr(bi_exporter, "bi_get_export_queue", fake_get_queue)
+
+        posted = []
+
+        class FakeSession:
+            def post(self, url, json=None, timeout=None):
+                posted.append(json)
+
+                class R:
+                    def json(self):
+                        return {"result": "success", "data": {"path": "@22842", "uri": "Clipboard\\new.mp4"}}
+                return R()
+
+        monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+        monkeypatch.setattr(bi_exporter, "bi_get_export_queue", fake_get_queue)
+
+        job, error = bi_exporter._prepare_export(payload, "[T]")
+
+        assert error is None
+        assert job["target_path"] == "@22842"
+        assert job["status"] == "submitted"
+        assert any(p.get("cmd") == "export" for p in posted)
+
     def test_result_key_has_ttl_on_failure(self, monkeypatch):
         payload = _request_payload()
         monkeypatch.setattr(bi_exporter, "_prepare_export", lambda req, tag: (None, "export failed"))
@@ -202,6 +259,65 @@ class TestQueueMonitor:
         assert stored["status"] == "ready"
         assert queued_download[1].decode() == job["request_id"]
         assert not _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, job["request_id"])
+
+    def test_queue_retry_includes_previous_target_path(self):
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@22833",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "queued",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "submitted_at": time.time(),
+            "last_transition_at": time.time(),
+        }
+        bi_export_shared.save_job(job)
+
+        bi_export_shared.queue_retry(job, "watchdog: export queue stale")
+
+        raw = _r.blpop(bi_export_shared.EXPORT_REQUEST_QUEUE, timeout=1)
+        assert raw is not None
+        retry_req = json.loads(raw[1])
+        assert retry_req["_previous_target_path"] == "@22833"
+
+    def test_queue_retry_persists_retry_request_onto_saved_job(self):
+        """Watchdog stall path: job["request"] must carry _previous_target_path so that
+        bi_watchdog.py's json.dumps(job["request"]) requeue doesn't lose it on a second stall."""
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@22833",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "queued",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "submitted_at": time.time(),
+            "last_transition_at": time.time(),
+        }
+        bi_export_shared.save_job(job)
+        bi_export_shared.queue_retry(job, "watchdog: export queue stale")
+
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert stored["request"]["_previous_target_path"] == "@22833"
 
     def test_unacknowledged_export_is_retried(self, monkeypatch):
         payload = _request_payload()
