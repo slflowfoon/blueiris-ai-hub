@@ -636,3 +636,61 @@ class TestVideoDeliveryWorker:
         video_delivery_worker._process_delivery_request(job["request_id"])
 
         assert analysis_started.is_set()
+
+    def test_fallback_send_persists_new_msg_id_to_redis(self, monkeypatch):
+        """Crash/retry path: after a successful fallback sendAnimation, the new
+        last_msg_id must be flushed to Redis so a restarted worker doesn't
+        call sendAnimation again and create a duplicate Telegram message."""
+        raw_mp4 = "/tmp/video_delivery_worker_fallback_raw.mp4"
+        with open(raw_mp4, "wb") as fh:
+            fh.write(b"video-data")
+
+        payload = _request_payload(output_path=raw_mp4)
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": raw_mp4,
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {
+                "config": {
+                    "id": 1,
+                    "name": "TestCam",
+                    "request_id": "req",
+                    "telegram_token": "token",
+                    "chat_id": "chat",
+                    "last_msg_id": None,
+                    "dvla_api_key": "",
+                    "gemini_key": "",
+                },
+                "prompt": "describe this",
+                "still_caption": "Motion detected.",
+            },
+            "delivery_status": "queued",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+
+        def fake_replace(config, *_args, **_kwargs):
+            # Simulate the fallback sendAnimation setting a new message id.
+            config["last_msg_id"] = 888
+            return True
+
+        monkeypatch.setattr(video_delivery_worker, "optimize_video_for_telegram", lambda *args, **kwargs: True)
+        monkeypatch.setattr(video_delivery_worker, "replace_telegram_media", fake_replace)
+        monkeypatch.setattr(video_delivery_worker, "analyze_video_gemini", lambda *args, **kwargs: None)
+        monkeypatch.setattr(video_delivery_worker, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
+        monkeypatch.setattr(video_delivery_worker, "update_telegram_caption", lambda *args, **kwargs: True)
+
+        video_delivery_worker._process_delivery_request(job["request_id"])
+
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert stored["delivery_context"]["config"]["last_msg_id"] == 888

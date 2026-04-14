@@ -661,7 +661,7 @@ def send_telegram(config, img_path, caption, service_logger=None):
 
 
 def update_telegram_caption(config, text, service_logger=None, caption_source="unknown", previous_text=None):
-    if 'last_msg_id' not in config:
+    if not config.get('last_msg_id'):
         req_id = config.get('request_id', 'unknown')
         tag = f"[{config['name']}][{req_id}]"
         log_telegram_event(
@@ -745,13 +745,76 @@ def update_telegram_caption(config, text, service_logger=None, caption_source="u
 def replace_telegram_media(config, media_path, caption, service_logger=None):
     req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
-
-    if 'last_msg_id' not in config:
-        return False
     token = config['telegram_token']
     chat_id = config['chat_id']
+    thread_id = _tg_thread(config)
+    last_msg_id = config.get('last_msg_id')
+
+    if not last_msg_id:
+        # The initial still photo send failed — no message to edit.
+        # Fall back to sending the video as a new message.
+        log_telegram_event(
+            logging.WARNING,
+            tag,
+            "No still message to replace; sending video as new message",
+            "telegram_video_fallback_send",
+            config,
+            service_logger=service_logger,
+            text=caption,
+            caption_source="video",
+        )
+        data = {'chat_id': chat_id, 'caption': caption}
+        if thread_id:
+            data['message_thread_id'] = thread_id
+        try:
+            with open(media_path, 'rb') as f:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendAnimation",
+                    data=data, files={'animation': f}, timeout=60
+                )
+                if resp.ok:
+                    config['last_msg_id'] = resp.json()['result']['message_id']
+                    log_telegram_event(
+                        logging.INFO,
+                        tag,
+                        "Video sent as new message",
+                        "telegram_video_sent",
+                        config,
+                        service_logger=service_logger,
+                        text=caption,
+                        caption_source="video",
+                        message_id=config['last_msg_id'],
+                    )
+                    return True
+                else:
+                    log_telegram_event(
+                        logging.ERROR,
+                        tag,
+                        "Telegram video fallback send failed",
+                        "telegram_video_fallback_failed",
+                        config,
+                        service_logger=service_logger,
+                        error_code="telegram_video_fallback_failed",
+                        text=caption,
+                        caption_source="video",
+                    )
+        except Exception:
+            log_telegram_event(
+                logging.ERROR,
+                tag,
+                "Telegram video fallback send error",
+                "telegram_video_fallback_failed",
+                config,
+                service_logger=service_logger,
+                error_code="telegram_video_fallback_failed",
+                text=caption,
+                caption_source="video",
+            )
+        return False
+
+    # Normal path: edit the existing still photo message.
     media_json = json.dumps({"type": "animation", "media": "attach://media_file", "caption": caption})
-    data = {'chat_id': chat_id, 'message_id': config['last_msg_id'], 'media': media_json}
+    data = {'chat_id': chat_id, 'message_id': last_msg_id, 'media': media_json}
     try:
         log_telegram_event(
             logging.INFO,
@@ -762,7 +825,7 @@ def replace_telegram_media(config, media_path, caption, service_logger=None):
             service_logger=service_logger,
             text=caption,
             caption_source="video",
-            message_id=config['last_msg_id'],
+            message_id=last_msg_id,
         )
         with open(media_path, 'rb') as f:
             resp = requests.post(
@@ -779,7 +842,7 @@ def replace_telegram_media(config, media_path, caption, service_logger=None):
                     service_logger=service_logger,
                     text=caption,
                     caption_source="video",
-                    message_id=config['last_msg_id'],
+                    message_id=last_msg_id,
                 )
                 return True
             else:
@@ -793,7 +856,7 @@ def replace_telegram_media(config, media_path, caption, service_logger=None):
                     error_code="telegram_media_replace_failed",
                     text=caption,
                     caption_source="video",
-                    message_id=config['last_msg_id'],
+                    message_id=last_msg_id,
                 )
     except Exception:
         log_telegram_event(
@@ -806,7 +869,7 @@ def replace_telegram_media(config, media_path, caption, service_logger=None):
             error_code="telegram_media_replace_failed",
             text=caption,
             caption_source="video",
-            message_id=config['last_msg_id'],
+            message_id=last_msg_id,
         )
     return False
 
