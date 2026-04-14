@@ -11,11 +11,10 @@ import subprocess
 import redis
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
-from bi_export_shared import EXPORT_REQUEST_QUEUE, bi_lookup_alert, get_session, recommended_action_for
+from bi_export_shared import EXPORT_REQUEST_QUEUE, bi_lookup_alert, recommended_action_for
 from db_utils import connect as sqlite_connect
 
 # --- LOGGING SETUP ---

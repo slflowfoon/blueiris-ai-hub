@@ -43,7 +43,7 @@ logger = setup_service_logger("bi_exporter", LOG_FILE)
 
 def _defer_openbvr_retry(req, tag, clip_path):
     active_exports = r.scard(ACTIVE_EXPORT_SET)
-    if active_exports <= 0:
+    if active_exports == 0:
         return False
 
     deferred_attempts = int(req.get("_openbvr_deferred_attempts", 0))
@@ -145,7 +145,8 @@ def _prepare_export(req, tag):
         "session": sid,
     }
 
-    if int(req.get("_openbvr_deferred_attempts", 0)) > 0:
+    refreshed_after_openbvr = int(req.get("_openbvr_refreshed_attempts", 0))
+    if int(req.get("_openbvr_deferred_attempts", 0)) > 0 or refreshed_after_openbvr > 0:
         refreshed, refresh_error = _refresh_export_request_after_openbvr(req, payload, tag)
         if not refreshed:
             return None, refresh_error
@@ -239,6 +240,27 @@ def _prepare_export(req, tag):
         if "OpenBVR failed" in str(res.get("data", {})):
             if _defer_openbvr_retry(req, tag, payload.get("path")):
                 return None, "openbvr deferred retry queued"
+            if refreshed_after_openbvr == 0:
+                req["_openbvr_refreshed_attempts"] = 1
+                refreshed, refresh_error = _refresh_export_request_after_openbvr(req, payload, tag)
+                if not refreshed:
+                    return None, refresh_error
+                er = sess.post(export_url, json=payload, timeout=10)
+                res = er.json()
+                if res.get("result") == "success":
+                    target_path, relative_uri = bi_resolve_export_target(res.get("data"), known_paths, tag)
+                    if not target_path or not relative_uri:
+                        try:
+                            queue_data = bi_get_export_queue(sess, req["bi_url"], sid)
+                            target_path, relative_uri = bi_resolve_export_target(queue_data, known_paths, tag)
+                        except Exception as exc:
+                            logger.warning(
+                                f"{tag} Failed to refresh export queue after refreshed enqueue | "
+                                f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_snapshot_refresh "
+                                f"error_code=queue_refresh_failed error={safe_error_summary(exc)}"
+                            )
+                    if target_path and relative_uri:
+                        break
 
         return None, f"BI export command failed: {res.get('result')}"
 

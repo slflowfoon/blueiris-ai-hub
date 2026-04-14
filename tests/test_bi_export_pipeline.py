@@ -922,6 +922,63 @@ def test_openbvr_immediate_retry_keeps_original_metadata(monkeypatch):
     assert posted[1]["msec"] == 10000
 
 
+def test_openbvr_idle_second_failure_refreshes_and_retries(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="alert.jpg",
+    )
+
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        bi_exporter,
+        "bi_lookup_alert",
+        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+    )
+
+    class FakeRedis:
+        def scard(self, key):
+            assert key == bi_export_shared.ACTIVE_EXPORT_SET
+            return 0
+
+        def llen(self, key):
+            raise AssertionError("deferred queue depth should not be checked when idle")
+
+        def rpush(self, key, value):
+            raise AssertionError("should not defer when already idle")
+
+    posted = []
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            posted.append(dict(json))
+
+            class R:
+                def __init__(self, body):
+                    self._body = body
+
+                def json(self):
+                    return self._body
+
+            if len(posted) < 3:
+                return R({"result": "fail", "data": {"reason": "OpenBVR failed"}})
+            return R({"result": "success", "data": {"path": "@22842", "uri": "Clipboard\\new.mp4"}})
+
+    monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    job, error = bi_exporter._prepare_export(payload, "[T]")
+
+    assert error is None
+    assert job["request"]["clip_path"] == "@clip/refreshed"
+    assert posted[0]["path"] == "@clip/original.bvr"
+    assert posted[1]["path"] == "@clip/original.bvr"
+    assert posted[2]["path"] == "@clip/refreshed.bvr"
+    assert posted[2]["startms"] == 222
+    assert posted[2]["msec"] == 33333
+
+
 def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
     payload = _request_payload(
         clip_path="@clip/original",
