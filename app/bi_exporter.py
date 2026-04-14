@@ -145,6 +145,11 @@ def _prepare_export(req, tag):
         "session": sid,
     }
 
+    if int(req.get("_openbvr_deferred_attempts", 0)) > 0:
+        refreshed, refresh_error = _refresh_export_request_after_openbvr(req, payload, tag)
+        if not refreshed:
+            return None, refresh_error
+
     current_queue = []
     known_paths = set()
     try:
@@ -229,9 +234,6 @@ def _prepare_export(req, tag):
                 f"error_code=openbvr_failed"
             )
             time.sleep(2)
-            refreshed, refresh_error = _refresh_export_request_after_openbvr(req, payload, tag)
-            if not refreshed:
-                return None, refresh_error
             continue
 
         if "OpenBVR failed" in str(res.get("data", {})):

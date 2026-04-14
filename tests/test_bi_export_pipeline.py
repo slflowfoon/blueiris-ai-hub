@@ -812,12 +812,13 @@ class TestVideoDeliveryWorker:
         assert stored["delivery_context"]["config"]["last_msg_id"] == 888
 
 
-def test_refreshes_alert_lookup_after_openbvr_failed(monkeypatch):
+def test_deferred_openbvr_retry_refreshes_alert_lookup_before_retry(monkeypatch):
     payload = _request_payload(
         clip_path="@clip/original",
         offset=10,
         duration=10000,
         trigger_filename="alert.jpg",
+        _openbvr_deferred_attempts=1,
     )
 
     monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
@@ -852,18 +853,18 @@ def test_refreshes_alert_lookup_after_openbvr_failed(monkeypatch):
     assert job["request"]["clip_path"] == "@clip/refreshed"
     assert job["request"]["offset"] == 222
     assert job["request"]["duration"] == 33333
-    assert posted[0]["path"] == "@clip/original.bvr"
-    assert posted[1]["path"] == "@clip/refreshed.bvr"
-    assert posted[1]["startms"] == 222
-    assert posted[1]["msec"] == 33333
+    assert posted[0]["path"] == "@clip/refreshed.bvr"
+    assert posted[0]["startms"] == 222
+    assert posted[0]["msec"] == 33333
 
 
-def test_openbvr_refresh_failure_returns_specific_error(monkeypatch):
+def test_deferred_openbvr_refresh_failure_returns_specific_error(monkeypatch):
     payload = _request_payload(
         clip_path="@clip/original",
         offset=10,
         duration=10000,
         trigger_filename="alert.jpg",
+        _openbvr_deferred_attempts=1,
     )
 
     monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
@@ -883,6 +884,42 @@ def test_openbvr_refresh_failure_returns_specific_error(monkeypatch):
 
     assert job is None
     assert error == "BI alert lookup refresh found no matching alert after OpenBVR error"
+
+
+def test_openbvr_immediate_retry_keeps_original_metadata(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="alert.jpg",
+    )
+
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+
+    posted = []
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            posted.append(dict(json))
+
+            class R:
+                def json(self):
+                    if len(posted) == 1:
+                        return {"result": "fail", "data": {"reason": "OpenBVR failed"}}
+                    return {"result": "success", "data": {"path": "@22842", "uri": "Clipboard\\new.mp4"}}
+
+            return R()
+
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    job, error = bi_exporter._prepare_export(payload, "[T]")
+
+    assert error is None
+    assert job["request"]["clip_path"] == "@clip/original"
+    assert posted[0]["path"] == "@clip/original.bvr"
+    assert posted[1]["path"] == "@clip/original.bvr"
+    assert posted[1]["startms"] == 10
+    assert posted[1]["msec"] == 10000
 
 
 def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
@@ -932,7 +969,7 @@ def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
     assert job is None
     assert error == "openbvr deferred retry queued"
     assert queued["key"] == bi_export_shared.OPENBVR_RETRY_QUEUE
-    assert queued["value"]["clip_path"] == "@clip/refreshed"
+    assert queued["value"]["clip_path"] == "@clip/original"
     assert queued["value"]["_openbvr_deferred_attempts"] == 1
 
 
