@@ -389,33 +389,6 @@ def get_caption_mode(chat_id):
     return None
 
 
-def get_dashboard_metrics(configs, mutes, known_plates, plate_audit):
-    video_enabled = sum(1 for config in configs if config.get("send_video") == 1)
-    active_threads = sum(1 for config in configs if config.get("message_thread_id"))
-    return [
-        {
-            "label": "Configured Cameras",
-            "value": str(len(configs)),
-            "footnote": f"{video_enabled} with video delivery",
-        },
-        {
-            "label": "Active Overrides",
-            "value": str(len(mutes)),
-            "footnote": "Muted cameras or whole-chat mute state",
-        },
-        {
-            "label": "Known Plates",
-            "value": str(len(known_plates)),
-            "footnote": "Friendly labels used after plate detection",
-        },
-        {
-            "label": "Plate Audit Events",
-            "value": str(len(plate_audit)),
-            "footnote": f"{active_threads} configs currently use Telegram topics",
-        },
-    ]
-
-
 def send_telegram_blocking(token, chat_id, thread_id, img_path, caption):
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     data = {'chat_id': chat_id, 'caption': caption}
@@ -463,15 +436,6 @@ HTML_TEMPLATE = r"""
                     <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="themeBtn"><span id="themeIcon">🌙</span></button>
                     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">+ New Configuration</button>
                 </div>
-            </div>
-            <div class="metric-row">
-                {% for metric in metrics %}
-                <div class="metric-card">
-                    <div class="metric-label">{{ metric.label }}</div>
-                    <div class="metric-value">{{ metric.value }}</div>
-                    <div class="metric-footnote">{{ metric.footnote }}</div>
-                </div>
-                {% endfor %}
             </div>
         </div>
     </section>
@@ -1092,7 +1056,6 @@ def index():
         primary_chat_id=primary_chat_id,
         known_plates=known_plates,
         global_settings=global_settings,
-        metrics=get_dashboard_metrics(configs, mutes, known_plates, plate_audit),
         current_version=CURRENT_VERSION,
     )
 

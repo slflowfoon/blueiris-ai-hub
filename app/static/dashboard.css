@@ -113,40 +113,6 @@ code, .webhook-box, .log-viewer, .table code {
   border-radius: 10px;
 }
 
-.metric-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.5rem;
-  margin-top: 0.85rem;
-}
-
-.metric-card {
-  padding: 0.55rem 0.7rem;
-  background: transparent;
-  border: 1px solid var(--app-border);
-  min-width: 0;
-}
-
-.metric-label {
-  font-size: 0.7rem;
-  color: var(--app-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.metric-value {
-  font-size: 1rem;
-  line-height: 1;
-  font-weight: 600;
-  margin-top: 0.25rem;
-}
-
-.metric-footnote {
-  color: var(--app-muted);
-  font-size: 0.74rem;
-  margin-top: 0.2rem;
-}
-
 .nav-tabs {
   border: 1px solid var(--app-border);
   background: var(--app-panel);
@@ -404,10 +370,6 @@ code, .webhook-box, .log-viewer, .table code {
 
   .hero-actions {
     justify-content: flex-start;
-  }
-
-  .metric-row {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
 
   .log-toolbar {
