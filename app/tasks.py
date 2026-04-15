@@ -17,6 +17,7 @@ from PIL import Image
 from datetime import datetime, timedelta
 from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
 from db_utils import connect as sqlite_connect
+from settings_store import get_auto_mute_settings
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -112,10 +113,6 @@ PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-
-AUTO_MUTE_WINDOW_MINUTES = 10
-AUTO_MUTE_THRESHOLD = 5
-AUTO_MUTE_DURATION_MINUTES = 30
 
 CAPTION_PROMPTS = {
     "normal": None,
@@ -313,29 +310,34 @@ def is_muted(config):
 
 def check_auto_mute(config):
     """Track trigger frequency. Returns True if auto-mute was just triggered."""
+    settings = get_auto_mute_settings()
+    threshold = settings["threshold"]
+    window_minutes = settings["window_minutes"]
+    duration_minutes = settings["duration_minutes"]
     config_id = config['id']
     now = datetime.now()
     key = f'triggers:{config_id}'
 
     r.lpush(key, now.isoformat())
-    r.ltrim(key, 0, AUTO_MUTE_THRESHOLD + 5)
-    r.expire(key, (AUTO_MUTE_WINDOW_MINUTES + 1) * 60)
+    r.ltrim(key, 0, threshold + 5)
+    r.expire(key, (window_minutes + 1) * 60)
 
     entries = r.lrange(key, 0, -1)
-    window_start = now - timedelta(minutes=AUTO_MUTE_WINDOW_MINUTES)
+    window_start = now - timedelta(minutes=window_minutes)
     recent = [e for e in entries if datetime.fromisoformat(e.decode()) > window_start]
 
-    if len(recent) >= AUTO_MUTE_THRESHOLD:
+    if len(recent) >= threshold:
         chat_id = config.get('chat_id', '')
         cam_name = config.get('name', '').lower()
-        expiry = (now + timedelta(minutes=AUTO_MUTE_DURATION_MINUTES)).isoformat(timespec='seconds')
-        r.set(f'mute:{cam_name}:{chat_id}', expiry, ex=AUTO_MUTE_DURATION_MINUTES * 60 + 60)
+        expiry = (now + timedelta(minutes=duration_minutes)).isoformat(timespec='seconds')
+        r.set(f'mute:{cam_name}:{chat_id}', expiry, ex=duration_minutes * 60 + 60)
         r.delete(key)
         return True
     return False
 
 
 def send_auto_mute_notification(config):
+    settings = get_auto_mute_settings()
     cam_name = config.get('name', 'Camera')
     req_id = config.get('request_id', 'unknown')
     tag = f"[{cam_name}][{req_id}]"
@@ -345,8 +347,8 @@ def send_auto_mute_notification(config):
     thread_id = config.get('message_thread_id') or ''
 
     text = (
-        f"🔇 {cam_name} auto-muted for {AUTO_MUTE_DURATION_MINUTES} min "
-        f"({AUTO_MUTE_THRESHOLD}+ triggers in {AUTO_MUTE_WINDOW_MINUTES} min)"
+        f"🔇 {cam_name} auto-muted for {settings['duration_minutes']} min "
+        f"({settings['threshold']}+ triggers in {settings['window_minutes']} min)"
     )
     keyboard = {"inline_keyboard": [[{
         "text": "Remove Mute",

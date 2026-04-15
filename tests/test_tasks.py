@@ -1,5 +1,6 @@
 import logging
 import threading
+from datetime import datetime
 
 import tasks
 
@@ -263,6 +264,74 @@ def test_replace_telegram_media_falls_back_when_key_missing(tmp_path, monkeypatc
     assert config["last_msg_id"] == 42
 
 
+def test_check_auto_mute_uses_global_settings(monkeypatch):
+    stored = {}
+
+    class DummyRedis:
+        def lpush(self, key, value):
+            stored.setdefault(key, []).insert(0, value)
+
+        def ltrim(self, key, start, end):
+            stored[key] = stored.get(key, [])[start : end + 1]
+
+        def expire(self, key, _seconds):
+            return True
+
+        def lrange(self, key, _start, _end):
+            return [item.encode() if isinstance(item, str) else item for item in stored.get(key, [])]
+
+        def set(self, key, value, ex=None):
+            stored[key] = {"value": value, "ex": ex}
+
+        def delete(self, key):
+            stored.pop(key, None)
+
+    monkeypatch.setattr(
+        tasks,
+        "get_auto_mute_settings",
+        lambda: {"threshold": 2, "window_minutes": 15, "duration_minutes": 45},
+    )
+    monkeypatch.setattr(tasks, "r", DummyRedis())
+
+    config = {"id": "cfg-1", "name": "Driveway", "chat_id": "chat-1"}
+
+    assert tasks.check_auto_mute(config) is False
+    assert tasks.check_auto_mute(config) is True
+
+    mute_key = "mute:driveway:chat-1"
+    assert mute_key in stored
+    assert stored[mute_key]["ex"] == 45 * 60 + 60
+    assert datetime.fromisoformat(stored[mute_key]["value"]) > datetime.now()
+
+
+def test_send_auto_mute_notification_uses_global_settings(monkeypatch):
+    captured = {}
+
+    def fake_post(url, data=None, timeout=None):
+        captured.update({"url": url, "data": data, "timeout": timeout})
+        return _DummyResponse()
+
+    monkeypatch.setattr(
+        tasks,
+        "get_auto_mute_settings",
+        lambda: {"threshold": 7, "window_minutes": 15, "duration_minutes": 45},
+    )
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    tasks.send_auto_mute_notification(
+        {
+            "name": "Driveway",
+            "request_id": "abc12345",
+            "telegram_token": "token",
+            "chat_id": "chat-1",
+        }
+    )
+
+    assert "sendMessage" in captured["url"]
+    assert "45 min" in captured["data"]["text"]
+    assert "7+ triggers in 15 min" in captured["data"]["text"]
+
+
 def test_replace_telegram_media_uses_edit_when_msg_id_present(tmp_path, monkeypatch):
     """Normal path: last_msg_id present → editMessageMedia, no sendAnimation."""
     video = tmp_path / "clip.mp4"
@@ -308,4 +377,3 @@ def test_replace_telegram_media_fallback_sets_last_msg_id_for_caption_update(tmp
 
     assert any("sendAnimation" in c for c in calls)
     assert any("editMessageCaption" in c for c in calls)
-
