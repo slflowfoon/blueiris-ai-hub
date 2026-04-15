@@ -455,25 +455,17 @@ HTML_TEMPLATE = r"""
                     <div class="brand-lockup">
                         <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="Blue Iris AI Hub logo">
                         <div>
-                            <div class="hero-kicker">Blue Iris AI Hub</div>
-                            <h1 class="hero-title">Operations Console</h1>
+                            <h1 class="hero-title">Blue Iris AI Hub</h1>
                         </div>
                     </div>
-                    <p class="hero-copy">
-                        Configure cameras, inspect alert flow, and adjust operator defaults from one place.
-                    </p>
-                    <div class="status-stack">
-                        <span class="hero-chip">System online</span>
-                        <span class="hero-chip">Version {{ current_version }}</span>
-                        <span class="hero-chip">{{ configs|length }} camera config{{ '' if configs|length == 1 else 's' }}</span>
-                    </div>
                 </div>
-                <div class="hero-actions mb-3">
+                <div class="hero-actions">
+                    <span class="badge text-bg-secondary">v{{ current_version }}</span>
                     <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="themeBtn"><span id="themeIcon">🌙</span></button>
                     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">+ New Configuration</button>
                 </div>
             </div>
-            <div class="metric-grid">
+            <div class="metric-row">
                 {% for metric in metrics %}
                 <div class="metric-card">
                     <div class="metric-label">{{ metric.label }}</div>
