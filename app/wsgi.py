@@ -455,12 +455,11 @@ HTML_TEMPLATE = r"""
                     <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="Blue Iris AI Hub logo">
                     <div>
                         <div class="hero-kicker">Blue Iris AI Hub</div>
-                        <h1 class="hero-title">Smarter Blue Iris alerts with cleaner evidence and less noise.</h1>
+                        <h1 class="hero-title">Operations Console</h1>
                     </div>
                 </div>
                 <p class="hero-copy">
-                    Configure AI captioning, Blue Iris clip delivery, Telegram routing, and operator controls from one place.
-                    The dashboard now keeps the noisy parts contained so the useful state is easier to scan.
+                    Configure cameras, inspect alert flow, and adjust operator defaults from one place.
                 </p>
                 <div class="status-stack">
                     <span class="hero-chip">System online</span>
