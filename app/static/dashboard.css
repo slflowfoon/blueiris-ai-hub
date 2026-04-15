@@ -65,9 +65,8 @@ code, .webhook-box, .log-viewer, .table code {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
-  align-items: center;
 }
 
 .brand-lockup {
@@ -108,6 +107,7 @@ code, .webhook-box, .log-viewer, .table code {
   gap: 0.75rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
 }
 
 .status-stack {
@@ -115,6 +115,17 @@ code, .webhook-box, .log-viewer, .table code {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.6rem;
+}
+
+.hero-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+
+.hero-main {
+  min-width: 0;
 }
 
 .hero-chip,
@@ -146,6 +157,7 @@ code, .webhook-box, .log-viewer, .table code {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
   gap: 0.75rem;
+  align-items: stretch;
 }
 
 .metric-card {
@@ -275,6 +287,62 @@ code, .webhook-box, .log-viewer, .table code {
   background: rgba(20, 38, 50, 0.38);
 }
 
+.log-shell {
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  box-shadow: var(--app-shadow);
+  overflow: hidden;
+}
+
+.log-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-panel-strong);
+}
+
+.log-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.log-toolbar-title {
+  min-width: 0;
+}
+
+.log-toolbar-title h5 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.log-toolbar-title p {
+  margin: 0.2rem 0 0;
+  color: var(--app-muted);
+  font-size: 0.84rem;
+}
+
+.log-console {
+  padding: 1rem;
+}
+
+.log-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-muted);
+  font-size: 0.78rem;
+}
+
 .log-group-body {
   margin-top: 0.65rem;
   padding-left: 0.9rem;
@@ -312,8 +380,9 @@ code, .webhook-box, .log-viewer, .table code {
 }
 
 @media (max-width: 992px) {
-  .hero-grid {
-    grid-template-columns: 1fr;
+  .hero-topbar {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .hero-actions {
@@ -322,5 +391,14 @@ code, .webhook-box, .log-viewer, .table code {
 
   .metric-grid {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .log-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .log-toolbar-actions {
+    justify-content: flex-start;
   }
 }

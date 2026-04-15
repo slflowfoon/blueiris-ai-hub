@@ -450,37 +450,37 @@ HTML_TEMPLATE = r"""
 <div class="container py-4 py-lg-5 app-shell">
     <section class="hero-panel p-4 p-lg-5 mb-4">
         <div class="hero-grid">
-            <div>
-                <div class="brand-lockup">
-                    <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="Blue Iris AI Hub logo">
-                    <div>
-                        <div class="hero-kicker">Blue Iris AI Hub</div>
-                        <h1 class="hero-title">Operations Console</h1>
+            <div class="hero-topbar">
+                <div class="hero-main">
+                    <div class="brand-lockup">
+                        <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="Blue Iris AI Hub logo">
+                        <div>
+                            <div class="hero-kicker">Blue Iris AI Hub</div>
+                            <h1 class="hero-title">Operations Console</h1>
+                        </div>
+                    </div>
+                    <p class="hero-copy">
+                        Configure cameras, inspect alert flow, and adjust operator defaults from one place.
+                    </p>
+                    <div class="status-stack">
+                        <span class="hero-chip">System online</span>
+                        <span class="hero-chip">Version {{ current_version }}</span>
+                        <span class="hero-chip">{{ configs|length }} camera config{{ '' if configs|length == 1 else 's' }}</span>
                     </div>
                 </div>
-                <p class="hero-copy">
-                    Configure cameras, inspect alert flow, and adjust operator defaults from one place.
-                </p>
-                <div class="status-stack">
-                    <span class="hero-chip">System online</span>
-                    <span class="hero-chip">Version {{ current_version }}</span>
-                    <span class="hero-chip">{{ configs|length }} camera config{{ '' if configs|length == 1 else 's' }}</span>
-                </div>
-            </div>
-            <div>
                 <div class="hero-actions mb-3">
                     <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="themeBtn"><span id="themeIcon">🌙</span></button>
                     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">+ New Configuration</button>
                 </div>
-                <div class="metric-grid">
-                    {% for metric in metrics %}
-                    <div class="metric-card">
-                        <div class="metric-label">{{ metric.label }}</div>
-                        <div class="metric-value">{{ metric.value }}</div>
-                        <div class="metric-footnote">{{ metric.footnote }}</div>
-                    </div>
-                    {% endfor %}
+            </div>
+            <div class="metric-grid">
+                {% for metric in metrics %}
+                <div class="metric-card">
+                    <div class="metric-label">{{ metric.label }}</div>
+                    <div class="metric-value">{{ metric.value }}</div>
+                    <div class="metric-footnote">{{ metric.footnote }}</div>
                 </div>
+                {% endfor %}
             </div>
         </div>
     </section>
@@ -696,19 +696,27 @@ HTML_TEMPLATE = r"""
                     </div>
                 </div>
             </div>
-            <div class="d-flex justify-content-between mb-2">
-                <h5 class="mb-0">Grouped logs</h5>
-                <div class="d-flex align-items-center gap-2">
-                    <select id="logSourceFilter" class="form-select form-select-sm" style="width:auto;">
-                        <option value="all">All sources</option>
-                    </select>
-                    <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">🔄 Refresh</a>
-                    <form action="{{ url_for('clear_logs') }}" method="POST" style="display:inline;">
-                        <button class="btn btn-sm btn-outline-danger">🗑️ Clear</button>
-                    </form>
+            <div class="log-shell">
+                <div class="log-toolbar">
+                    <div class="log-toolbar-title">
+                        <h5>Grouped logs</h5>
+                        <p>Live service output grouped by webhook trace when all sources are selected.</p>
+                        <div class="log-summary-pill">Most recent alert traces and supporting worker output</div>
+                    </div>
+                    <div class="log-toolbar-actions">
+                        <select id="logSourceFilter" class="form-select form-select-sm" style="width:auto;">
+                            <option value="all">All sources</option>
+                        </select>
+                        <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Refresh</a>
+                        <form action="{{ url_for('clear_logs') }}" method="POST" style="display:inline;">
+                            <button class="btn btn-sm btn-outline-danger">Clear</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="log-console">
+                    <div class="log-viewer" id="logViewer" data-log-entries='{{ log_entries|tojson|safe }}'></div>
                 </div>
             </div>
-            <div class="log-viewer" id="logViewer" data-log-entries='{{ log_entries|tojson|safe }}'></div>
         </div>
 
         <!-- Plate Audit tab -->
