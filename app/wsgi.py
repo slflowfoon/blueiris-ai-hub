@@ -577,7 +577,7 @@ HTML_TEMPLATE = r"""
                 <div class="card h-100">
                     <div class="card-body">
                         <h5 class="card-title">Auto-mute Policy</h5>
-                        <p class="text-muted small">These values are read directly by <code>tasks.py</code> when trigger bursts are evaluated, so you can tune camera spam suppression without editing code.</p>
+                        <p class="text-muted small">Use these values to control when noisy cameras are auto-muted after repeated triggers.</p>
                         <form action="{{ url_for('save_global_settings_route') }}" method="POST">
                             <div class="row">
                                 <div class="col-md-6 mb-3">
