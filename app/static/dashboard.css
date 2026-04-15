@@ -351,16 +351,19 @@ code, .webhook-box, .log-viewer, .table code {
 
 .log-entry-line {
   display: block;
-  padding: 0.28rem 0.5rem;
+  padding: 0.34rem 0.6rem;
   border-radius: 6px;
+  border: 1px solid transparent;
 }
 
 .log-entry-line:nth-child(odd) {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.05);
 }
 
 .log-entry-line:nth-child(even) {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .global-grid {

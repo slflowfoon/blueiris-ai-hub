@@ -511,9 +511,12 @@ HTML_TEMPLATE = r"""
                     </div>
                 </div>
             </div>
-            <div class="p-3 mb-3 bg-body-tertiary border rounded">
-                <strong>Blue Iris Setup — On Alert action (per camera):</strong>
-                <ol class="mb-0 mt-2 ps-3">
+            <details class="tab-surface mb-3">
+                <summary class="d-flex justify-content-between align-items-center">
+                    <span><strong>Blue Iris Setup</strong> <span class="text-muted">On Alert action (per camera)</span></span>
+                    <span class="text-muted small">Expand</span>
+                </summary>
+                <ol class="mb-0 mt-3 ps-3">
                     <li>In Blue Iris, open camera settings and go to the <strong>Alerts</strong> tab.</li>
                     <li>Under <strong>On alert</strong>, add a <em>Run a program or write to a file</em> action.</li>
                     <li>Set <strong>Action</strong> to <code>Run program/script</code>.</li>
@@ -523,7 +526,7 @@ HTML_TEMPLATE = r"""
                     <li>Set <strong>Camera</strong> to the camera you are configuring (e.g. <em>Driveway</em>).</li>
                     <li>Uncheck <strong>Also execute on Remote Management</strong> and <strong>Wait for process to complete</strong>.</li>
                 </ol>
-            </div>
+            </details>
             <div class="config-grid">
                 {% for config in configs %}
                     <div class="card h-100">
