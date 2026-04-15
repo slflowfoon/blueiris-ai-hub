@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/static/logo-mark.svg" alt="Blue Iris AI Hub logo" width="156">
+</p>
+
 # Blue Iris AI Hub
 
 AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/). When a camera triggers, it analyses the image with Gemini AI, sends a Telegram notification with a caption, and optionally fetches and sends the full video clip.
@@ -10,6 +14,7 @@ AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/)
 - **Instant notify** — optional per-camera mode that sends the photo immediately with a fallback caption, then updates it once AI analysis completes (guarantees delivery even when Gemini is slow)
 - **Auto-mute** — silences a camera automatically after 5 triggers in 10 minutes (prevents spam)
 - **Caption modes** — switch to `hilarious`, `witty`, or `rude` captions via Telegram bot commands
+- **Operator defaults in UI** — tune mute-bot poll cadence, default caption duration, and enabled caption styles from the web UI
 - **Known plates** — teach the AI to recognise and label your vehicles by number plate
 - **DVLA enrichment** — any UK number plate detected in a caption is automatically looked up against the DVLA API and annotated with make, colour, year, and tax/MOT status
 - **Plate audit log** — every plate lookup is recorded with full DVLA details and a thumbnail of the alert image, viewable in the web UI

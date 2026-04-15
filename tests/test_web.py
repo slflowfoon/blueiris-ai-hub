@@ -3,6 +3,7 @@ import sqlite3
 import uuid
 from unittest.mock import MagicMock, patch
 import wsgi
+from settings_store import get_global_settings
 
 
 def _insert_config(config_id):
@@ -86,6 +87,8 @@ def test_dashboard_loads(client):
     response = client.get('/')
     assert response.status_code == 200
     assert b"Blue Iris AI Hub" in response.data
+    assert b"logo-mark.svg" in response.data
+    assert b"Mute Bot Defaults" in response.data
     assert b"Copy Trace" in response.data
     assert b"copyWebhookTrace(this)" in response.data
 
@@ -135,6 +138,25 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[0]["is_trigger"] is True
     assert entries[1]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[1]["is_trigger"] is False
+
+
+def test_save_global_settings_route_updates_mute_bot_defaults(client):
+    response = client.post(
+        "/settings/global",
+        data={
+            "mute_bot_poll_interval_seconds": "7",
+            "mute_bot_caption_default_minutes": "25",
+            "mute_bot_enabled_caption_styles": ["witty"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+
+    settings = get_global_settings()
+    assert settings["mute_bot_poll_interval_seconds"] == "7"
+    assert settings["mute_bot_caption_default_minutes"] == "25"
+    assert settings["mute_bot_enabled_caption_styles"] == ["witty"]
 
 
 def test_get_log_entries_keeps_last_100_trigger_groups(tmp_path, monkeypatch):

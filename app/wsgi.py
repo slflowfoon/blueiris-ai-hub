@@ -13,6 +13,12 @@ from flask import Flask, request, jsonify, render_template_string, redirect, url
 from db_utils import connect as sqlite_connect
 from bi_export_shared import ACTIVE_EXPORT_SET, DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE, iter_job_ids, load_job
 from service_health import HEARTBEAT_STALE_AFTER, heartbeat_status
+from settings_store import (
+    SUPPORTED_CAPTION_STYLES,
+    get_global_settings,
+    init_global_settings,
+    save_global_settings,
+)
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 
@@ -173,6 +179,7 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_plate_audit_plate ON plate_audit(plate)")
+        init_global_settings(conn)
 
 init_db()
 
@@ -383,6 +390,33 @@ def get_caption_mode(chat_id):
     return None
 
 
+def get_dashboard_metrics(configs, mutes, known_plates, plate_audit):
+    video_enabled = sum(1 for config in configs if config.get("send_video") == 1)
+    active_threads = sum(1 for config in configs if config.get("message_thread_id"))
+    return [
+        {
+            "label": "Configured Cameras",
+            "value": str(len(configs)),
+            "footnote": f"{video_enabled} with video delivery",
+        },
+        {
+            "label": "Active Overrides",
+            "value": str(len(mutes)),
+            "footnote": "Muted cameras or whole-chat mute state",
+        },
+        {
+            "label": "Known Plates",
+            "value": str(len(known_plates)),
+            "footnote": "Friendly labels used after plate detection",
+        },
+        {
+            "label": "Plate Audit Events",
+            "value": str(len(plate_audit)),
+            "footnote": f"{active_threads} configs currently use Telegram topics",
+        },
+    ]
+
+
 def send_telegram_blocking(token, chat_id, thread_id, img_path, caption):
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     data = {'chat_id': chat_id, 'caption': caption}
@@ -408,40 +442,49 @@ HTML_TEMPLATE = r"""
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Blue Iris AI Hub</title>
+    <link rel="icon" href="{{ url_for('static', filename='logo-mark.svg') }}" type="image/svg+xml">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .card { box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid var(--bs-border-color); }
-        .webhook-box { background: var(--bs-tertiary-bg); padding: 10px; border-radius: 5px; font-family: monospace; word-break: break-all; border: 1px solid var(--bs-border-color); color: var(--bs-body-color); }
-        .log-viewer { background-color: #121212; color: #e0e0e0; font-family: monospace; padding: 15px; border-radius: 5px; height: 600px; overflow-y: scroll; white-space: pre-wrap; font-size: 0.85em; border: 1px solid var(--bs-border-color); line-height: 1.4; }
-        .nav-tabs .nav-link { cursor: pointer; }
-        .nav-tabs .nav-link.active { font-weight: bold; }
-        .status-badge { font-size: 0.8em; }
-        .last-seen { font-size: 0.85em; color: var(--bs-secondary-color); }
-        .log-group { border: 1px solid var(--bs-border-color); border-radius: 6px; margin-bottom: 8px; padding: 6px 8px; }
-        .log-group summary { cursor: pointer; font-weight: 500; list-style: none; }
-        .log-group summary::-webkit-details-marker { display: none; }
-        .log-group-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .log-group-summary-text { flex: 1; min-width: 0; }
-        .log-group-body { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--bs-border-color); }
-        body, .card, .webhook-box, .modal-content { transition: background-color 0.3s, color 0.3s; }
-        .mute-badge { font-size: 0.75em; }
-        .modal-footer .btn { border-radius: 6px; padding: 8px 20px; font-weight: 500; }
-        .input-group-text, .input-group .btn { border-color: var(--bs-border-color); }
-    </style>
+    <link href="{{ url_for('static', filename='dashboard.css') }}" rel="stylesheet">
 </head>
 <body>
-<div class="container py-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h1 class="h3 text-primary d-inline-block me-2">Blue Iris AI Hub</h1>
-            <span class="badge bg-success status-badge align-middle">System Online</span>
-            <span class="badge bg-info status-badge align-middle ms-1">v{{ current_version }}</span>
+<div class="container py-4 py-lg-5 app-shell">
+    <section class="hero-panel p-4 p-lg-5 mb-4">
+        <div class="hero-grid">
+            <div>
+                <div class="brand-lockup">
+                    <img src="{{ url_for('static', filename='logo-mark.svg') }}" alt="Blue Iris AI Hub logo">
+                    <div>
+                        <div class="hero-kicker">Blue Iris AI Hub</div>
+                        <h1 class="hero-title">Smarter Blue Iris alerts with cleaner evidence and less noise.</h1>
+                    </div>
+                </div>
+                <p class="hero-copy">
+                    Configure AI captioning, Blue Iris clip delivery, Telegram routing, and operator controls from one place.
+                    The dashboard now keeps the noisy parts contained so the useful state is easier to scan.
+                </p>
+                <div class="status-stack">
+                    <span class="hero-chip">System online</span>
+                    <span class="hero-chip">Version {{ current_version }}</span>
+                    <span class="hero-chip">{{ configs|length }} camera config{{ '' if configs|length == 1 else 's' }}</span>
+                </div>
+            </div>
+            <div>
+                <div class="hero-actions mb-3">
+                    <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="themeBtn"><span id="themeIcon">🌙</span></button>
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">+ New Configuration</button>
+                </div>
+                <div class="metric-grid">
+                    {% for metric in metrics %}
+                    <div class="metric-card">
+                        <div class="metric-label">{{ metric.label }}</div>
+                        <div class="metric-value">{{ metric.value }}</div>
+                        <div class="metric-footnote">{{ metric.footnote }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
         </div>
-        <div class="d-flex gap-2">
-            <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="themeBtn"><span id="themeIcon">🌙</span></button>
-            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">+ New Configuration</button>
-        </div>
-    </div>
+    </section>
 
     <!-- Update banner — shown by JS if a newer version is available on GitHub -->
     <div id="update-banner" class="alert alert-warning alert-dismissible fade show d-none mb-3" role="alert">
@@ -469,6 +512,14 @@ HTML_TEMPLATE = r"""
 
         <!-- Configurations tab -->
         <div class="tab-pane fade show active" id="configs-pane">
+            <div class="tab-surface mb-4">
+                <div class="section-title">
+                    <div>
+                        <h2 class="h4 mb-1">Camera Configurations</h2>
+                        <p class="section-subtitle">Each configuration owns one camera webhook, AI prompt chain, and Telegram delivery target.</p>
+                    </div>
+                </div>
+            </div>
             <div class="p-3 mb-3 bg-body-tertiary border rounded">
                 <strong>Blue Iris Setup — On Alert action (per camera):</strong>
                 <ol class="mb-0 mt-2 ps-3">
@@ -482,9 +533,8 @@ HTML_TEMPLATE = r"""
                     <li>Uncheck <strong>Also execute on Remote Management</strong> and <strong>Wait for process to complete</strong>.</li>
                 </ol>
             </div>
-            <div class="row">
+            <div class="config-grid">
                 {% for config in configs %}
-                <div class="col-md-6 mb-4">
                     <div class="card h-100">
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-start">
@@ -513,95 +563,142 @@ HTML_TEMPLATE = r"""
                             </div>
                         </div>
                     </div>
-                </div>
                 {% else %}
-                <div class="col-12 text-center py-5"><h4 class="text-muted">No configurations yet.</h4></div>
+                <div class="card h-100">
+                    <div class="card-body text-center py-5">
+                        <h4 class="text-muted">No configurations yet.</h4>
+                    </div>
+                </div>
                 {% endfor %}
             </div>
         </div>
 
         <!-- Global Settings tab -->
         <div class="tab-pane fade" id="global-pane">
-            <div class="row">
-
-                <!-- Mute Status -->
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100">
-                        <div class="card-body">
-                            <h5 class="card-title">🔇 Mute Status</h5>
-                            {% if mutes %}
-                                <ul class="list-group list-group-flush mb-3">
-                                {% for m in mutes %}
-                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                        {{ m.camera }} — {{ m.remaining_min }} min remaining
-                                        <form action="{{ url_for('clear_mute') }}" method="POST" style="display:inline;">
-                                            <input type="hidden" name="redis_key" value="{{ m.key }}">
-                                            <button class="btn btn-sm btn-outline-danger">Unmute</button>
-                                        </form>
-                                    </li>
-                                {% endfor %}
-                                </ul>
-                            {% else %}
-                                <p class="text-muted">No active mutes.</p>
-                            {% endif %}
-                            <hr>
-                            <h6>Caption Mode</h6>
-                            {% if caption_mode %}
-                                <p>Active: <strong>{{ caption_mode.mode }}</strong> — {{ caption_mode.remaining_min }} min remaining</p>
-                                <form action="{{ url_for('clear_caption') }}" method="POST">
-                                    <input type="hidden" name="chat_id" value="{{ primary_chat_id }}">
-                                    <button class="btn btn-sm btn-outline-secondary">Reset to Normal</button>
-                                </form>
-                            {% else %}
-                                <p class="text-muted">Normal (no override active)</p>
-                            {% endif %}
-                        </div>
+            <div class="tab-surface mb-4">
+                <div class="section-title">
+                    <div>
+                        <h2 class="h4 mb-1">Global Controls</h2>
+                        <p class="section-subtitle">Shared operator state, mute-bot defaults, and known-plate metadata.</p>
                     </div>
                 </div>
-
-                <!-- Known Plates -->
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100">
-                        <div class="card-body">
-                            <h5 class="card-title">🚗 Known Plates</h5>
-                            <p class="text-muted small">Plates the AI will recognise and label in captions.</p>
-                            {% if known_plates %}
-                            <table class="table table-sm mb-3">
-                                <thead><tr><th>Plate</th><th>Label</th><th></th></tr></thead>
-                                <tbody>
-                                {% for plate, label in known_plates.items() %}
-                                <tr>
-                                    <td><code>{{ plate }}</code></td>
-                                    <td>{{ label }}</td>
-                                    <td>
-                                        <form action="{{ url_for('delete_plate') }}" method="POST" style="display:inline;">
-                                            <input type="hidden" name="plate" value="{{ plate }}">
-                                            <button class="btn btn-sm btn-outline-danger py-0">✕</button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                                </tbody>
-                            </table>
-                            {% else %}
-                            <p class="text-muted small">No plates configured.</p>
-                            {% endif %}
-                            <form action="{{ url_for('add_plate') }}" method="POST" class="d-flex gap-2 mt-2">
-                                <input type="text" name="plate" class="form-control form-control-sm" placeholder="AB12 CDE" required style="max-width:130px;">
-                                <input type="text" name="label" class="form-control form-control-sm" placeholder="Alice's Car" required>
-                                <button class="btn btn-sm btn-primary">Add</button>
+            </div>
+            <div class="global-grid">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">Live Mute State</h5>
+                        <p class="text-muted small">Current mute state and temporary caption overrides coming from Telegram operators.</p>
+                        {% if mutes %}
+                            <ul class="list-group list-group-flush mb-3">
+                            {% for m in mutes %}
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    {{ m.camera }} — {{ m.remaining_min }} min remaining
+                                    <form action="{{ url_for('clear_mute') }}" method="POST" style="display:inline;">
+                                        <input type="hidden" name="redis_key" value="{{ m.key }}">
+                                        <button class="btn btn-sm btn-outline-danger">Unmute</button>
+                                    </form>
+                                </li>
+                            {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p class="text-muted">No active mutes.</p>
+                        {% endif %}
+                        <hr>
+                        <h6>Caption Mode</h6>
+                        {% if caption_mode %}
+                            <p>Active: <strong>{{ caption_mode.mode }}</strong> — {{ caption_mode.remaining_min }} min remaining</p>
+                            <form action="{{ url_for('clear_caption') }}" method="POST">
+                                <input type="hidden" name="chat_id" value="{{ primary_chat_id }}">
+                                <button class="btn btn-sm btn-outline-secondary">Reset to Normal</button>
                             </form>
-                        </div>
+                        {% else %}
+                            <p class="text-muted">Normal (no override active)</p>
+                        {% endif %}
                     </div>
                 </div>
 
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">Mute Bot Defaults</h5>
+                        <p class="text-muted small">These values are read directly by <code>mute_bot.py</code>, so you can tune its behaviour without editing code or rebuilding the container.</p>
+                        <form action="{{ url_for('save_global_settings_route') }}" method="POST">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Telegram poll interval</label>
+                                    <div class="input-group">
+                                        <input type="number" min="1" max="60" name="mute_bot_poll_interval_seconds" class="form-control" value="{{ global_settings.mute_bot_poll_interval_seconds }}" required>
+                                        <span class="input-group-text">sec</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Default caption duration</label>
+                                    <div class="input-group">
+                                        <input type="number" min="1" max="1440" name="mute_bot_caption_default_minutes" class="form-control" value="{{ global_settings.mute_bot_caption_default_minutes }}" required>
+                                        <span class="input-group-text">min</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <label class="form-label">Enabled caption styles</label>
+                            <div class="settings-chip-group mb-3">
+                                {% for style in supported_caption_styles %}
+                                <label class="settings-chip">
+                                    <input type="checkbox" name="mute_bot_enabled_caption_styles" value="{{ style }}" {% if style in global_settings.mute_bot_enabled_caption_styles %}checked{% endif %}>
+                                    <span>{{ style }}</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                            <button class="btn btn-primary">Save Global Settings</button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">Known Plates</h5>
+                        <p class="text-muted small">Plates the AI will recognise and label in captions.</p>
+                        {% if known_plates %}
+                        <table class="table table-sm mb-3">
+                            <thead><tr><th>Plate</th><th>Label</th><th></th></tr></thead>
+                            <tbody>
+                            {% for plate, label in known_plates.items() %}
+                            <tr>
+                                <td><code>{{ plate }}</code></td>
+                                <td>{{ label }}</td>
+                                <td>
+                                    <form action="{{ url_for('delete_plate') }}" method="POST" style="display:inline;">
+                                        <input type="hidden" name="plate" value="{{ plate }}">
+                                        <button class="btn btn-sm btn-outline-danger py-0">✕</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="text-muted small">No plates configured.</p>
+                        {% endif %}
+                        <form action="{{ url_for('add_plate') }}" method="POST" class="d-flex gap-2 mt-2">
+                            <input type="text" name="plate" class="form-control form-control-sm" placeholder="AB12 CDE" required style="max-width:130px;">
+                            <input type="text" name="label" class="form-control form-control-sm" placeholder="Alice's Car" required>
+                            <button class="btn btn-sm btn-primary">Add</button>
+                        </form>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- Logs tab -->
         <div class="tab-pane fade" id="logs-pane">
+            <div class="tab-surface mb-3">
+                <div class="section-title mb-0">
+                    <div>
+                        <h2 class="h4 mb-1">Live Alert Traces</h2>
+                        <p class="section-subtitle">Grouped service logs for the most recent alert activity, with source filters for debugging one subsystem at a time.</p>
+                    </div>
+                </div>
+            </div>
             <div class="d-flex justify-content-between mb-2">
-                <h5>Live Logs (last 200 lines)</h5>
+                <h5 class="mb-0">Grouped logs</h5>
                 <div class="d-flex align-items-center gap-2">
                     <select id="logSourceFilter" class="form-select form-select-sm" style="width:auto;">
                         <option value="all">All sources</option>
@@ -617,6 +714,14 @@ HTML_TEMPLATE = r"""
 
         <!-- Plate Audit tab -->
         <div class="tab-pane fade" id="plate-audit-pane">
+            <div class="tab-surface mb-3">
+                <div class="section-title mb-0">
+                    <div>
+                        <h2 class="h4 mb-1">Plate Audit</h2>
+                        <p class="section-subtitle">Registrations seen by the hub, with DVLA enrichment and a saved thumbnail for fast review.</p>
+                    </div>
+                </div>
+            </div>
             {% if plate_audit %}
             <div class="table-responsive">
             <table class="table table-hover align-middle">
@@ -974,6 +1079,8 @@ def index():
     primary_chat_id = configs[0]['chat_id'] if configs else ''
     mutes = get_mute_status(primary_chat_id) if primary_chat_id else []
     caption_mode = get_caption_mode(primary_chat_id) if primary_chat_id else None
+    known_plates = load_known_plates()
+    global_settings = get_global_settings()
 
     return render_template_string(
         HTML_TEMPLATE,
@@ -984,7 +1091,10 @@ def index():
         mutes=mutes,
         caption_mode=caption_mode,
         primary_chat_id=primary_chat_id,
-        known_plates=load_known_plates(),
+        known_plates=known_plates,
+        global_settings=global_settings,
+        supported_caption_styles=SUPPORTED_CAPTION_STYLES,
+        metrics=get_dashboard_metrics(configs, mutes, known_plates, plate_audit),
         current_version=CURRENT_VERSION,
     )
 
@@ -1122,6 +1232,20 @@ def add_plate():
         plates[plate] = label
         save_known_plates(plates)
         flash(f'Added plate {plate}.', 'success')
+    return redirect(url_for('index') + '#global-pane')
+
+
+@app.route('/settings/global', methods=['POST'])
+def save_global_settings_route():
+    raw_styles = request.form.getlist('mute_bot_enabled_caption_styles')
+    save_global_settings(
+        {
+            "mute_bot_poll_interval_seconds": request.form.get("mute_bot_poll_interval_seconds"),
+            "mute_bot_caption_default_minutes": request.form.get("mute_bot_caption_default_minutes"),
+            "mute_bot_enabled_caption_styles": ",".join(raw_styles),
+        }
+    )
+    flash('Global settings updated.', 'success')
     return redirect(url_for('index') + '#global-pane')
 
 
