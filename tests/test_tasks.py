@@ -307,16 +307,16 @@ def test_check_auto_mute_uses_global_settings(monkeypatch):
 def test_send_auto_mute_notification_uses_global_settings(monkeypatch):
     captured = {}
 
+    def fake_post(url, data=None, timeout=None):
+        captured.update({"url": url, "data": data, "timeout": timeout})
+        return _DummyResponse()
+
     monkeypatch.setattr(
         tasks,
         "get_auto_mute_settings",
         lambda: {"threshold": 7, "window_minutes": 15, "duration_minutes": 45},
     )
-    monkeypatch.setattr(
-        tasks.requests,
-        "post",
-        lambda url, data=None, timeout=None: captured.update({"url": url, "data": data, "timeout": timeout}) or _DummyResponse(),
-    )
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
 
     tasks.send_auto_mute_notification(
         {
