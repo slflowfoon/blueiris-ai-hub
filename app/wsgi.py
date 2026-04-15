@@ -420,7 +420,7 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
 <div class="container py-4 py-lg-5 app-shell">
-    <section class="hero-panel p-4 p-lg-5 mb-4">
+    <section class="hero-panel p-3 p-lg-3 mb-3">
         <div class="hero-grid">
             <div class="hero-topbar">
                 <div class="hero-main">
