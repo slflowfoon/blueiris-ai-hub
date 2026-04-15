@@ -4,12 +4,10 @@ import sqlite3
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 DB_FILE = os.path.join(DATA_DIR, "configs.db")
 
-SUPPORTED_CAPTION_STYLES = ("hilarious", "witty", "rude")
-
 DEFAULT_SETTINGS = {
-    "mute_bot_poll_interval_seconds": "3",
-    "mute_bot_caption_default_minutes": "60",
-    "mute_bot_enabled_caption_styles": ",".join(SUPPORTED_CAPTION_STYLES),
+    "auto_mute_threshold": "5",
+    "auto_mute_window_minutes": "10",
+    "auto_mute_duration_minutes": "30",
 }
 
 
@@ -53,17 +51,6 @@ def _clean_int(value, fallback, minimum, maximum):
     return str(max(minimum, min(maximum, numeric)))
 
 
-def normalize_caption_styles(raw_value):
-    if raw_value is None:
-        raw_value = DEFAULT_SETTINGS["mute_bot_enabled_caption_styles"]
-    raw_items = [item.strip().lower() for item in str(raw_value).split(",")]
-    styles = []
-    for item in raw_items:
-        if item in SUPPORTED_CAPTION_STYLES and item not in styles:
-            styles.append(item)
-    return styles
-
-
 def get_global_settings():
     with _connect() as conn:
         init_global_settings(conn)
@@ -71,40 +58,46 @@ def get_global_settings():
 
     data = DEFAULT_SETTINGS.copy()
     data.update({row["key"]: row["value"] for row in rows})
-    data["mute_bot_poll_interval_seconds"] = _clean_int(
-        data.get("mute_bot_poll_interval_seconds"),
-        fallback=3,
+    data["auto_mute_threshold"] = _clean_int(
+        data.get("auto_mute_threshold"),
+        fallback=5,
         minimum=1,
-        maximum=60,
+        maximum=100,
     )
-    data["mute_bot_caption_default_minutes"] = _clean_int(
-        data.get("mute_bot_caption_default_minutes"),
-        fallback=60,
+    data["auto_mute_window_minutes"] = _clean_int(
+        data.get("auto_mute_window_minutes"),
+        fallback=10,
         minimum=1,
         maximum=1440,
     )
-    data["mute_bot_enabled_caption_styles"] = normalize_caption_styles(
-        data.get("mute_bot_enabled_caption_styles")
+    data["auto_mute_duration_minutes"] = _clean_int(
+        data.get("auto_mute_duration_minutes"),
+        fallback=30,
+        minimum=1,
+        maximum=1440,
     )
     return data
 
 
 def save_global_settings(values):
     cleaned = {
-        "mute_bot_poll_interval_seconds": _clean_int(
-            values.get("mute_bot_poll_interval_seconds"),
-            fallback=3,
+        "auto_mute_threshold": _clean_int(
+            values.get("auto_mute_threshold"),
+            fallback=5,
             minimum=1,
-            maximum=60,
+            maximum=100,
         ),
-        "mute_bot_caption_default_minutes": _clean_int(
-            values.get("mute_bot_caption_default_minutes"),
-            fallback=60,
+        "auto_mute_window_minutes": _clean_int(
+            values.get("auto_mute_window_minutes"),
+            fallback=10,
             minimum=1,
             maximum=1440,
         ),
-        "mute_bot_enabled_caption_styles": ",".join(
-            normalize_caption_styles(values.get("mute_bot_enabled_caption_styles", ""))
+        "auto_mute_duration_minutes": _clean_int(
+            values.get("auto_mute_duration_minutes"),
+            fallback=30,
+            minimum=1,
+            maximum=1440,
         ),
     }
 
@@ -126,10 +119,10 @@ def save_global_settings(values):
     return get_global_settings()
 
 
-def get_mute_bot_settings():
+def get_auto_mute_settings():
     settings = get_global_settings()
     return {
-        "poll_interval_seconds": int(settings["mute_bot_poll_interval_seconds"]),
-        "caption_default_minutes": int(settings["mute_bot_caption_default_minutes"]),
-        "enabled_caption_styles": settings["mute_bot_enabled_caption_styles"],
+        "threshold": int(settings["auto_mute_threshold"]),
+        "window_minutes": int(settings["auto_mute_window_minutes"]),
+        "duration_minutes": int(settings["auto_mute_duration_minutes"]),
     }

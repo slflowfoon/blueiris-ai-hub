@@ -14,7 +14,6 @@ from db_utils import connect as sqlite_connect
 from bi_export_shared import ACTIVE_EXPORT_SET, DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE, iter_job_ids, load_job
 from service_health import HEARTBEAT_STALE_AFTER, heartbeat_status
 from settings_store import (
-    SUPPORTED_CAPTION_STYLES,
     get_global_settings,
     init_global_settings,
     save_global_settings,
@@ -613,33 +612,31 @@ HTML_TEMPLATE = r"""
 
                 <div class="card h-100">
                     <div class="card-body">
-                        <h5 class="card-title">Mute Bot Defaults</h5>
-                        <p class="text-muted small">These values are read directly by <code>mute_bot.py</code>, so you can tune its behaviour without editing code or rebuilding the container.</p>
+                        <h5 class="card-title">Auto-mute Policy</h5>
+                        <p class="text-muted small">These values are read directly by <code>tasks.py</code> when trigger bursts are evaluated, so you can tune camera spam suppression without editing code.</p>
                         <form action="{{ url_for('save_global_settings_route') }}" method="POST">
                             <div class="row">
                                 <div class="col-md-6 mb-3">
-                                    <label class="form-label">Telegram poll interval</label>
+                                    <label class="form-label">Trigger threshold</label>
                                     <div class="input-group">
-                                        <input type="number" min="1" max="60" name="mute_bot_poll_interval_seconds" class="form-control" value="{{ global_settings.mute_bot_poll_interval_seconds }}" required>
-                                        <span class="input-group-text">sec</span>
+                                        <input type="number" min="1" max="100" name="auto_mute_threshold" class="form-control" value="{{ global_settings.auto_mute_threshold }}" required>
+                                        <span class="input-group-text">triggers</span>
                                     </div>
                                 </div>
                                 <div class="col-md-6 mb-3">
-                                    <label class="form-label">Default caption duration</label>
+                                    <label class="form-label">Window</label>
                                     <div class="input-group">
-                                        <input type="number" min="1" max="1440" name="mute_bot_caption_default_minutes" class="form-control" value="{{ global_settings.mute_bot_caption_default_minutes }}" required>
+                                        <input type="number" min="1" max="1440" name="auto_mute_window_minutes" class="form-control" value="{{ global_settings.auto_mute_window_minutes }}" required>
                                         <span class="input-group-text">min</span>
                                     </div>
                                 </div>
-                            </div>
-                            <label class="form-label">Enabled caption styles</label>
-                            <div class="settings-chip-group mb-3">
-                                {% for style in supported_caption_styles %}
-                                <label class="settings-chip">
-                                    <input type="checkbox" name="mute_bot_enabled_caption_styles" value="{{ style }}" {% if style in global_settings.mute_bot_enabled_caption_styles %}checked{% endif %}>
-                                    <span>{{ style }}</span>
-                                </label>
-                                {% endfor %}
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Mute duration</label>
+                                    <div class="input-group">
+                                        <input type="number" min="1" max="1440" name="auto_mute_duration_minutes" class="form-control" value="{{ global_settings.auto_mute_duration_minutes }}" required>
+                                        <span class="input-group-text">min</span>
+                                    </div>
+                                </div>
                             </div>
                             <button class="btn btn-primary">Save Global Settings</button>
                         </form>
@@ -1095,7 +1092,6 @@ def index():
         primary_chat_id=primary_chat_id,
         known_plates=known_plates,
         global_settings=global_settings,
-        supported_caption_styles=SUPPORTED_CAPTION_STYLES,
         metrics=get_dashboard_metrics(configs, mutes, known_plates, plate_audit),
         current_version=CURRENT_VERSION,
     )
@@ -1239,12 +1235,11 @@ def add_plate():
 
 @app.route('/settings/global', methods=['POST'])
 def save_global_settings_route():
-    raw_styles = request.form.getlist('mute_bot_enabled_caption_styles')
     save_global_settings(
         {
-            "mute_bot_poll_interval_seconds": request.form.get("mute_bot_poll_interval_seconds"),
-            "mute_bot_caption_default_minutes": request.form.get("mute_bot_caption_default_minutes"),
-            "mute_bot_enabled_caption_styles": ",".join(raw_styles),
+            "auto_mute_threshold": request.form.get("auto_mute_threshold"),
+            "auto_mute_window_minutes": request.form.get("auto_mute_window_minutes"),
+            "auto_mute_duration_minutes": request.form.get("auto_mute_duration_minutes"),
         }
     )
     flash('Global settings updated.', 'success')

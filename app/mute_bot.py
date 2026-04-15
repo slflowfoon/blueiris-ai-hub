@@ -15,11 +15,13 @@ import redis
 import requests
 from db_utils import connect as sqlite_connect
 from service_health import start_heartbeat_thread
-from settings_store import get_mute_bot_settings
 
 LOG_FILE = os.getenv("MUTE_BOT_LOG_FILE", "/app/logs/mute_bot.log")
 DB_FILE = os.path.join(os.getenv("DATA_DIR", "/app/data"), "configs.db")
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+CAPTION_STYLES = ["hilarious", "witty", "rude"]
+CAPTION_DEFAULT_MINUTES = 60
+POLL_INTERVAL = 3
 
 def configure_logging():
     log_dir = os.path.dirname(LOG_FILE)
@@ -197,9 +199,6 @@ def get_updates(token, offset):
 # =============================================================================
 
 def handle_command(token, chat_id, thread_id, text):
-    settings = get_mute_bot_settings()
-    caption_styles = settings["enabled_caption_styles"]
-    default_caption_minutes = settings["caption_default_minutes"]
     parts = text.strip().split()
     cmd = parts[0].lower().lstrip('/').split('@')[0]  # strip @botname suffix
 
@@ -233,16 +232,16 @@ def handle_command(token, chat_id, thread_id, text):
             if style == 'off':
                 clear_caption_mode(chat_id)
                 send_message(token, chat_id, thread_id, "🎭 Caption mode reset to normal.")
-            elif style in caption_styles:
-                minutes = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else default_caption_minutes
+            elif style in CAPTION_STYLES:
+                minutes = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else CAPTION_DEFAULT_MINUTES
                 set_caption_mode(chat_id, style, minutes)
                 send_message(token, chat_id, thread_id, f"🎭 Caption mode: {style} for {minutes} min.")
             else:
                 send_message(token, chat_id, thread_id,
-                             f"Unknown style. Choose from: {', '.join(caption_styles) or 'none enabled'}, or off")
+                             f"Unknown style. Choose from: {', '.join(CAPTION_STYLES)}, or off")
         else:
             send_message(token, chat_id, thread_id,
-                         f"Usage: /caption <{'|'.join(caption_styles) or 'style'}|off> [minutes]")
+                         f"Usage: /caption <{'|'.join(CAPTION_STYLES)}|off> [minutes]")
 
     elif cmd == 'help':
         cameras = ', '.join(get_camera_names()) or 'Driveway, Front, Garden'
@@ -253,7 +252,7 @@ def handle_command(token, chat_id, thread_id, text):
             "/unmute — unmute all cameras\n"
             "/unmute <camera> — unmute one camera\n"
             "/status — show active mutes and caption mode\n"
-            f"/caption <{'|'.join(caption_styles) or 'style disabled'}> [minutes] — set caption style\n"
+            f"/caption <{'|'.join(CAPTION_STYLES)}> [minutes] — set caption style\n"
             "/caption off — back to normal captions\n"
             "/help — show this message\n\n"
             f"Cameras: {cameras}"
@@ -309,7 +308,7 @@ def run_bot(session):
             elif 'callback_query' in update:
                 handle_callback(token, update['callback_query'])
 
-        time.sleep(get_mute_bot_settings()["poll_interval_seconds"])
+        time.sleep(POLL_INTERVAL)
 
 
 def main():
