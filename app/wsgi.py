@@ -466,7 +466,7 @@ HTML_TEMPLATE = r"""
 
         <!-- Configurations tab -->
         <div class="tab-pane fade show active" id="configs-pane">
-            <div class="tab-surface mb-4">
+            <div class="section-header">
                 <div class="section-title">
                     <div>
                         <h2 class="h4 mb-1">Camera Configurations</h2>
@@ -474,7 +474,7 @@ HTML_TEMPLATE = r"""
                     </div>
                 </div>
             </div>
-            <details class="tab-surface mb-3">
+            <details class="subtle-panel mb-3">
                 <summary class="d-flex justify-content-between align-items-center">
                     <span><strong>Blue Iris Setup</strong> <span class="text-muted">On Alert action (per camera)</span></span>
                     <span class="text-muted small">Expand</span>
@@ -532,11 +532,11 @@ HTML_TEMPLATE = r"""
 
         <!-- Global Settings tab -->
         <div class="tab-pane fade" id="global-pane">
-            <div class="tab-surface mb-4">
+            <div class="section-header">
                 <div class="section-title">
                     <div>
                         <h2 class="h4 mb-1">Global Controls</h2>
-                        <p class="section-subtitle">Shared operator state, mute-bot defaults, and known-plate metadata.</p>
+                        <p class="section-subtitle">Shared operator state, auto-mute policy, and known-plate metadata.</p>
                     </div>
                 </div>
             </div>
@@ -644,7 +644,7 @@ HTML_TEMPLATE = r"""
 
         <!-- Logs tab -->
         <div class="tab-pane fade" id="logs-pane">
-            <div class="tab-surface mb-3">
+            <div class="section-header">
                 <div class="section-title mb-0">
                     <div>
                         <h2 class="h4 mb-1">Live Alert Traces</h2>
@@ -677,7 +677,7 @@ HTML_TEMPLATE = r"""
 
         <!-- Plate Audit tab -->
         <div class="tab-pane fade" id="plate-audit-pane">
-            <div class="tab-surface mb-3">
+            <div class="section-header">
                 <div class="section-title mb-0">
                     <div>
                         <h2 class="h4 mb-1">Plate Audit</h2>

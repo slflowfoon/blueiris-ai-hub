@@ -138,10 +138,6 @@ code, .webhook-box, .log-viewer, .table code {
   background: #343a40;
 }
 
-.tab-surface {
-  padding: 0.9rem 1rem;
-}
-
 .card {
   border-radius: 12px;
 }
@@ -155,7 +151,7 @@ code, .webhook-box, .log-viewer, .table code {
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.9rem;
 }
 
 .section-subtitle {
@@ -164,10 +160,21 @@ code, .webhook-box, .log-viewer, .table code {
   font-size: 0.92rem;
 }
 
+.section-header {
+  margin-bottom: 1rem;
+}
+
 .config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 1rem;
+}
+
+.subtle-panel {
+  background: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
 }
 
 .webhook-box {
@@ -254,10 +261,9 @@ code, .webhook-box, .log-viewer, .table code {
 }
 
 .log-shell {
-  background: var(--app-panel);
+  background: transparent;
   border: 1px solid var(--app-border);
-  border-radius: 16px;
-  box-shadow: var(--app-shadow);
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -336,6 +342,11 @@ code, .webhook-box, .log-viewer, .table code {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 1rem;
+}
+
+.global-grid .card,
+.config-grid .card {
+  box-shadow: none;
 }
 
 .settings-chip-group {
