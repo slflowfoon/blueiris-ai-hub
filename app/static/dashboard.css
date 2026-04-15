@@ -247,6 +247,46 @@ code, .webhook-box, .log-viewer, .table code {
   background: rgba(20, 38, 50, 0.38);
 }
 
+.log-group summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.log-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-group-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.log-group-summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.log-group-summary-action {
+  flex: 0 0 auto;
+}
+
+.log-group-caret {
+  flex: 0 0 auto;
+  width: 0.8rem;
+  color: var(--app-muted);
+  font-size: 0.82rem;
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+
+.log-group[open] .log-group-caret {
+  transform: rotate(90deg);
+}
+
 .log-shell {
   background: var(--app-panel);
   border: 1px solid var(--app-border);
@@ -307,6 +347,20 @@ code, .webhook-box, .log-viewer, .table code {
   margin-top: 0.65rem;
   padding-left: 0.9rem;
   border-left: 2px solid rgba(123, 242, 226, 0.24);
+}
+
+.log-entry-line {
+  display: block;
+  padding: 0.28rem 0.5rem;
+  border-radius: 6px;
+}
+
+.log-entry-line:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.log-entry-line:nth-child(even) {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .global-grid {

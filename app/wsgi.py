@@ -919,7 +919,7 @@ function populateLogSourceFilter(entries){
 }
 function renderLogLine(entry){
     const key=colorKey(entry);
-    return `<div data-source="${escapeHtml(entry.source)}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(entry.display)}</div>`;
+    return `<div class="log-entry-line" data-source="${escapeHtml(entry.source)}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(entry.display)}</div>`;
 }
 function buildGroupedLogs(entries){
     const triggerTags=new Set(entries.filter(e=>e.is_trigger&&e.alert_tag).map(e=>e.alert_tag));
@@ -946,7 +946,7 @@ function buildGroupedLogs(entries){
             const body=group.map(renderLogLine).join('');
             const copyTrace=encodeURIComponent(group.map(e=>e.display).join('\n'));
             blocks.push(
-                `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">📋 Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
+                `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-caret">▸</span><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary log-group-summary-action" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
             );
         }else{
             blocks.push(renderLogLine(entry));
