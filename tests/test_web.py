@@ -378,6 +378,21 @@ def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkey
     assert response.data == apk_bytes
 
 
+def test_download_tv_overlay_apk_uses_bundled_fallback(client, tmp_path, monkeypatch):
+    apk_path = tmp_path / "android-tv-overlay-debug.apk"
+    apk_bytes = b"bundled-apk"
+    apk_path.write_bytes(apk_bytes)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUNDLED_FILE", str(apk_path))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+
+    response = client.get("/downloads/android-tv-overlay-debug.apk")
+
+    assert response.status_code == 200
+    assert response.data == apk_bytes
+
+
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

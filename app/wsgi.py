@@ -40,6 +40,7 @@ PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 LOG_DIR = os.path.dirname(LOG_FILE) or "/app/logs"
+TV_OVERLAY_APK_BUNDLED_FILE = "/app/tv-overlay/android-tv-overlay-debug.apk"
 TV_OVERLAY_APK_DATA_FILE = os.path.join(DATA_DIR, "android-tv-overlay-debug.apk")
 TV_OVERLAY_APK_BUILD_FILE = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
@@ -554,6 +555,7 @@ def _resolve_tv_overlay_apk_file():
     if TV_OVERLAY_APK_FILE:
         candidates.append(TV_OVERLAY_APK_FILE)
     candidates.extend([
+        TV_OVERLAY_APK_BUNDLED_FILE,
         TV_OVERLAY_APK_DATA_FILE,
         TV_OVERLAY_APK_BUILD_FILE,
     ])
