@@ -201,7 +201,7 @@ def test_add_config_persists_tv_settings(client, monkeypatch):
 
 
 def test_edit_config_rtsp_password_with_at_sign(client, monkeypatch):
-    """Passwords containing @ must be stored with literal @ (not %40) so media3 on Android TV authenticates correctly."""
+    """Passwords containing @ must be stored with literal @ (not %40) so media3 authenticates correctly."""
     monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
 
