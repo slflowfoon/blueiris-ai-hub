@@ -1186,7 +1186,8 @@ def process_alert(image_path, config):
         if config.get('tv_push_enabled') == 1 and config.get('tv_rtsp_url'):
             import tv_delivery
 
-            tv_delivery.dispatch_tv_alert(
+            logger.info(f"{tag} TV dispatch: camera={config.get('name')!r} group={config.get('tv_group')!r}")
+            tv_result = tv_delivery.dispatch_tv_alert(
                 {
                     "id": config.get("id"),
                     "name": config.get("name"),
@@ -1197,6 +1198,16 @@ def process_alert(image_path, config):
                 },
                 tag,
             )
+            if tv_result.get("skipped"):
+                logger.info(f"{tag} TV dispatch skipped (no RTSP URL)")
+            elif tv_result.get("error"):
+                logger.warning(f"{tag} TV dispatch error: {tv_result['error']}")
+            else:
+                delivered = tv_result.get("delivered", [])
+                failed = tv_result.get("failed", [])
+                logger.info(f"{tag} TV dispatch: delivered={len(delivered)} failed={len(failed)}")
+                if failed:
+                    logger.warning(f"{tag} TV dispatch failed TV IDs: {failed}")
 
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):
