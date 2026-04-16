@@ -1188,11 +1188,11 @@ HTML_TEMPLATE = r"""
                                 <label class="form-check-label" for="add_tv_push_enabled">Push stream to TV overlay</label>
                             </div>
                         </div>
-                        <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
-                        <div class="col-md-8 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
+                        <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
                         <div class="col-12 mb-3">
                             <label class="form-label">Target TVs</label>
                             <select name="tv_target_ids" class="form-select" multiple size="4">
@@ -1269,11 +1269,11 @@ HTML_TEMPLATE = r"""
                                 <label class="form-check-label" for="edit_tv_push_enabled">Push stream to TV overlay</label>
                             </div>
                         </div>
-                        <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
-                        <div class="col-md-8 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control" placeholder="Leave blank to keep existing"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
-                        <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
+                        <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
                         <div class="col-12 mb-3">
                             <label class="form-label">Target TVs</label>
                             <select id="edit_tv_target_ids" name="tv_target_ids" class="form-select" multiple size="4">
