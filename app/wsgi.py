@@ -3,6 +3,7 @@ import uuid
 import json
 import re
 import sqlite3
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import redis
 import logging
 import requests
@@ -495,6 +496,60 @@ def _save_tv_targets(camera_id, camera_name, tv_ids):
             )
 
 
+def _split_rtsp_url(rtsp_url):
+    raw = (rtsp_url or "").strip()
+    if not raw:
+        return {"base_url": "", "username": "", "password": ""}
+
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return {"base_url": raw, "username": "", "password": ""}
+
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+
+    return {
+        "base_url": urlunsplit((parts.scheme, netloc, parts.path or "", parts.query or "", parts.fragment or "")),
+        "username": unquote(parts.username or ""),
+        "password": unquote(parts.password or ""),
+    }
+
+
+def _compose_rtsp_url(base_url, username="", password="", existing_url=None):
+    base = (base_url or "").strip()
+    if not base:
+        return None
+
+    parts = urlsplit(base)
+    if not parts.scheme or not parts.netloc:
+        return base
+
+    username = (username or "").strip()
+    password = password or ""
+    if username and not password and existing_url:
+        existing_parts = _split_rtsp_url(existing_url)
+        if existing_parts["username"] == username:
+            password = existing_parts["password"]
+
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    if username:
+        auth = quote(username, safe="")
+        if password:
+            auth = f"{auth}:{quote(password, safe='')}"
+        netloc = f"{auth}@{netloc}"
+
+    return urlunsplit((parts.scheme, netloc, parts.path or "", parts.query or "", parts.fragment or ""))
+
+
 def get_log_entries():
     if not os.path.isdir(LOG_DIR):
         return []
@@ -694,7 +749,7 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
 <div class="container py-4 py-lg-5 app-shell">
-    <section class="hero-panel p-3 p-lg-3 mb-3">
+    <section class="mb-3">
         <div class="hero-grid">
             <div class="hero-topbar">
                 <div class="hero-main">
@@ -1125,7 +1180,9 @@ HTML_TEMPLATE = r"""
                             </div>
                         </div>
                         <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
-                        <div class="col-md-8 mb-3"><label class="form-label">RTSP URL</label><input type="text" name="tv_rtsp_url" class="form-control" placeholder="rtsp://camera/live"></div>
+                        <div class="col-md-8 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
                         <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
                         <div class="col-12 mb-3">
                             <label class="form-label">Target TVs</label>
@@ -1204,7 +1261,9 @@ HTML_TEMPLATE = r"""
                             </div>
                         </div>
                         <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
-                        <div class="col-md-8 mb-3"><label class="form-label">RTSP URL</label><input type="text" id="edit_tv_rtsp_url" name="tv_rtsp_url" class="form-control"></div>
+                        <div class="col-md-8 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control" placeholder="Leave blank to keep existing"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
                         <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
                         <div class="col-12 mb-3">
                             <label class="form-label">Target TVs</label>
@@ -1389,7 +1448,9 @@ function openEditModal(c){
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
     document.getElementById('edit_tv_push_enabled').checked=c.tv_push_enabled===1;
     document.getElementById('edit_tv_group').value=c.tv_group||'';
-    document.getElementById('edit_tv_rtsp_url').value=c.tv_rtsp_url||'';
+    document.getElementById('edit_tv_rtsp_base_url').value=c.tv_rtsp_base_url||'';
+    document.getElementById('edit_tv_rtsp_username').value=c.tv_rtsp_username||'';
+    document.getElementById('edit_tv_rtsp_password').value='';
     document.getElementById('edit_tv_duration_seconds').value=c.tv_duration_seconds||20;
     Array.from(document.getElementById('edit_tv_target_ids').options).forEach(opt=>{opt.selected=(c.tv_target_ids||[]).includes(opt.value);});
     document.getElementById('edit_grok_key').value=c.grok_api_key||'';
@@ -1397,7 +1458,7 @@ function openEditModal(c){
     document.getElementById('edit_dvla_key').value=c.dvla_api_key||'';
     document.getElementById('edit_bi_restart_url').value=c.bi_restart_url||'';
     document.getElementById('edit_bi_restart_token').value=c.bi_restart_token||'';
-    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_grok_key','edit_groq_key','edit_dvla_key','edit_bi_restart_token'].forEach(id=>document.getElementById(id).type='password');
+    ['edit_gemini_key','edit_telegram_token','edit_bi_pass','edit_tv_rtsp_password','edit_grok_key','edit_groq_key','edit_dvla_key','edit_bi_restart_token'].forEach(id=>document.getElementById(id).type='password');
     document.getElementById('editForm').action='/edit/'+c.id;
     new bootstrap.Modal(document.getElementById('editModal')).show();
 }
@@ -1447,6 +1508,9 @@ def index():
     conn.close()
     for config in configs:
         config["tv_target_ids"] = _load_tv_target_ids(config["id"], config["name"])
+        rtsp_parts = _split_rtsp_url(config.get("tv_rtsp_url"))
+        config["tv_rtsp_base_url"] = rtsp_parts["base_url"]
+        config["tv_rtsp_username"] = rtsp_parts["username"]
 
     primary_chat_id = configs[0]['chat_id'] if configs else ''
     mutes = get_mute_status(primary_chat_id) if primary_chat_id else []
@@ -1519,7 +1583,11 @@ def add_config():
     try:
         camera_id = str(uuid.uuid4())
         tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
-        tv_rtsp_url = request.form.get('tv_rtsp_url') or None
+        tv_rtsp_url = _compose_rtsp_url(
+            request.form.get('tv_rtsp_base_url'),
+            request.form.get('tv_rtsp_username'),
+            request.form.get('tv_rtsp_password'),
+        )
         tv_duration_seconds = _parse_tv_duration_seconds(request.form.get('tv_duration_seconds'))
         tv_group = request.form.get('tv_group') or None
         conn = get_db_connection()
@@ -1571,7 +1639,12 @@ def edit_config(id):
         tv_section_present = any(key.startswith("tv_") for key in request.form)
         if tv_section_present:
             tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
-            tv_rtsp_url = request.form.get('tv_rtsp_url') or None
+            tv_rtsp_url = _compose_rtsp_url(
+                request.form.get('tv_rtsp_base_url'),
+                request.form.get('tv_rtsp_username'),
+                request.form.get('tv_rtsp_password'),
+                existing_url=existing['tv_rtsp_url'] if existing else None,
+            )
             tv_duration_seconds = _parse_tv_duration_seconds(request.form.get('tv_duration_seconds'))
             tv_group = request.form.get('tv_group') or None
         else:

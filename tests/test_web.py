@@ -177,7 +177,9 @@ def test_add_config_persists_tv_settings(client, monkeypatch):
         "chat_id": "1",
         "prompt": "Describe motion.",
         "tv_push_enabled": "on",
-        "tv_rtsp_url": "rtsp://cam/live",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream1",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "secret",
         "tv_duration_seconds": "20",
         "tv_group": "driveway",
     }, follow_redirects=True)
@@ -192,9 +194,57 @@ def test_add_config_persists_tv_settings(client, monkeypatch):
     conn.close()
 
     assert row["tv_push_enabled"] == 1
-    assert row["tv_rtsp_url"] == "rtsp://cam/live"
+    assert row["tv_rtsp_url"] == "rtsp://camuser:secret@192.168.1.50:554/stream1"
     assert row["tv_duration_seconds"] == 20
     assert row["tv_group"] == "driveway"
+
+
+def test_edit_config_preserves_existing_rtsp_password_when_blank(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream1",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "secret",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute("SELECT id FROM configs WHERE name=?", ("Driveway",)).fetchone()
+    conn.close()
+
+    response = client.post(f"/edit/{row['id']}", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream2",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    updated = conn.execute(
+        "SELECT tv_rtsp_url FROM configs WHERE id=?",
+        (row["id"],),
+    ).fetchone()
+    conn.close()
+
+    assert updated["tv_rtsp_url"] == "rtsp://camuser:secret@192.168.1.50:554/stream2"
 
 
 def test_pair_tv_by_manual_code_with_ip_pairs_remote_tv(client, monkeypatch):
