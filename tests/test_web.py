@@ -262,6 +262,37 @@ def test_pair_tv_by_manual_code_returns_generic_server_error(client, monkeypatch
     assert response.get_json() == {"error": "tv pairing failed"}
 
 
+def test_dashboard_shows_tv_apk_downloader_url(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"/downloads/android-tv-overlay-debug.apk" in response.data
+    assert b"TV App Downloader URL" in response.data
+
+
+def test_download_tv_overlay_apk_serves_file(client, tmp_path, monkeypatch):
+    apk_path = tmp_path / "android-tv-overlay-debug.apk"
+    apk_bytes = b"fake-apk-bytes"
+    apk_path.write_bytes(apk_bytes)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(apk_path))
+
+    response = client.get("/downloads/android-tv-overlay-debug.apk")
+
+    assert response.status_code == 200
+    assert response.data == apk_bytes
+    assert response.headers["Content-Type"] == "application/vnd.android.package-archive"
+
+
+def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monkeypatch):
+    missing_path = tmp_path / "missing.apk"
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(missing_path))
+
+    response = client.get("/downloads/android-tv-overlay-debug.apk")
+
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "android tv overlay apk not found"}
+
+
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

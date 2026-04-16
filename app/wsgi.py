@@ -39,6 +39,19 @@ PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 LOG_DIR = os.path.dirname(LOG_FILE) or "/app/logs"
+TV_OVERLAY_APK_FILE = os.getenv(
+    "TV_OVERLAY_APK_FILE",
+    os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "android-tv-overlay",
+        "app",
+        "build",
+        "outputs",
+        "apk",
+        "debug",
+        "app-debug.apk",
+    ),
+)
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
@@ -875,6 +888,13 @@ HTML_TEMPLATE = r"""
                     <div class="card-body">
                         <h5 class="card-title">Pair TV</h5>
                         <p class="text-muted small">Enter the TV listener address and pairing code shown by the Android TV app.</p>
+                        <div class="mb-3">
+                            <label class="form-label">TV App Downloader URL</label>
+                            <div class="webhook-box mb-2" id="tv-apk-download-url">{{ tv_apk_download_url }}</div>
+                            <button class="btn btn-sm btn-outline-primary" type="button" onclick="copyToClipboard('tv-apk-download-url', this)">📋 Copy</button>
+                            <div class="form-text mt-1">Open <code>Downloader</code> on the TV and enter this URL to install the current debug APK hosted by the hub.</div>
+                        </div>
+                        <hr>
                         <form onsubmit="return submitTvPairing(event)">
                             <div class="row">
                                 <div class="col-md-5 mb-3"><label class="form-label">TV IP</label><input type="text" name="ip_address" class="form-control" placeholder="192.168.1.50"></div>
@@ -1433,6 +1453,12 @@ def index():
     caption_mode = get_caption_mode(primary_chat_id) if primary_chat_id else None
     known_plates = load_known_plates()
     global_settings = get_global_settings()
+    tv_apk_download_path = url_for('download_tv_overlay_apk')
+    tv_apk_download_url = (
+        f"{BASE_URL}{tv_apk_download_path}"
+        if BASE_URL
+        else f"{request.host_url.rstrip('/')}{tv_apk_download_path}"
+    )
 
     return render_template_string(
         HTML_TEMPLATE,
@@ -1446,6 +1472,7 @@ def index():
         primary_chat_id=primary_chat_id,
         known_plates=known_plates,
         global_settings=global_settings,
+        tv_apk_download_url=tv_apk_download_url,
         current_version=CURRENT_VERSION,
     )
 
@@ -1743,6 +1770,18 @@ def plate_audit_image(filename):
     if not safe:
         abort(404)
     return send_file(os.path.join(PLATE_IMAGES_DIR, safe), mimetype='image/jpeg')
+
+
+@app.route('/downloads/android-tv-overlay-debug.apk')
+def download_tv_overlay_apk():
+    if not os.path.isfile(TV_OVERLAY_APK_FILE):
+        return jsonify({"error": "android tv overlay apk not found"}), 404
+    return send_file(
+        TV_OVERLAY_APK_FILE,
+        mimetype='application/vnd.android.package-archive',
+        as_attachment=True,
+        download_name='android-tv-overlay-debug.apk',
+    )
 
 
 @app.route('/plate-audit/delete', methods=['POST'])
