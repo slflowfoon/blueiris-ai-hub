@@ -107,6 +107,22 @@ def get_db_connection():
     return sqlite_connect(DB_FILE, row_factory=sqlite3.Row)
 
 
+def get_redis_client():
+    return r
+
+
+def _parse_tv_duration_seconds(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if 5 <= parsed <= 120:
+        return parsed
+    return None
+
+
 def init_db():
     with sqlite_connect(DB_FILE) as conn:
         conn.execute("""
@@ -131,7 +147,11 @@ def init_db():
                 bi_restart_url TEXT,
                 bi_restart_token TEXT,
                 instant_notify INTEGER DEFAULT 0,
-                dvla_api_key TEXT
+                dvla_api_key TEXT,
+                tv_push_enabled INTEGER DEFAULT 0,
+                tv_rtsp_url TEXT,
+                tv_duration_seconds INTEGER,
+                tv_group TEXT
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_configs_chat_id ON configs(chat_id)")
@@ -150,6 +170,10 @@ def init_db():
             ("bi_restart_token", "TEXT"),
             ("instant_notify", "INTEGER DEFAULT 0"),
             ("dvla_api_key", "TEXT"),
+            ("tv_push_enabled", "INTEGER DEFAULT 0"),
+            ("tv_rtsp_url", "TEXT"),
+            ("tv_duration_seconds", "INTEGER"),
+            ("tv_group", "TEXT"),
         ]:
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
@@ -178,6 +202,208 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_plate_audit_plate ON plate_audit(plate)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paired_tvs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                ip_address TEXT,
+                port INTEGER DEFAULT 7979,
+                rtsp_url TEXT,
+                shared_secret TEXT,
+                device_token_id TEXT,
+                last_seen_at TIMESTAMP,
+                last_ip_seen TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        paired_tv_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(paired_tvs)").fetchall()
+        }
+        for col, definition in [
+            ("ip_address", "TEXT"),
+            ("port", "INTEGER DEFAULT 7979"),
+            ("rtsp_url", "TEXT"),
+            ("shared_secret", "TEXT"),
+            ("device_token_id", "TEXT"),
+            ("last_seen_at", "TIMESTAMP"),
+            ("last_ip_seen", "TEXT"),
+        ]:
+            if col not in paired_tv_columns:
+                conn.execute(f"ALTER TABLE paired_tvs ADD COLUMN {col} {definition}")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS camera_tv_targets (
+                id TEXT PRIMARY KEY,
+                camera_id TEXT,
+                camera_name TEXT NOT NULL,
+                tv_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        camera_tv_target_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(camera_tv_targets)").fetchall()
+        }
+        if "camera_id" not in camera_tv_target_columns:
+            try:
+                conn.execute("ALTER TABLE camera_tv_targets ADD COLUMN camera_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS camera_group_priorities (
+                id TEXT PRIMARY KEY,
+                camera_id TEXT,
+                camera_name TEXT,
+                group_name TEXT NOT NULL,
+                priority INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        group_priority_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(camera_group_priorities)").fetchall()
+        }
+        for col, definition in [
+            ("camera_id", "TEXT"),
+            ("camera_name", "TEXT"),
+        ]:
+            if col not in group_priority_columns:
+                try:
+                    conn.execute(f"ALTER TABLE camera_group_priorities ADD COLUMN {col} {definition}")
+                except sqlite3.OperationalError:
+                    pass
+
+        resolved_camera_ids_by_name = {
+            row[0]: row[1]
+            for row in conn.execute(
+                """
+                SELECT name, id
+                FROM configs
+                WHERE name IS NOT NULL
+                GROUP BY name
+                HAVING COUNT(*) = 1
+                """
+            ).fetchall()
+        }
+        legacy_targets = conn.execute(
+            """
+            SELECT id, camera_name
+            FROM camera_tv_targets
+            WHERE camera_id IS NULL
+            """
+        ).fetchall()
+        camera_id_updates = [
+            (resolved_camera_ids_by_name[row[1]], row[0])
+            for row in legacy_targets
+            if row[1] in resolved_camera_ids_by_name
+        ]
+        if camera_id_updates:
+            conn.executemany(
+                "UPDATE camera_tv_targets SET camera_id=? WHERE id=?",
+                camera_id_updates,
+            )
+        legacy_priorities = conn.execute(
+            """
+            SELECT id, camera_name
+            FROM camera_group_priorities
+            WHERE camera_id IS NULL
+            """
+        ).fetchall()
+        priority_updates = [
+            (resolved_camera_ids_by_name[row[1]], row[0])
+            for row in legacy_priorities
+            if row[1] in resolved_camera_ids_by_name
+        ]
+        if priority_updates:
+            conn.executemany(
+                "UPDATE camera_group_priorities SET camera_id=? WHERE id=?",
+                priority_updates,
+            )
+
+        rows = conn.execute(
+            """
+            SELECT id, device_token_id
+            FROM paired_tvs
+            WHERE device_token_id IS NOT NULL
+            ORDER BY device_token_id, COALESCE(created_at, '') DESC, id DESC
+            """
+        ).fetchall()
+        seen_tokens = set()
+        duplicate_ids = []
+        keep_id_by_token = {}
+        replacement_by_id = {}
+        for row in rows:
+            tv_id = row[0]
+            token = row[1]
+            if token in seen_tokens:
+                duplicate_ids.append(tv_id)
+                replacement_by_id[tv_id] = keep_id_by_token[token]
+            else:
+                seen_tokens.add(token)
+                keep_id_by_token[token] = tv_id
+        if replacement_by_id:
+            conn.executemany(
+                "UPDATE camera_tv_targets SET tv_id=? WHERE tv_id=?",
+                [(keep_id, discard_id) for discard_id, keep_id in replacement_by_id.items()],
+            )
+        target_rows = conn.execute(
+            """
+            SELECT id, camera_id, tv_id
+            FROM camera_tv_targets
+            WHERE camera_id IS NOT NULL
+            ORDER BY camera_id, tv_id, COALESCE(created_at, ''), id
+            """
+        ).fetchall()
+        seen_target_pairs = set()
+        duplicate_target_ids = []
+        for row in target_rows:
+            target_key = (row[1], row[2])
+            if target_key in seen_target_pairs:
+                duplicate_target_ids.append(row[0])
+            else:
+                seen_target_pairs.add(target_key)
+        if duplicate_target_ids:
+            conn.executemany(
+                "DELETE FROM camera_tv_targets WHERE id=?",
+                [(row_id,) for row_id in duplicate_target_ids],
+            )
+        if duplicate_ids:
+            conn.executemany(
+                "DELETE FROM paired_tvs WHERE id=?",
+                [(row_id,) for row_id in duplicate_ids],
+            )
+
+        priority_rows = conn.execute(
+            """
+            SELECT id, group_name, camera_id
+            FROM camera_group_priorities
+            WHERE camera_id IS NOT NULL
+            ORDER BY group_name, camera_id, priority, COALESCE(created_at, ''), id
+            """
+        ).fetchall()
+        seen_priority_pairs = set()
+        duplicate_priority_ids = []
+        for row in priority_rows:
+            priority_key = (row[1], row[2])
+            if priority_key in seen_priority_pairs:
+                duplicate_priority_ids.append(row[0])
+            else:
+                seen_priority_pairs.add(priority_key)
+        if duplicate_priority_ids:
+            conn.executemany(
+                "DELETE FROM camera_group_priorities WHERE id=?",
+                [(row_id,) for row_id in duplicate_priority_ids],
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_paired_tvs_device_token_id "
+            "ON paired_tvs(device_token_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_camera_tv_targets_camera_id_tv_id "
+            "ON camera_tv_targets(camera_id, tv_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_camera_group_priorities_group_camera_id "
+            "ON camera_group_priorities(group_name, camera_id)"
+        )
         init_global_settings(conn)
 
 init_db()
@@ -219,6 +445,41 @@ def _get_recent_trigger_tags(system_log_path):
                 recent.append(parsed["alert_tag"])
 
     return list(recent)
+
+
+def _load_tv_target_ids(camera_id, camera_name):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT tv_id
+            FROM camera_tv_targets
+            WHERE (camera_id IS NOT NULL AND camera_id=?)
+               OR (camera_id IS NULL AND camera_name=?)
+            ORDER BY tv_id ASC
+            """,
+            (camera_id, camera_name),
+        ).fetchall()
+    return [row["tv_id"] for row in rows if row["tv_id"]]
+
+
+def _save_tv_targets(camera_id, camera_name, tv_ids):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM camera_tv_targets
+            WHERE (camera_id IS NOT NULL AND camera_id=?)
+               OR (camera_id IS NULL AND camera_name=?)
+            """,
+            (camera_id, camera_name),
+        )
+        for tv_id in sorted({tv_id for tv_id in tv_ids if tv_id}):
+            conn.execute(
+                """
+                INSERT INTO camera_tv_targets (id, camera_id, camera_name, tv_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), camera_id, camera_name, tv_id),
+            )
 
 
 def get_log_entries():
@@ -458,6 +719,7 @@ HTML_TEMPLATE = r"""
     <ul class="nav nav-tabs mb-4" id="mainTab">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#configs-pane">Configurations</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#global-pane">Global Settings</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tv-groups-pane">TV Group Priorities</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#plate-audit-pane">Plate Audit{% if plate_audit %} <span class="badge bg-secondary ms-1">{{ plate_audit|length }}</span>{% endif %}</button></li>
     </ul>
@@ -514,6 +776,8 @@ HTML_TEMPLATE = r"""
                             <div class="mt-3 d-flex gap-2 flex-wrap">
                                 {% if config.send_video %}<span class="badge bg-info text-dark">🎞️ Video enabled</span>{% endif %}
                                 {% if config.instant_notify %}<span class="badge bg-success">⚡ Instant notify</span>{% endif %}
+                                {% if config.tv_push_enabled %}<span class="badge bg-primary">TV overlay</span>{% endif %}
+                                {% if config.tv_group %}<span class="badge bg-dark-subtle text-dark">TV group {{ config.tv_group }}</span>{% endif %}
                                 {% if config.message_thread_id %}<span class="badge bg-secondary">🧵 Thread {{ config.message_thread_id }}</span>{% endif %}
                                 {% if config.grok_api_key %}<span class="badge bg-warning text-dark">Grok ✓</span>{% endif %}
                                 {% if config.groq_api_key %}<span class="badge bg-warning text-dark">Groq ✓</span>{% endif %}
@@ -609,6 +873,43 @@ HTML_TEMPLATE = r"""
 
                 <div class="card h-100">
                     <div class="card-body">
+                        <h5 class="card-title">Pair TV</h5>
+                        <p class="text-muted small">Enter the TV listener address and pairing code shown by the Android TV app.</p>
+                        <form onsubmit="return submitTvPairing(event)">
+                            <div class="row">
+                                <div class="col-md-5 mb-3"><label class="form-label">TV IP</label><input type="text" name="ip_address" class="form-control" placeholder="192.168.1.50"></div>
+                                <div class="col-md-3 mb-3"><label class="form-label">Port</label><input type="number" min="1" max="65535" name="port" class="form-control" value="7979"></div>
+                                <div class="col-md-4 mb-3"><label class="form-label">Pairing code</label><input type="text" name="manual_code" class="form-control" placeholder="ABC123" required></div>
+                            </div>
+                            <div class="d-flex align-items-center gap-3">
+                                <button class="btn btn-primary" type="submit">Pair TV</button>
+                                <span class="text-muted small" id="pairTvStatus"></span>
+                            </div>
+                        </form>
+                        <hr>
+                        <h6>Paired TVs</h6>
+                        {% if paired_tvs %}
+                            <ul class="list-group list-group-flush">
+                            {% for tv in paired_tvs %}
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <div><strong>{{ tv.name }}</strong></div>
+                                        <small class="text-muted">{{ tv.ip_address or 'unknown ip' }}:{{ tv.port or 7979 }}</small>
+                                    </div>
+                                    <form action="{{ url_for('delete_paired_tv', tv_id=tv.id) }}" method="POST">
+                                        <button class="btn btn-sm btn-outline-danger">Delete</button>
+                                    </form>
+                                </li>
+                            {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p class="text-muted small mb-0">No TVs paired yet.</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="card h-100">
+                    <div class="card-body">
                         <h5 class="card-title">Known Plates</h5>
                         <p class="text-muted small">Plates the AI will recognise and label in captions.</p>
                         {% if known_plates %}
@@ -638,6 +939,22 @@ HTML_TEMPLATE = r"""
                             <button class="btn btn-sm btn-primary">Add</button>
                         </form>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="tv-groups-pane">
+            <div class="section-header">
+                <div class="section-title">
+                    <div>
+                        <h2 class="h4 mb-1">TV Group Priorities</h2>
+                        <p class="section-subtitle">Grouped cameras can share a TV target. Drag-and-drop ordering is still pending; this release includes the persistence API and placeholder panel.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-body">
+                    <div id="tv-group-priority-root" class="text-muted">Priority management UI is available in this feature branch, but the drag-and-drop editor is not finalized yet.</div>
                 </div>
             </div>
         </div>
@@ -779,6 +1096,27 @@ HTML_TEMPLATE = r"""
                         <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" name="bi_pass" id="add_bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_pass')">👁️</button></div></div>
                     </div>
                     <hr>
+                    <h6 class="text-primary">TV Overlay Settings</h6>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="add_tv_push_enabled">
+                                <label class="form-check-label" for="add_tv_push_enabled">Push stream to TV overlay</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
+                        <div class="col-md-8 mb-3"><label class="form-label">RTSP URL</label><input type="text" name="tv_rtsp_url" class="form-control" placeholder="rtsp://camera/live"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-12 mb-3">
+                            <label class="form-label">Target TVs</label>
+                            <select name="tv_target_ids" class="form-select" multiple size="4">
+                                {% for tv in paired_tvs %}
+                                <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <hr>
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
@@ -835,6 +1173,27 @@ HTML_TEMPLATE = r"""
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" id="edit_bi_user" name="bi_user" class="form-control"></div>
                         <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" id="edit_bi_pass" name="bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_pass')">👁️</button></div></div>
+                    </div>
+                    <hr>
+                    <h6 class="text-primary">TV Overlay Settings</h6>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="edit_tv_push_enabled">
+                                <label class="form-check-label" for="edit_tv_push_enabled">Push stream to TV overlay</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
+                        <div class="col-md-8 mb-3"><label class="form-label">RTSP URL</label><input type="text" id="edit_tv_rtsp_url" name="tv_rtsp_url" class="form-control"></div>
+                        <div class="col-md-4 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
+                        <div class="col-12 mb-3">
+                            <label class="form-label">Target TVs</label>
+                            <select id="edit_tv_target_ids" name="tv_target_ids" class="form-select" multiple size="4">
+                                {% for tv in paired_tvs %}
+                                <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
                     </div>
                     <hr>
                     <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -979,6 +1338,21 @@ function copyWebhookTrace(btn){
     copyTextToClipboard(decodeURIComponent(group.dataset.copyTrace),btn);
 }
 function copyToClipboard(id,btn){copyTextToClipboard(document.getElementById(id).innerText.trim(),btn);}
+async function submitTvPairing(event){
+    event.preventDefault();
+    const statusEl=document.getElementById('pairTvStatus');
+    statusEl.textContent='Pairing...';
+    try{
+        const response=await fetch('/tv/pair/code',{method:'POST',body:new FormData(event.target)});
+        const data=await response.json();
+        if(!response.ok) throw new Error(data.error||'Pairing failed');
+        statusEl.textContent='Paired';
+        window.location.reload();
+    }catch(err){
+        statusEl.textContent=err.message||'Pairing failed';
+    }
+    return false;
+}
 function openEditModal(c){
     document.getElementById('edit_name').value=c.name;
     document.getElementById('edit_gemini_key').value=c.gemini_key;
@@ -993,6 +1367,11 @@ function openEditModal(c){
     document.getElementById('edit_delete_after_send').checked=c.delete_after_send===1;
     document.getElementById('edit_instant_notify').checked=c.instant_notify===1;
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
+    document.getElementById('edit_tv_push_enabled').checked=c.tv_push_enabled===1;
+    document.getElementById('edit_tv_group').value=c.tv_group||'';
+    document.getElementById('edit_tv_rtsp_url').value=c.tv_rtsp_url||'';
+    document.getElementById('edit_tv_duration_seconds').value=c.tv_duration_seconds||20;
+    Array.from(document.getElementById('edit_tv_target_ids').options).forEach(opt=>{opt.selected=(c.tv_target_ids||[]).includes(opt.value);});
     document.getElementById('edit_grok_key').value=c.grok_api_key||'';
     document.getElementById('edit_groq_key').value=c.groq_api_key||'';
     document.getElementById('edit_dvla_key').value=c.dvla_api_key||'';
@@ -1037,7 +1416,17 @@ def index():
     conn = get_db_connection()
     configs = [dict(r) for r in conn.execute('SELECT * FROM configs ORDER BY created_at DESC').fetchall()]
     plate_audit = [dict(r) for r in conn.execute('SELECT * FROM plate_audit ORDER BY last_seen DESC').fetchall()]
+    paired_tvs = [dict(r) for r in conn.execute(
+        """
+        SELECT id, name, ip_address, port, rtsp_url, device_token_id,
+               last_seen_at, last_ip_seen, created_at
+        FROM paired_tvs
+        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        """
+    ).fetchall()]
     conn.close()
+    for config in configs:
+        config["tv_target_ids"] = _load_tv_target_ids(config["id"], config["name"])
 
     primary_chat_id = configs[0]['chat_id'] if configs else ''
     mutes = get_mute_status(primary_chat_id) if primary_chat_id else []
@@ -1049,6 +1438,7 @@ def index():
         HTML_TEMPLATE,
         configs=configs,
         plate_audit=plate_audit,
+        paired_tvs=paired_tvs,
         log_entries=get_log_entries(),
         base_url=BASE_URL,
         mutes=mutes,
@@ -1100,13 +1490,19 @@ def check_update_api():
 @app.route('/add', methods=['POST'])
 def add_config():
     try:
+        camera_id = str(uuid.uuid4())
+        tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
+        tv_rtsp_url = request.form.get('tv_rtsp_url') or None
+        tv_duration_seconds = _parse_tv_duration_seconds(request.form.get('tv_duration_seconds'))
+        tv_group = request.form.get('tv_group') or None
         conn = get_db_connection()
         conn.execute(
             'INSERT INTO configs (id,name,gemini_key,telegram_token,chat_id,prompt,bi_url,bi_user,bi_pass,'
             'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key,'
-            'bi_restart_url,bi_restart_token,instant_notify,dvla_api_key) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (str(uuid.uuid4()), request.form['name'], request.form['gemini_key'],
+            'bi_restart_url,bi_restart_token,instant_notify,dvla_api_key,tv_push_enabled,tv_rtsp_url,'
+            'tv_duration_seconds,tv_group) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (camera_id, request.form['name'], request.form['gemini_key'],
              request.form['telegram_token'], request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
              1 if 'send_video' in request.form else 0,
@@ -1118,10 +1514,15 @@ def add_config():
              request.form.get('bi_restart_url') or None,
              request.form.get('bi_restart_token') or None,
              1 if 'instant_notify' in request.form else 0,
-             request.form.get('dvla_api_key') or None)
+             request.form.get('dvla_api_key') or None,
+             tv_push_enabled,
+             tv_rtsp_url,
+             tv_duration_seconds,
+             tv_group)
         )
         conn.commit()
         conn.close()
+        _save_tv_targets(camera_id, request.form['name'], request.form.getlist('tv_target_ids'))
         flash('Configuration added!', 'success')
     except Exception as e:
         flash(f'Error: {e}', 'danger')
@@ -1132,11 +1533,30 @@ def add_config():
 def edit_config(id):
     try:
         conn = get_db_connection()
+        existing = conn.execute(
+            """
+            SELECT name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group
+            FROM configs
+            WHERE id=?
+            """,
+            (id,),
+        ).fetchone()
+        tv_section_present = any(key.startswith("tv_") for key in request.form)
+        if tv_section_present:
+            tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
+            tv_rtsp_url = request.form.get('tv_rtsp_url') or None
+            tv_duration_seconds = _parse_tv_duration_seconds(request.form.get('tv_duration_seconds'))
+            tv_group = request.form.get('tv_group') or None
+        else:
+            tv_push_enabled = existing['tv_push_enabled'] if existing else 0
+            tv_rtsp_url = existing['tv_rtsp_url'] if existing else None
+            tv_duration_seconds = existing['tv_duration_seconds'] if existing else None
+            tv_group = existing['tv_group'] if existing else None
         conn.execute(
             'UPDATE configs SET name=?,gemini_key=?,telegram_token=?,chat_id=?,prompt=?,bi_url=?,bi_user=?,'
             'bi_pass=?,send_video=?,verbose_logging=?,delete_after_send=?,message_thread_id=?,'
             'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=?,instant_notify=?,'
-            'dvla_api_key=? WHERE id=?',
+            'dvla_api_key=?,tv_push_enabled=?,tv_rtsp_url=?,tv_duration_seconds=?,tv_group=? WHERE id=?',
             (request.form['name'], request.form['gemini_key'], request.form['telegram_token'],
              request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -1150,10 +1570,15 @@ def edit_config(id):
              request.form.get('bi_restart_token') or None,
              1 if 'instant_notify' in request.form else 0,
              request.form.get('dvla_api_key') or None,
+             tv_push_enabled,
+             tv_rtsp_url,
+             tv_duration_seconds,
+             tv_group,
              id)
         )
         conn.commit()
         conn.close()
+        _save_tv_targets(id, request.form['name'], request.form.getlist('tv_target_ids'))
         flash('Configuration updated!', 'success')
     except Exception as e:
         flash(f'Error: {e}', 'danger')
@@ -1163,11 +1588,83 @@ def edit_config(id):
 @app.route('/delete/<id>', methods=['POST'])
 def delete_config(id):
     conn = get_db_connection()
+    row = conn.execute('SELECT name FROM configs WHERE id=?', (id,)).fetchone()
+    if row:
+        conn.execute(
+            """
+            DELETE FROM camera_tv_targets
+            WHERE (camera_id IS NOT NULL AND camera_id=?)
+               OR (camera_id IS NULL AND camera_name=?)
+            """,
+            (id, row['name']),
+        )
     conn.execute('DELETE FROM configs WHERE id=?', (id,))
     conn.commit()
     conn.close()
     flash('Configuration deleted.', 'warning')
     return redirect(url_for('index'))
+
+
+@app.route('/tv/pair/code', methods=['POST'])
+def pair_tv_by_code():
+    manual_code = request.form.get('manual_code', '').strip().upper()
+    if not manual_code:
+        return jsonify({"error": "manual_code is required"}), 400
+
+    ip_address = request.form.get('ip_address', '').strip()
+    port_raw = request.form.get('port', '').strip()
+    port = int(port_raw) if port_raw.isdigit() else 7979
+
+    try:
+        if ip_address:
+            from tv_delivery import pair_remote_tv_by_code
+            tv_id = pair_remote_tv_by_code(ip_address, manual_code, port=port)
+        else:
+            from tv_delivery import finalize_pairing_by_code
+            tv_id = finalize_pairing_by_code(manual_code)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        app.logger.exception("TV pairing failed")
+        return jsonify({"error": "tv pairing failed"}), 500
+
+    return jsonify({"status": "paired", "tv_id": tv_id}), 200
+
+
+@app.route('/tv/devices', methods=['GET'])
+def list_paired_tvs():
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT id, name, ip_address, port, rtsp_url, device_token_id,
+               last_seen_at, last_ip_seen, created_at
+        FROM paired_tvs
+        ORDER BY COALESCE(created_at, '') DESC, id DESC
+        """
+    ).fetchall()
+    conn.close()
+    return jsonify({"devices": [dict(row) for row in rows]}), 200
+
+
+@app.route('/tv/devices/<tv_id>/delete', methods=['POST'])
+def delete_paired_tv(tv_id):
+    from tv_delivery import delete_paired_tv as delete_paired_tv_helper
+
+    deleted = delete_paired_tv_helper(tv_id)
+    if not deleted:
+        return jsonify({"error": "tv not found"}), 404
+    return jsonify({"status": "deleted"}), 200
+
+
+@app.route('/tv/groups/<group_name>/priority', methods=['POST'])
+def save_tv_group_priority(group_name):
+    payload = request.get_json(silent=True) or {}
+    camera_ids = payload.get('camera_ids')
+    if not isinstance(camera_ids, list):
+        return jsonify({"error": "camera_ids must be a list"}), 400
+    from tv_delivery import save_group_priority
+    save_group_priority(group_name, camera_ids)
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route('/clear_logs', methods=['POST'])

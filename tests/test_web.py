@@ -1,9 +1,32 @@
 import io
+import importlib
 import sqlite3
 import uuid
 from unittest.mock import MagicMock, patch
 import wsgi
 from settings_store import get_global_settings
+
+
+class FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+    def setex(self, key, ex, value):
+        self.store[key] = value
+        return True
+
+    def delete(self, key):
+        self.store.pop(key, None)
+        return 1
 
 
 def _insert_config(config_id):
@@ -89,6 +112,9 @@ def test_dashboard_loads(client):
     assert b"Blue Iris AI Hub" in response.data
     assert b"logo-mark.svg" in response.data
     assert b"Auto-mute Policy" in response.data
+    assert b"Pair TV" in response.data
+    assert b"Push stream to TV overlay" in response.data
+    assert b"TV Group Priorities" in response.data
     assert b"Copy Trace" in response.data
     assert b"copyWebhookTrace(this)" in response.data
 
@@ -106,6 +132,134 @@ def test_api_check_update(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert "update_available" in data
+
+
+def test_init_db_adds_tv_columns_and_tables(tmp_path, monkeypatch):
+    original_state = {
+        "DATA_DIR": wsgi.DATA_DIR,
+        "DB_FILE": wsgi.DB_FILE,
+        "KNOWN_PLATES_FILE": wsgi.KNOWN_PLATES_FILE,
+        "TEMP_IMAGE_DIR": wsgi.TEMP_IMAGE_DIR,
+        "LOG_FILE": wsgi.LOG_FILE,
+    }
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    try:
+        importlib.reload(wsgi)
+
+        with sqlite3.connect(wsgi.DB_FILE) as conn:
+            config_columns = {row[1] for row in conn.execute("PRAGMA table_info(configs)")}
+            assert "tv_push_enabled" in config_columns
+            assert "tv_rtsp_url" in config_columns
+            assert "tv_duration_seconds" in config_columns
+            assert "tv_group" in config_columns
+
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            assert "paired_tvs" in tables
+            assert "camera_tv_targets" in tables
+            assert "camera_group_priorities" in tables
+    finally:
+        wsgi.DATA_DIR = original_state["DATA_DIR"]
+        wsgi.DB_FILE = original_state["DB_FILE"]
+        wsgi.KNOWN_PLATES_FILE = original_state["KNOWN_PLATES_FILE"]
+        wsgi.TEMP_IMAGE_DIR = original_state["TEMP_IMAGE_DIR"]
+        wsgi.LOG_FILE = original_state["LOG_FILE"]
+
+
+def test_add_config_persists_tv_settings(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_url": "rtsp://cam/live",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute(
+        "SELECT tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group FROM configs WHERE name=?",
+        ("Driveway",),
+    ).fetchone()
+    conn.close()
+
+    assert row["tv_push_enabled"] == 1
+    assert row["tv_rtsp_url"] == "rtsp://cam/live"
+    assert row["tv_duration_seconds"] == 20
+    assert row["tv_group"] == "driveway"
+
+
+def test_pair_tv_by_manual_code_with_ip_pairs_remote_tv(client, monkeypatch):
+    import tv_delivery
+
+    captured = {}
+
+    def fake_pair_remote_tv_by_code(ip_address, manual_code, port=7979):
+        captured["ip_address"] = ip_address
+        captured["manual_code"] = manual_code
+        captured["port"] = port
+        return "tv-remote-1"
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fake_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "paired", "tv_id": "tv-remote-1"}
+    assert captured == {
+        "ip_address": "192.168.10.6",
+        "manual_code": "ABC123",
+        "port": 7979,
+    }
+
+
+def test_pair_tv_by_manual_code(client, monkeypatch):
+    import tv_delivery
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(tv_delivery, "get_redis_client", lambda: fake_redis)
+    monkeypatch.setattr(wsgi, "get_redis_client", lambda: fake_redis)
+
+    session = tv_delivery.create_pairing_session({
+        "tv_name": "Lounge TV",
+        "ip_address": "192.168.1.88",
+        "port": 7979,
+        "device_id": "tv-device-web-1",
+    })
+
+    response = client.post("/tv/pair/code", data={"manual_code": session["manual_code"]})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "paired"
+    assert data["tv_id"]
+
+
+def test_pair_tv_by_manual_code_returns_generic_server_error(client, monkeypatch):
+    import tv_delivery
+
+    def fail_pair_remote_tv_by_code(_ip_address, _manual_code, port=7979):
+        raise RuntimeError(f"boom on port {port}")
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fail_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "tv pairing failed"}
 
 
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):

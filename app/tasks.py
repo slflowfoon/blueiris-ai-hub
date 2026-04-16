@@ -1183,6 +1183,21 @@ def process_alert(image_path, config):
             )
         still_caption = enriched_still
 
+        if config.get('tv_push_enabled') == 1 and config.get('tv_rtsp_url'):
+            import tv_delivery
+
+            tv_delivery.dispatch_tv_alert(
+                {
+                    "id": config.get("id"),
+                    "name": config.get("name"),
+                    "request_id": config.get("request_id"),
+                    "tv_rtsp_url": config.get("tv_rtsp_url"),
+                    "tv_duration_seconds": config.get("tv_duration_seconds"),
+                    "tv_group": config.get("tv_group"),
+                },
+                tag,
+            )
+
         # Video handling
         if config.get('send_video') == 1 and config.get('trigger_filename'):
             if config.get('bi_url') and config.get('bi_user') and config.get('bi_pass'):
