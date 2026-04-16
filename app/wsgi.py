@@ -1149,73 +1149,82 @@ HTML_TEMPLATE = r"""
                 <div class="modal-header"><h5 class="modal-title">Add Configuration</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
                     <div class="mb-3"><label class="form-label">Name</label><input type="text" name="name" class="form-control" placeholder="e.g. Driveway" required></div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Gemini API Key(s) <span class="text-muted small">(comma-separated for rotation)</span></label>
-                            <div class="input-group"><input type="password" name="gemini_key" id="add_gemini_key" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_gemini_key')">👁️</button></div>
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Telegram Bot Token</label>
-                            <div class="input-group"><input type="password" name="telegram_token" id="add_telegram_token" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_telegram_token')">👁️</button></div>
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Telegram Chat ID</label><input type="text" name="chat_id" class="form-control" required></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Message Thread ID <span class="text-muted small">(optional)</span></label><input type="text" name="message_thread_id" class="form-control" placeholder="Topic/thread ID"></div>
-                    </div>
-                    <div class="mb-3"><label class="form-label">AI Prompt</label><textarea name="prompt" class="form-control" rows="3" required>The CCTV has detected motion. Describe any motion in a single sentence (max 145 characters) — vehicles (colour, make, plate), people, or deliveries. Do not describe static objects.</textarea></div>
-                    <hr>
-                    <h6 class="text-primary">Blue Iris Video Settings</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" name="bi_url" class="form-control" placeholder="http://192.168.0.11:81"></div>
-                        <div class="col-md-6 mb-3">
-                            <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="add_send_video"><label class="form-check-label" for="add_send_video">Fetch &amp; send video clip</label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="add_delete_after_send" checked><label class="form-check-label" for="add_delete_after_send">Delete clip from BI after send</label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="add_instant_notify"><label class="form-check-label" for="add_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="add_verbose_logging"><label class="form-check-label" for="add_verbose_logging">Verbose logging</label></div>
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" name="bi_user" class="form-control"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" name="bi_pass" id="add_bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_pass')">👁️</button></div></div>
-                    </div>
-                    <hr>
-                    <h6 class="text-primary">TV Overlay Settings</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <div class="form-check mt-2">
-                                <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="add_tv_push_enabled">
-                                <label class="form-check-label" for="add_tv_push_enabled">Push stream to TV overlay</label>
+                    <ul class="nav nav-tabs mb-3" id="addConfigTabs" role="tablist">
+                        <li class="nav-item" role="presentation"><button class="nav-link active" id="add-telegram-tab" data-bs-toggle="tab" data-bs-target="#add-telegram-pane" type="button" role="tab">Telegram Alert</button></li>
+                        <li class="nav-item" role="presentation"><button class="nav-link" id="add-tv-tab" data-bs-toggle="tab" data-bs-target="#add-tv-pane" type="button" role="tab">TV Overlay</button></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="add-telegram-pane" role="tabpanel" aria-labelledby="add-telegram-tab">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Gemini API Key(s) <span class="text-muted small">(comma-separated for rotation)</span></label>
+                                    <div class="input-group"><input type="password" name="gemini_key" id="add_gemini_key" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_gemini_key')">👁️</button></div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Telegram Bot Token</label>
+                                    <div class="input-group"><input type="password" name="telegram_token" id="add_telegram_token" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_telegram_token')">👁️</button></div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Telegram Chat ID</label><input type="text" name="chat_id" class="form-control" required></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Message Thread ID <span class="text-muted small">(optional)</span></label><input type="text" name="message_thread_id" class="form-control" placeholder="Topic/thread ID"></div>
+                            </div>
+                            <div class="mb-3"><label class="form-label">AI Prompt</label><textarea name="prompt" class="form-control" rows="3" required>The CCTV has detected motion. Describe any motion in a single sentence (max 145 characters) — vehicles (colour, make, plate), people, or deliveries. Do not describe static objects.</textarea></div>
+                            <hr>
+                            <h6 class="text-primary">Blue Iris Video Settings</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" name="bi_url" class="form-control" placeholder="http://192.168.0.11:81"></div>
+                                <div class="col-md-6 mb-3">
+                                    <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="add_send_video"><label class="form-check-label" for="add_send_video">Fetch &amp; send video clip</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="add_delete_after_send" checked><label class="form-check-label" for="add_delete_after_send">Delete clip from BI after send</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="add_instant_notify"><label class="form-check-label" for="add_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="add_verbose_logging"><label class="form-check-label" for="add_verbose_logging">Verbose logging</label></div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" name="bi_user" class="form-control"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" name="bi_pass" id="add_bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_pass')">👁️</button></div></div>
+                            </div>
+                            <hr>
+                            <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')">👁️</button></div></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" name="dvla_api_key" id="add_dvla_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
+                            </div>
+                            <hr>
+                            <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" name="bi_restart_token" id="add_bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_restart_token')">👁️</button></div></div>
                             </div>
                         </div>
-                        <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
-                        <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
-                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
-                        <div class="col-12 mb-3">
-                            <label class="form-label">Target TVs</label>
-                            <select name="tv_target_ids" class="form-select" multiple size="4">
-                                {% for tv in paired_tvs %}
-                                <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
-                                {% endfor %}
-                            </select>
+                        <div class="tab-pane fade" id="add-tv-pane" role="tabpanel" aria-labelledby="add-tv-tab">
+                            <h6 class="text-primary">TV Overlay Settings</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="add_tv_push_enabled">
+                                        <label class="form-check-label" for="add_tv_push_enabled">Push stream to TV overlay</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
+                                <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
+                                <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
+                                <div class="col-12 mb-3">
+                                    <label class="form-label">Target TVs</label>
+                                    <select name="tv_target_ids" class="form-select" multiple size="4">
+                                        {% for tv in paired_tvs %}
+                                        <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <hr>
-                    <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" name="grok_api_key" id="add_grok_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" name="groq_api_key" id="add_groq_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_groq_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" name="dvla_api_key" id="add_dvla_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
-                    </div>
-                    <hr>
-                    <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" name="bi_restart_token" id="add_bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_restart_token')">👁️</button></div></div>
-                    </div>
-                    </div>
+                </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Save</button></div>
             </form>
         </div>
@@ -1230,73 +1239,82 @@ HTML_TEMPLATE = r"""
                 <div class="modal-header"><h5 class="modal-title">Edit Configuration</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
                     <div class="mb-3"><label class="form-label">Name</label><input type="text" id="edit_name" name="name" class="form-control" required></div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Gemini API Key(s) <span class="text-muted small">(comma-separated)</span></label>
-                            <div class="input-group"><input type="password" id="edit_gemini_key" name="gemini_key" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_gemini_key')">👁️</button></div>
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Telegram Bot Token</label>
-                            <div class="input-group"><input type="password" id="edit_telegram_token" name="telegram_token" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_telegram_token')">👁️</button></div>
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Telegram Chat ID</label><input type="text" id="edit_chat_id" name="chat_id" class="form-control" required></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Message Thread ID <span class="text-muted small">(optional)</span></label><input type="text" id="edit_message_thread_id" name="message_thread_id" class="form-control"></div>
-                    </div>
-                    <div class="mb-3"><label class="form-label">AI Prompt</label><textarea id="edit_prompt" name="prompt" class="form-control" rows="3" required></textarea></div>
-                    <hr>
-                    <h6 class="text-primary">Blue Iris Video Settings</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" id="edit_bi_url" name="bi_url" class="form-control"></div>
-                        <div class="col-md-6 mb-3">
-                            <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="edit_send_video"><label class="form-check-label" for="edit_send_video">Fetch &amp; send video clip</label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="edit_delete_after_send"><label class="form-check-label" for="edit_delete_after_send">Delete clip from BI after send</label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="edit_instant_notify"><label class="form-check-label" for="edit_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="edit_verbose_logging"><label class="form-check-label" for="edit_verbose_logging">Verbose logging</label></div>
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" id="edit_bi_user" name="bi_user" class="form-control"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" id="edit_bi_pass" name="bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_pass')">👁️</button></div></div>
-                    </div>
-                    <hr>
-                    <h6 class="text-primary">TV Overlay Settings</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <div class="form-check mt-2">
-                                <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="edit_tv_push_enabled">
-                                <label class="form-check-label" for="edit_tv_push_enabled">Push stream to TV overlay</label>
+                    <ul class="nav nav-tabs mb-3" id="editConfigTabs" role="tablist">
+                        <li class="nav-item" role="presentation"><button class="nav-link active" id="edit-telegram-tab" data-bs-toggle="tab" data-bs-target="#edit-telegram-pane" type="button" role="tab">Telegram Alert</button></li>
+                        <li class="nav-item" role="presentation"><button class="nav-link" id="edit-tv-tab" data-bs-toggle="tab" data-bs-target="#edit-tv-pane" type="button" role="tab">TV Overlay</button></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="edit-telegram-pane" role="tabpanel" aria-labelledby="edit-telegram-tab">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Gemini API Key(s) <span class="text-muted small">(comma-separated)</span></label>
+                                    <div class="input-group"><input type="password" id="edit_gemini_key" name="gemini_key" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_gemini_key')">👁️</button></div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Telegram Bot Token</label>
+                                    <div class="input-group"><input type="password" id="edit_telegram_token" name="telegram_token" class="form-control" required><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_telegram_token')">👁️</button></div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Telegram Chat ID</label><input type="text" id="edit_chat_id" name="chat_id" class="form-control" required></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Message Thread ID <span class="text-muted small">(optional)</span></label><input type="text" id="edit_message_thread_id" name="message_thread_id" class="form-control"></div>
+                            </div>
+                            <div class="mb-3"><label class="form-label">AI Prompt</label><textarea id="edit_prompt" name="prompt" class="form-control" rows="3" required></textarea></div>
+                            <hr>
+                            <h6 class="text-primary">Blue Iris Video Settings</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" id="edit_bi_url" name="bi_url" class="form-control"></div>
+                                <div class="col-md-6 mb-3">
+                                    <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="edit_send_video"><label class="form-check-label" for="edit_send_video">Fetch &amp; send video clip</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="edit_delete_after_send"><label class="form-check-label" for="edit_delete_after_send">Delete clip from BI after send</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="edit_instant_notify"><label class="form-check-label" for="edit_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="edit_verbose_logging"><label class="form-check-label" for="edit_verbose_logging">Verbose logging</label></div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" id="edit_bi_user" name="bi_user" class="form-control"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" id="edit_bi_pass" name="bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_pass')">👁️</button></div></div>
+                            </div>
+                            <hr>
+                            <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" id="edit_grok_key" name="grok_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_grok_key')">👁️</button></div></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')">👁️</button></div></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" id="edit_dvla_key" name="dvla_api_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
+                            </div>
+                            <hr>
+                            <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" id="edit_bi_restart_url" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" id="edit_bi_restart_token" name="bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_restart_token')">&#128065;&#65039;</button></div></div>
                             </div>
                         </div>
-                        <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
-                        <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
-                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
-                        <div class="col-12 mb-3">
-                            <label class="form-label">Target TVs</label>
-                            <select id="edit_tv_target_ids" name="tv_target_ids" class="form-select" multiple size="4">
-                                {% for tv in paired_tvs %}
-                                <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
-                                {% endfor %}
-                            </select>
+                        <div class="tab-pane fade" id="edit-tv-pane" role="tabpanel" aria-labelledby="edit-tv-tab">
+                            <h6 class="text-primary">TV Overlay Settings</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="edit_tv_push_enabled">
+                                        <label class="form-check-label" for="edit_tv_push_enabled">Push stream to TV overlay</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
+                                <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
+                                <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
+                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
+                                <div class="col-12 mb-3">
+                                    <label class="form-label">Target TVs</label>
+                                    <select id="edit_tv_target_ids" name="tv_target_ids" class="form-select" multiple size="4">
+                                        {% for tv in paired_tvs %}
+                                        <option value="{{ tv.id }}">{{ tv.name }}{% if tv.ip_address %} ({{ tv.ip_address }}){% endif %}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <hr>
-                    <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Grok API Key</label><div class="input-group"><input type="password" id="edit_grok_key" name="grok_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_grok_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Groq API Key</label><div class="input-group"><input type="password" id="edit_groq_key" name="groq_api_key" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_groq_key')">👁️</button></div></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">DVLA API Key</label><div class="input-group"><input type="password" id="edit_dvla_key" name="dvla_api_key" class="form-control" placeholder="Optional — enables UK plate enrichment"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_dvla_key')">👁️</button></div><div class="form-text">Register free at <a href="https://developer-portal.driver-vehicle-licensing.api.gov.uk/" target="_blank" rel="noopener">DVLA developer portal</a> to get a key.</div></div>
-                    </div>
-                    <hr>
-                    <h6 class="text-primary">BI Encoder Recovery <span class="text-muted fw-normal small">(optional)</span></h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Recovery URL</label><input type="text" id="edit_bi_restart_url" name="bi_restart_url" class="form-control" placeholder="http://192.168.1.250:9090/restart-bi"></div>
-                        <div class="col-md-6 mb-3"><label class="form-label">Recovery Token</label><div class="input-group"><input type="password" id="edit_bi_restart_token" name="bi_restart_token" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_restart_token')">&#128065;&#65039;</button></div></div>
-                    </div>
-                    </div>
+                </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button type="submit" class="btn btn-primary">Update</button></div>
             </form>
         </div>
