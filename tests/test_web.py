@@ -114,7 +114,8 @@ def test_dashboard_loads(client):
     assert b"Auto-mute Policy" in response.data
     assert b"Pair TV" in response.data
     assert b"Push stream to TV overlay" in response.data
-    assert b"TV Group Priorities" in response.data
+    assert b"Alert Controls" in response.data
+    assert b"TV Settings" in response.data
     assert b"Copy Trace" in response.data
     assert b"copyWebhookTrace(this)" in response.data
 

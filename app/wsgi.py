@@ -786,8 +786,8 @@ HTML_TEMPLATE = r"""
 
     <ul class="nav nav-tabs mb-4" id="mainTab">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#configs-pane">Configurations</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#global-pane">Global Settings</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tv-groups-pane">TV Group Priorities</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#global-pane">Alert Controls</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tv-groups-pane">TV Settings</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#plate-audit-pane">Plate Audit{% if plate_audit %} <span class="badge bg-secondary ms-1">{{ plate_audit|length }}</span>{% endif %}</button></li>
     </ul>
@@ -862,13 +862,13 @@ HTML_TEMPLATE = r"""
             </div>
         </div>
 
-        <!-- Global Settings tab -->
+        <!-- Alert Controls tab -->
         <div class="tab-pane fade" id="global-pane">
             <div class="section-header">
                 <div class="section-title">
                     <div>
-                        <h2 class="h4 mb-1">Global Controls</h2>
-                        <p class="section-subtitle">Shared operator state, auto-mute policy, and known-plate metadata.</p>
+                        <h2 class="h4 mb-1">Alert Controls</h2>
+                        <p class="section-subtitle">Operator-facing Telegram state, auto-mute policy, and known-plate metadata.</p>
                     </div>
                 </div>
             </div>
@@ -941,50 +941,6 @@ HTML_TEMPLATE = r"""
 
                 <div class="card h-100">
                     <div class="card-body">
-                        <h5 class="card-title">Pair TV</h5>
-                        <p class="text-muted small">Enter the TV listener address and pairing code shown by the Android TV app.</p>
-                        <div class="mb-3">
-                            <label class="form-label">TV App Downloader URL</label>
-                            <div class="webhook-box mb-2" id="tv-apk-download-url">{{ tv_apk_download_url }}</div>
-                            <button class="btn btn-sm btn-outline-primary" type="button" onclick="copyToClipboard('tv-apk-download-url', this)">📋 Copy</button>
-                            <div class="form-text mt-1">Open <code>Downloader</code> on the TV and enter this URL to install the current debug APK hosted by the hub.</div>
-                        </div>
-                        <hr>
-                        <form onsubmit="return submitTvPairing(event)">
-                            <div class="row">
-                                <div class="col-md-5 mb-3"><label class="form-label">TV IP</label><input type="text" name="ip_address" class="form-control" placeholder="192.168.1.50"></div>
-                                <div class="col-md-3 mb-3"><label class="form-label">Port</label><input type="number" min="1" max="65535" name="port" class="form-control" value="7979"></div>
-                                <div class="col-md-4 mb-3"><label class="form-label">Pairing code</label><input type="text" name="manual_code" class="form-control" placeholder="ABC123" required></div>
-                            </div>
-                            <div class="d-flex align-items-center gap-3">
-                                <button class="btn btn-primary" type="submit">Pair TV</button>
-                                <span class="text-muted small" id="pairTvStatus"></span>
-                            </div>
-                        </form>
-                        <hr>
-                        <h6>Paired TVs</h6>
-                        {% if paired_tvs %}
-                            <ul class="list-group list-group-flush">
-                            {% for tv in paired_tvs %}
-                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <div><strong>{{ tv.name }}</strong></div>
-                                        <small class="text-muted">{{ tv.ip_address or 'unknown ip' }}:{{ tv.port or 7979 }}</small>
-                                    </div>
-                                    <form action="{{ url_for('delete_paired_tv', tv_id=tv.id) }}" method="POST">
-                                        <button class="btn btn-sm btn-outline-danger">Delete</button>
-                                    </form>
-                                </li>
-                            {% endfor %}
-                            </ul>
-                        {% else %}
-                            <p class="text-muted small mb-0">No TVs paired yet.</p>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <div class="card h-100">
-                    <div class="card-body">
                         <h5 class="card-title">Known Plates</h5>
                         <p class="text-muted small">Plates the AI will recognise and label in captions.</p>
                         {% if known_plates %}
@@ -1022,14 +978,67 @@ HTML_TEMPLATE = r"""
             <div class="section-header">
                 <div class="section-title">
                     <div>
-                        <h2 class="h4 mb-1">TV Group Priorities</h2>
-                        <p class="section-subtitle">Grouped cameras can share a TV target. Drag-and-drop ordering is still pending; this release includes the persistence API and placeholder panel.</p>
+                        <h2 class="h4 mb-1">TV Settings</h2>
+                        <p class="section-subtitle">TV app install, pairing, and grouped camera priority controls for overlay delivery.</p>
                     </div>
                 </div>
             </div>
-            <div class="card">
-                <div class="card-body">
-                    <div id="tv-group-priority-root" class="text-muted">Priority management UI is available in this feature branch, but the drag-and-drop editor is not finalized yet.</div>
+            <div class="global-grid">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">Pair TV</h5>
+                        <p class="text-muted small">Enter the TV listener address and pairing code shown by the Android TV app.</p>
+                        <div class="mb-3">
+                            <label class="form-label">TV App Downloader URL</label>
+                            <div class="webhook-box mb-2" id="tv-apk-download-url">{{ tv_apk_download_url }}</div>
+                            <button class="btn btn-sm btn-outline-primary" type="button" onclick="copyToClipboard('tv-apk-download-url', this)">📋 Copy</button>
+                            <div class="form-text mt-1">Open <code>Downloader</code> on the TV and enter this URL to install the current debug APK hosted by the hub.</div>
+                        </div>
+                        <hr>
+                        <form onsubmit="return submitTvPairing(event)">
+                            <div class="row">
+                                <div class="col-md-5 mb-3"><label class="form-label">TV IP</label><input type="text" name="ip_address" class="form-control" placeholder="192.168.1.50"></div>
+                                <div class="col-md-3 mb-3"><label class="form-label">Port</label><input type="number" min="1" max="65535" name="port" class="form-control" value="7979"></div>
+                                <div class="col-md-4 mb-3"><label class="form-label">Pairing code</label><input type="text" name="manual_code" class="form-control" placeholder="ABC123" required></div>
+                            </div>
+                            <div class="d-flex align-items-center gap-3">
+                                <button class="btn btn-primary" type="submit">Pair TV</button>
+                                <span class="text-muted small" id="pairTvStatus"></span>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">Paired TVs</h5>
+                        <p class="text-muted small">Registered TVs available as camera targets for overlay delivery.</p>
+                        {% if paired_tvs %}
+                            <ul class="list-group list-group-flush">
+                            {% for tv in paired_tvs %}
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <div><strong>{{ tv.name }}</strong></div>
+                                        <small class="text-muted">{{ tv.ip_address or 'unknown ip' }}:{{ tv.port or 7979 }}</small>
+                                    </div>
+                                    <form action="{{ url_for('delete_paired_tv', tv_id=tv.id) }}" method="POST">
+                                        <button class="btn btn-sm btn-outline-danger">Delete</button>
+                                    </form>
+                                </li>
+                            {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p class="text-muted small mb-0">No TVs paired yet.</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">TV Group Priorities</h5>
+                        <p class="text-muted small">Grouped cameras can share a TV target. Drag-and-drop ordering is still pending; this release includes the persistence API and placeholder panel.</p>
+                        <div id="tv-group-priority-root" class="text-muted">Priority management UI is available in this feature branch, but the drag-and-drop editor is not finalized yet.</div>
+                    </div>
                 </div>
             </div>
         </div>
