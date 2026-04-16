@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
@@ -82,6 +83,31 @@ def _existing_paired_tv_id(device_id):
 
 def _safe_rtsp_url(device_info):
     return device_info.get("rtsp_url") or ""
+
+
+def _normalize_private_ip_address(ip_address):
+    candidate = (ip_address or "").strip()
+    if not candidate:
+        raise ValueError("ip_address is required")
+    try:
+        parsed = ipaddress.ip_address(candidate)
+    except ValueError as exc:
+        raise ValueError("ip_address must be a valid IP address") from exc
+    if not (parsed.is_private or parsed.is_loopback):
+        raise ValueError("ip_address must be a private or loopback IP address")
+    return str(parsed)
+
+
+def _normalize_tv_pairing_target(ip_address, port):
+    normalized_ip = _normalize_private_ip_address(ip_address)
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("port must be a valid integer") from exc
+    if normalized_port < 1 or normalized_port > 65535:
+        raise ValueError("port must be between 1 and 65535")
+    url_host = normalized_ip if ":" not in normalized_ip else f"[{normalized_ip}]"
+    return normalized_ip, normalized_port, f"http://{url_host}:{normalized_port}/pair/complete"
 
 
 def _resolve_camera_id_from_name(camera_name):
@@ -233,9 +259,10 @@ def _upsert_paired_tv(device_info, shared_secret):
 
 
 def pair_remote_tv_by_code(ip_address, manual_code, port=7979):
+    normalized_ip, normalized_port, target_url = _normalize_tv_pairing_target(ip_address, port)
     shared_secret = secrets.token_urlsafe(32)
     response = requests.post(
-        f"http://{ip_address}:{port}/pair/complete",
+        target_url,
         json={
             "manual_code": (manual_code or "").strip().upper(),
             "shared_secret": shared_secret,
@@ -247,9 +274,9 @@ def pair_remote_tv_by_code(ip_address, manual_code, port=7979):
     if not isinstance(device_info, dict):
         raise ValueError("invalid pairing response from tv")
     if not device_info.get("ip_address"):
-        device_info["ip_address"] = ip_address
+        device_info["ip_address"] = normalized_ip
     if not device_info.get("port"):
-        device_info["port"] = port
+        device_info["port"] = normalized_port
     return _upsert_paired_tv(device_info, shared_secret)
 
 
@@ -393,8 +420,12 @@ def resolve_group_winner(group_name, triggered_configs):
 def get_paired_tv(tv_id):
     with get_db_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, ip_address, port, rtsp_url, shared_secret, device_token_id, last_seen_at, last_ip_seen, created_at "
-            "FROM paired_tvs WHERE id=?",
+            """
+            SELECT id, name, ip_address, port, rtsp_url, shared_secret,
+                   device_token_id, last_seen_at, last_ip_seen, created_at
+            FROM paired_tvs
+            WHERE id=?
+            """,
             (tv_id,),
         ).fetchone()
     return dict(row) if row else None

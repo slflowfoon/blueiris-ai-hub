@@ -770,3 +770,37 @@ def test_pair_remote_tv_by_code_persists_paired_tv(tmp_path, monkeypatch):
         assert row["device_token_id"] == "sony-lounge-1"
     finally:
         wsgi.DB_FILE = original_db_file
+
+
+def test_pair_remote_tv_by_code_rejects_public_ip(tmp_path):
+    db_path = tmp_path / "remote_pairing_public_ip.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+
+        try:
+            tv_delivery.pair_remote_tv_by_code("8.8.8.8", "ABC123")
+            assert False, "expected ValueError for public IP"
+        except ValueError as exc:
+            assert str(exc) == "ip_address must be a private or loopback IP address"
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
+def test_pair_remote_tv_by_code_rejects_hostname(tmp_path):
+    db_path = tmp_path / "remote_pairing_hostname.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+
+        try:
+            tv_delivery.pair_remote_tv_by_code("example.local", "ABC123")
+            assert False, "expected ValueError for hostname"
+        except ValueError as exc:
+            assert str(exc) == "ip_address must be a valid IP address"
+    finally:
+        wsgi.DB_FILE = original_db_file
