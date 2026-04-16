@@ -262,6 +262,23 @@ def test_pair_tv_by_manual_code_returns_generic_server_error(client, monkeypatch
     assert response.get_json() == {"error": "tv pairing failed"}
 
 
+def test_pair_tv_by_manual_code_sanitizes_unexpected_value_error(client, monkeypatch):
+    import tv_delivery
+
+    def fail_pair_remote_tv_by_code(_ip_address, _manual_code, port=7979):
+        raise ValueError(f"unexpected failure on port {port}")
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fail_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "invalid tv pairing request"}
+
+
 def test_dashboard_shows_tv_apk_downloader_url(client):
     response = client.get("/")
 

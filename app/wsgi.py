@@ -495,6 +495,26 @@ def _save_tv_targets(camera_id, camera_name, tv_ids):
             )
 
 
+_SAFE_TV_PAIRING_ERRORS = {
+    "manual_code is required",
+    "ip_address is required",
+    "ip_address must be a valid IP address",
+    "ip_address must be a private or loopback IP address",
+    "port must be a valid integer",
+    "port must be between 1 and 65535",
+    "pairing code not found",
+    "pairing session expired",
+    "invalid pairing response from tv",
+}
+
+
+def _safe_tv_pairing_error_message(exc):
+    message = str(exc)
+    if message in _SAFE_TV_PAIRING_ERRORS:
+        return message
+    return "invalid tv pairing request"
+
+
 def get_log_entries():
     if not os.path.isdir(LOG_DIR):
         return []
@@ -1650,7 +1670,7 @@ def pair_tv_by_code():
             from tv_delivery import finalize_pairing_by_code
             tv_id = finalize_pairing_by_code(manual_code)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"error": _safe_tv_pairing_error_message(exc)}), 400
     except Exception:
         app.logger.exception("TV pairing failed")
         return jsonify({"error": "tv pairing failed"}), 500
