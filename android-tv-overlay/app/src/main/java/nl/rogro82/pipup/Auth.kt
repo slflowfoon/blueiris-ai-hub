@@ -22,7 +22,7 @@ data class SignedNotifyPayload(
         return PopupProps(
             duration = duration ?: PopupProps.DEFAULT_DURATION,
             title = camera_name,
-            message = tag,
+            message = null,
             media = PopupProps.Media.Video(rtspUrl)
         )
     }
