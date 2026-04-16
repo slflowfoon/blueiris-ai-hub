@@ -200,6 +200,35 @@ def test_add_config_persists_tv_settings(client, monkeypatch):
     assert row["tv_group"] == "driveway"
 
 
+def test_edit_config_rtsp_password_with_at_sign(client, monkeypatch):
+    """Passwords containing @ must be stored with literal @ (not %40) so media3 on Android TV authenticates correctly."""
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.90.2:554/h264Preview_01_main",
+        "tv_rtsp_username": "monkeyrush",
+        "tv_rtsp_password": ".RoKff@wgYDfvFV4@JdE",
+        "tv_duration_seconds": "20",
+        "tv_group": "",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute("SELECT tv_rtsp_url FROM configs WHERE name=?", ("Driveway",)).fetchone()
+    conn.close()
+
+    # @ in password must not be percent-encoded — media3 uses Uri.getUserInfo() which
+    # returns the raw (still-encoded) string, so %40 would be sent literally to the camera
+    assert row["tv_rtsp_url"] == "rtsp://monkeyrush:.RoKff@wgYDfvFV4@JdE@192.168.90.2:554/h264Preview_01_main"
+
+
 def test_edit_config_preserves_existing_rtsp_password_when_blank(client, monkeypatch):
     monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)

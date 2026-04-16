@@ -544,7 +544,7 @@ def _compose_rtsp_url(base_url, username="", password="", existing_url=None):
     if username:
         auth = quote(username, safe="")
         if password:
-            auth = f"{auth}:{quote(password, safe='')}"
+            auth = f"{auth}:{quote(password, safe='@')}"
         netloc = f"{auth}@{netloc}"
 
     return urlunsplit((parts.scheme, netloc, parts.path or "", parts.query or "", parts.fragment or ""))
