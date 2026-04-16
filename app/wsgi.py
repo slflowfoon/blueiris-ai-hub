@@ -40,19 +40,18 @@ PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 TEMP_IMAGE_DIR = os.getenv("TEMP_IMAGE_DIR", "/tmp_images")
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
 LOG_DIR = os.path.dirname(LOG_FILE) or "/app/logs"
-TV_OVERLAY_APK_FILE = os.getenv(
-    "TV_OVERLAY_APK_FILE",
-    os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "android-tv-overlay",
-        "app",
-        "build",
-        "outputs",
-        "apk",
-        "debug",
-        "app-debug.apk",
-    ),
+TV_OVERLAY_APK_DATA_FILE = os.path.join(DATA_DIR, "android-tv-overlay-debug.apk")
+TV_OVERLAY_APK_BUILD_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "android-tv-overlay",
+    "app",
+    "build",
+    "outputs",
+    "apk",
+    "debug",
+    "app-debug.apk",
 )
+TV_OVERLAY_APK_FILE = os.getenv("TV_OVERLAY_APK_FILE")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLATE_IMAGES_DIR, exist_ok=True)
@@ -548,6 +547,20 @@ def _compose_rtsp_url(base_url, username="", password="", existing_url=None):
         netloc = f"{auth}@{netloc}"
 
     return urlunsplit((parts.scheme, netloc, parts.path or "", parts.query or "", parts.fragment or ""))
+
+
+def _resolve_tv_overlay_apk_file():
+    candidates = []
+    if TV_OVERLAY_APK_FILE:
+        candidates.append(TV_OVERLAY_APK_FILE)
+    candidates.extend([
+        TV_OVERLAY_APK_DATA_FILE,
+        TV_OVERLAY_APK_BUILD_FILE,
+    ])
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return candidates[0] if candidates else TV_OVERLAY_APK_DATA_FILE
 
 
 def get_log_entries():
@@ -1874,10 +1887,11 @@ def plate_audit_image(filename):
 
 @app.route('/downloads/android-tv-overlay-debug.apk')
 def download_tv_overlay_apk():
-    if not os.path.isfile(TV_OVERLAY_APK_FILE):
+    apk_file = _resolve_tv_overlay_apk_file()
+    if not os.path.isfile(apk_file):
         return jsonify({"error": "android tv overlay apk not found"}), 404
     return send_file(
-        TV_OVERLAY_APK_FILE,
+        apk_file,
         mimetype='application/vnd.android.package-archive',
         as_attachment=True,
         download_name='android-tv-overlay-debug.apk',

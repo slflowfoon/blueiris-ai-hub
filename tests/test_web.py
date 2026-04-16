@@ -343,6 +343,8 @@ def test_download_tv_overlay_apk_serves_file(client, tmp_path, monkeypatch):
     apk_bytes = b"fake-apk-bytes"
     apk_path.write_bytes(apk_bytes)
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(apk_path))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
@@ -352,13 +354,28 @@ def test_download_tv_overlay_apk_serves_file(client, tmp_path, monkeypatch):
 
 
 def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monkeypatch):
-    missing_path = tmp_path / "missing.apk"
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(missing_path))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
     assert response.status_code == 404
     assert response.get_json() == {"error": "android tv overlay apk not found"}
+
+
+def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkeypatch):
+    apk_path = tmp_path / "android-tv-overlay-debug.apk"
+    apk_bytes = b"data-dir-apk"
+    apk_path.write_bytes(apk_bytes)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(apk_path))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+
+    response = client.get("/downloads/android-tv-overlay-debug.apk")
+
+    assert response.status_code == 200
+    assert response.data == apk_bytes
 
 
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
