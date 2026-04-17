@@ -418,7 +418,7 @@ init_db()
 
 # --- HELPERS ---
 
-_LOG_TAG_RE = re.compile(r'(\[[^\]]+\]\[[^\]]+\])')
+_LOG_TAG_RE = re.compile(r'(\[[^\]]+\]\[[^\]]+\]|\[test-tv:[^\]]+\])')
 _WEBHOOK_TRIGGER_LIMIT = 100
 
 
@@ -448,7 +448,9 @@ def _get_recent_trigger_tags(system_log_path):
     with open(system_log_path) as f:
         for line in f:
             parsed = _parse_log_line("system.log", line)
-            if parsed and parsed["is_trigger"] and parsed["alert_tag"]:
+            if not parsed or not parsed["alert_tag"]:
+                continue
+            if parsed["is_trigger"] or parsed["alert_tag"].startswith("[test-tv:"):
                 recent.append(parsed["alert_tag"])
 
     return list(recent)
@@ -1865,7 +1867,20 @@ def test_tv_alert(id):
     result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
     if result.get("error") or not result.get("delivered"):
         failed_targets = ",".join(result.get("failed") or [])
-        logging.warning("%s test dispatch failed failed_targets=%s", tag, failed_targets or "none")
+        if result.get("error"):
+            reason = "dispatch_error"
+        elif result.get("skipped"):
+            reason = "skipped_no_stream_url"
+        elif failed_targets:
+            reason = "delivery_failed"
+        else:
+            reason = "no_target_tvs"
+        logging.warning(
+            "%s test dispatch failed reason=%s failed_targets=%s",
+            tag,
+            reason,
+            failed_targets or "none",
+        )
         return jsonify({"error": "dispatch failed"}), 502
     return jsonify({"status": "sent"}), 200
 

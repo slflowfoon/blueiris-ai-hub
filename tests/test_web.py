@@ -485,6 +485,39 @@ def test_test_tv_route_logs_failed_targets(client, monkeypatch, caplog):
     assert response.status_code == 502
     assert response.get_json() == {"error": "dispatch failed"}
     assert "failed_targets=tv-1,tv-2" in caplog.text
+    assert "reason=delivery_failed" in caplog.text
+
+
+def test_test_tv_route_logs_no_target_reason(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": [], "failed": []},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "reason=no_target_tvs" in caplog.text
 
 
 def test_dashboard_shows_tv_apk_downloader_url(client):
@@ -607,6 +640,29 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[0]["is_trigger"] is True
     assert entries[1]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[1]["is_trigger"] is False
+
+
+def test_get_log_entries_includes_test_tv_tags(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_file = log_dir / "system.log"
+    log_file.write_text(
+        "\n".join(
+            [
+                "2026-04-17 21:21:05,476 - WARNING - [test-tv:Driveway] test dispatch failed reason=no_target_tvs failed_targets=none",
+                "2026-04-17 21:21:06,000 - INFO - [test-tv:Driveway] Follow-up diagnostic line",
+            ]
+        )
+    )
+
+    monkeypatch.setattr(wsgi, "LOG_DIR", str(log_dir))
+
+    entries = wsgi.get_log_entries()
+
+    assert len(entries) == 2
+    assert entries[0]["alert_tag"] == "[test-tv:Driveway]"
+    assert entries[0]["is_trigger"] is False
+    assert entries[1]["alert_tag"] == "[test-tv:Driveway]"
 
 
 def test_save_global_settings_route_updates_auto_mute_defaults(client):
