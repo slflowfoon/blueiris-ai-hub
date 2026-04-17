@@ -192,6 +192,7 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
     private class Mjpeg(context: Context, popup: PopupProps, val media: PopupProps.Media.Mjpeg): PopupView(context, popup) {
         private val mainHandler = Handler(Looper.getMainLooper())
         private var imageView: ImageView? = null
+        private var imageLayoutParams: FrameLayout.LayoutParams? = null
         @Volatile private var running = false
         private var thread: Thread? = null
 
@@ -199,13 +200,16 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
 
         override fun create() {
             super.create()
+            visibility = View.INVISIBLE
             val frame = findViewById<FrameLayout>(R.id.popup_frame)
             imageView = ImageView(context).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
+                adjustViewBounds = true
             }
-            frame.addView(imageView, FrameLayout.LayoutParams(media.width, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            imageLayoutParams = FrameLayout.LayoutParams(media.width, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
-            })
+            }
+            frame.addView(imageView, imageLayoutParams)
             running = true
             thread = Thread {
                 try {
@@ -241,7 +245,13 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
                                     val jpegBytes = bytes.copyOfRange(soiIdx, bytes.size)
                                     val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                                     if (bmp != null) {
-                                        mainHandler.post { imageView?.setImageBitmap(bmp) }
+                                        mainHandler.post {
+                                            val targetHeight = scaledHeight(media.width, bmp.width, bmp.height)
+                                            imageLayoutParams?.height = targetHeight
+                                            imageView?.layoutParams = imageLayoutParams
+                                            imageView?.setImageBitmap(bmp)
+                                            this@Mjpeg.visibility = View.VISIBLE
+                                        }
                                     }
                                 }
                                 buf.reset()
@@ -305,6 +315,13 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
 
     companion object {
         const val LOG_TAG = "PopupView"
+
+        internal fun scaledHeight(targetWidth: Int, sourceWidth: Int, sourceHeight: Int): Int {
+            if (targetWidth <= 0 || sourceWidth <= 0 || sourceHeight <= 0) {
+                return ViewGroup.LayoutParams.WRAP_CONTENT
+            }
+            return ((targetWidth.toFloat() / sourceWidth) * sourceHeight).toInt().coerceAtLeast(1)
+        }
 
         fun build(context: Context, popup: PopupProps): PopupView
         {
