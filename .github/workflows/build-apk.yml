@@ -1,6 +1,10 @@
 name: Build and attach APK
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-apk.yml'
+      - 'android-tv-overlay/**'
   release:
     types: [published]
 
@@ -31,10 +35,23 @@ jobs:
           key: gradle-${{ hashFiles('android-tv-overlay/**/*.gradle*', 'android-tv-overlay/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-
 
+      - name: Build debug APK for PR validation
+        if: github.event_name == 'pull_request'
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload debug APK artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-tv-overlay-debug-apk
+          path: android-tv-overlay/app/build/outputs/apk/debug/app-debug.apk
+
       - name: Decode keystore
+        if: github.event_name == 'release'
         run: echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
 
       - name: Build signed release APK
+        if: github.event_name == 'release'
         run: ./gradlew assembleRelease --no-daemon
         env:
           SIGNING_KEYSTORE_PATH: ${{ github.workspace }}/android-tv-overlay/keystore.jks
@@ -43,9 +60,11 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
       - name: Rename APK
+        if: github.event_name == 'release'
         run: cp app/build/outputs/apk/release/app-release.apk pipup-${{ github.ref_name }}.apk
 
       - name: Upload APK to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: android-tv-overlay/pipup-${{ github.ref_name }}.apk

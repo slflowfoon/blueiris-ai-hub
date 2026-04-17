@@ -211,6 +211,46 @@ def test_create_pairing_session_returns_token_and_manual_code(monkeypatch):
     assert code_token == result["pairing_token"]
 
 
+def test_dispatch_tv_alert_uses_base_url_for_mjpg_when_global_setting_blank(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(tv_delivery, "BASE_URL", "http://hub.local:5000")
+    monkeypatch.setattr(
+        tv_delivery,
+        "_load_target_tvs",
+        lambda _camera_id, _camera_name: [{"id": "tv-1"}],
+    )
+    monkeypatch.setattr(
+        tv_delivery,
+        "send_to_many_tvs",
+        lambda _tvs, payload: (
+            captured.update({"payload": payload}) or {"delivered": ["tv-1"], "failed": []}
+        ),
+    )
+    monkeypatch.setattr(
+        "settings_store.get_global_settings",
+        lambda: {"hub_base_url": ""},
+    )
+
+    result = tv_delivery.dispatch_tv_alert(
+        {
+            "id": "cam-1",
+            "name": "Driveway",
+            "tv_stream_type": "mjpg",
+            "bi_url": "http://blueiris.local",
+            "tv_duration_seconds": 12,
+            "tv_group": "driveway",
+            "tv_mute_audio": 1,
+            "request_id": "req-1",
+        },
+        "[Driveway][req-1]",
+    )
+
+    assert result["delivered"] == ["tv-1"]
+    assert captured["payload"]["mjpg_url"] == "http://hub.local:5000/bi-mjpg/cam-1"
+    assert captured["payload"]["rtsp_url"] is None
+
+
 def test_create_pairing_session_retries_manual_code_collision(monkeypatch):
     fake_redis = FakeRedis()
     monkeypatch.setattr(tv_delivery, "get_redis_client", lambda: fake_redis)

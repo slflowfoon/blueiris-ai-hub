@@ -3,6 +3,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import secrets
 import sqlite3
 import time
@@ -14,6 +15,7 @@ from wsgi import get_db_connection, get_redis_client
 
 
 PAIRING_TTL_SECONDS = 300
+BASE_URL = (os.getenv("BASE_URL") or "").rstrip("/")
 
 
 def _pairing_key(pairing_token):
@@ -459,7 +461,7 @@ def dispatch_tv_alert(config, tag):
     stream_type = config.get("tv_stream_type") or "rtsp"
 
     if stream_type == "mjpg":
-        hub_base_url = (get_global_settings().get("hub_base_url") or "").rstrip("/")
+        hub_base_url = (get_global_settings().get("hub_base_url") or "").rstrip("/") or BASE_URL
         mjpg_url = f"{hub_base_url}/bi-mjpg/{config['id']}" if hub_base_url else None
         rtsp_url = None
     else:

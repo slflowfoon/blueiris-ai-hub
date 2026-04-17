@@ -391,8 +391,8 @@ def test_test_tv_route_sanitizes_dispatch_result(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json() == {
-        "delivered": ["tv-1"],
-        "failed": ["tv-2"],
+        "delivered": [],
+        "failed": [],
         "error": "dispatch failed",
     }
 

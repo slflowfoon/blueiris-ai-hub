@@ -1898,8 +1898,8 @@ def test_tv_alert(id):
     if result.get("skipped"):
         response_payload["skipped"] = True
     if "error" in result:
-        logging.warning(f"{tag} test dispatch error: {result['error']}")
-        response_payload["error"] = "dispatch failed"
+        logging.warning("%s test dispatch failed", tag)
+        return jsonify({"delivered": [], "failed": [], "error": "dispatch failed"})
     return jsonify(response_payload)
 
 
