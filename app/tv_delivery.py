@@ -532,6 +532,12 @@ def send_to_tv_device(tv, payload, attempts=2):
             response = requests.post(url, json=body, timeout=5)
             last_status_code = response.status_code
             if 200 <= response.status_code < 300:
+                logging.info(
+                    "[tv_delivery:%s] delivered attempt=%s status_code=%s",
+                    tv_id,
+                    attempt,
+                    response.status_code,
+                )
                 return {
                     "tv_id": tv_id,
                     "ok": True,
@@ -539,8 +545,21 @@ def send_to_tv_device(tv, payload, attempts=2):
                     "status_code": response.status_code,
                 }
             last_error = response.text or f"HTTP {response.status_code}"
+            logging.warning(
+                "[tv_delivery:%s] notify failed attempt=%s status_code=%s error=%s",
+                tv_id,
+                attempt,
+                response.status_code,
+                last_error,
+            )
         except requests.RequestException as exc:
             last_error = str(exc)
+            logging.warning(
+                "[tv_delivery:%s] notify request error attempt=%s error=%s",
+                tv_id,
+                attempt,
+                last_error,
+            )
 
         if attempt < max_attempts:
             continue

@@ -422,6 +422,71 @@ def test_test_tv_route_returns_sent_status_on_success(client, monkeypatch):
     assert response.get_json() == {"status": "sent"}
 
 
+def test_test_tv_route_uses_configured_tv_duration(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream',
+                tv_duration_seconds=27
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    captured = {}
+
+    def fake_dispatch_tv_alert(dispatch_config, _tag):
+        captured["duration"] = dispatch_config["tv_duration_seconds"]
+        return {"delivered": ["tv-1"], "failed": []}
+
+    monkeypatch.setattr(tv_delivery, "dispatch_tv_alert", fake_dispatch_tv_alert)
+
+    response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "sent"}
+    assert captured["duration"] == 27
+
+
+def test_test_tv_route_logs_failed_targets(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": [], "failed": ["tv-1", "tv-2"]},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "failed_targets=tv-1,tv-2" in caplog.text
+
+
 def test_dashboard_shows_tv_apk_downloader_url(client):
     response = client.get("/")
 

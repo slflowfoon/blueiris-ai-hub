@@ -1858,13 +1858,14 @@ def test_tv_alert(id):
 
     dispatch_config = {
         **config,
-        "tv_duration_seconds": 10,
+        "tv_duration_seconds": config.get("tv_duration_seconds"),
         "request_id": "test",
     }
     tag = f"[test-tv:{config['name']}]"
     result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
     if result.get("error") or not result.get("delivered"):
-        logging.warning("%s test dispatch failed", tag)
+        failed_targets = ",".join(result.get("failed") or [])
+        logging.warning("%s test dispatch failed failed_targets=%s", tag, failed_targets or "none")
         return jsonify({"error": "dispatch failed"}), 502
     return jsonify({"status": "sent"}), 200
 
