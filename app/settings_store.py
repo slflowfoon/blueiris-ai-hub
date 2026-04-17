@@ -8,6 +8,7 @@ DEFAULT_SETTINGS = {
     "auto_mute_threshold": "5",
     "auto_mute_window_minutes": "10",
     "auto_mute_duration_minutes": "30",
+    "hub_base_url": "",
 }
 
 
