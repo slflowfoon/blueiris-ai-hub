@@ -649,7 +649,10 @@ def test_get_log_entries_includes_test_tv_tags(tmp_path, monkeypatch):
     log_file.write_text(
         "\n".join(
             [
-                "2026-04-17 21:21:05,476 - WARNING - [test-tv:Driveway] test dispatch failed reason=no_target_tvs failed_targets=none",
+                (
+                    "2026-04-17 21:21:05,476 - WARNING - [test-tv:Driveway] "
+                    "test dispatch failed reason=no_target_tvs failed_targets=none"
+                ),
                 "2026-04-17 21:21:06,000 - INFO - [test-tv:Driveway] Follow-up diagnostic line",
             ]
         )
