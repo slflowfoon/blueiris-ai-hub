@@ -359,6 +359,44 @@ def test_pair_tv_by_manual_code_sanitizes_unexpected_value_error(client, monkeyp
     assert response.get_json() == {"error": "invalid tv pairing request"}
 
 
+def test_test_tv_route_sanitizes_dispatch_result(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {
+            "delivered": ["tv-1"],
+            "failed": ["tv-2"],
+            "error": "boom with internal details",
+            "payload": {"shared_secret": "s3cr3t"},
+        },
+    )
+
+    response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "delivered": ["tv-1"],
+        "failed": ["tv-2"],
+        "error": "dispatch failed",
+    }
+
+
 def test_dashboard_shows_tv_apk_downloader_url(client):
     response = client.get("/")
 

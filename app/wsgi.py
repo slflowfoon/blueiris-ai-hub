@@ -1891,10 +1891,16 @@ def test_tv_alert(id):
     }
     tag = f"[test-tv:{config['name']}]"
     result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
+    response_payload = {
+        "delivered": list(result.get("delivered") or []),
+        "failed": list(result.get("failed") or []),
+    }
+    if result.get("skipped"):
+        response_payload["skipped"] = True
     if "error" in result:
         logging.warning(f"{tag} test dispatch error: {result['error']}")
-        result = {**result, "error": "dispatch failed"}
-    return jsonify(result)
+        response_payload["error"] = "dispatch failed"
+    return jsonify(response_payload)
 
 
 @app.route('/tv/pair/code', methods=['POST'])
