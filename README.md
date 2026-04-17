@@ -156,6 +156,43 @@ docker compose up -d
 
 Do not run `docker compose down -v` unless you intentionally want to delete persisted Redis state, including staged BI export jobs.
 
+## Android TV Overlay
+
+The hub can push camera popups to an Android TV running the bundled `PiPup` receiver app. A camera can target one or more paired TVs, and the same webhook flow that drives Telegram alerts can also trigger TV overlays.
+
+### Setup
+
+1. Open the hub dashboard and copy the `TV App Downloader URL`.
+2. On the TV, open the `Downloader` app and install `PiPup`.
+3. Launch `PiPup` on the TV and note the pairing code it shows.
+4. In the hub dashboard, pair the TV using its IP address and pairing code.
+5. Edit the camera config and enable `Push stream to TV overlay`.
+
+### Stream Types
+
+- `RTSP (manual URL)`: enter the camera RTSP details in the camera config.
+- `Blue Iris MJPG (via proxy)`: the hub builds a proxy stream URL for the TV from `BASE_URL`.
+
+If you use `Blue Iris MJPG (via proxy)`, set `BASE_URL` in the `web` container environment to the exact hub address the TV can reach:
+
+```yaml
+environment:
+  - REDIS_URL=redis://redis:6379/0
+  - BASE_URL=http://192.168.0.51:5000
+```
+
+For MJPG cameras, the TV overlay uses the hub proxy endpoint:
+
+```text
+http://<hub-host>:5000/bi-mjpg/<config_id>
+```
+
+Example:
+
+```text
+http://192.168.0.51:5000/bi-mjpg/6822c0f9-5deb-431f-b853-50e40a155327
+```
+
 ## Redis Persistence
 
 The staged BI export pipeline stores active export/download/delivery coordination in Redis. This is not just a transient cache anymore.
