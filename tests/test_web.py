@@ -553,14 +553,14 @@ def test_dashboard_shows_tv_apk_downloader_url(client):
     response = client.get("/")
 
     assert response.status_code == 200
-    assert b"/downloads/android-tv-overlay-debug.apk" in response.data
+    assert b"/downloads/android-tv-overlay.apk" in response.data
     assert b"TV App Downloader URL" in response.data
 
 
 def test_download_tv_overlay_apk_redirects_to_override_url(client, monkeypatch):
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "https://example.com/pr-133/app-debug.apk")
 
-    response = client.get("/downloads/android-tv-overlay-debug.apk")
+    response = client.get("/downloads/android-tv-overlay.apk")
 
     assert response.status_code == 302
     assert response.headers["Location"] == "https://example.com/pr-133/app-debug.apk"
@@ -585,7 +585,7 @@ def test_download_tv_overlay_apk_redirects_to_latest_github_release(client, monk
         )(),
     )
 
-    response = client.get("/downloads/android-tv-overlay-debug.apk")
+    response = client.get("/downloads/android-tv-overlay.apk")
 
     assert response.status_code == 302
     assert response.headers["Location"] == "https://github.com/example/pipup-v1.2.3.apk"
@@ -595,7 +595,7 @@ def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monk
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "")
     monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
-    response = client.get("/downloads/android-tv-overlay-debug.apk")
+    response = client.get("/downloads/android-tv-overlay.apk")
     expected = {
         "error": (
             "android tv overlay apk not found — no PR override URL configured and no GitHub release APK found"

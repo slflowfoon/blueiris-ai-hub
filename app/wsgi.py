@@ -2024,7 +2024,7 @@ def plate_audit_image(filename):
     return send_file(os.path.join(PLATE_IMAGES_DIR, safe), mimetype='image/jpeg')
 
 
-@app.route('/downloads/android-tv-overlay-debug.apk')
+@app.route('/downloads/android-tv-overlay.apk')
 def download_tv_overlay_apk():
     if TV_OVERLAY_APK_URL:
         return redirect(TV_OVERLAY_APK_URL, code=302)
