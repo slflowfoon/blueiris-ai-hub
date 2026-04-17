@@ -675,6 +675,7 @@ def test_save_global_settings_route_updates_auto_mute_defaults(client):
             "auto_mute_threshold": "7",
             "auto_mute_window_minutes": "15",
             "auto_mute_duration_minutes": "45",
+            "hub_base_url": "http://192.168.0.51:5000/",
         },
         follow_redirects=False,
     )
@@ -685,6 +686,7 @@ def test_save_global_settings_route_updates_auto_mute_defaults(client):
     assert settings["auto_mute_threshold"] == "7"
     assert settings["auto_mute_window_minutes"] == "15"
     assert settings["auto_mute_duration_minutes"] == "45"
+    assert settings["hub_base_url"] == "http://192.168.0.51:5000"
 
 
 def test_get_log_entries_keeps_last_100_trigger_groups(tmp_path, monkeypatch):

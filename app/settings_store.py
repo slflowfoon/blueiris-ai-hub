@@ -100,6 +100,7 @@ def save_global_settings(values):
             minimum=1,
             maximum=1440,
         ),
+        "hub_base_url": (values.get("hub_base_url") or "").strip().rstrip("/"),
     }
 
     with _connect() as conn:
