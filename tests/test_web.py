@@ -430,68 +430,53 @@ def test_dashboard_shows_tv_apk_downloader_url(client):
     assert b"TV App Downloader URL" in response.data
 
 
-def test_download_tv_overlay_apk_serves_file(client, tmp_path, monkeypatch):
-    apk_path = tmp_path / "android-tv-overlay-debug.apk"
-    apk_bytes = b"fake-apk-bytes"
-    apk_path.write_bytes(apk_bytes)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(apk_path))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
-    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
+def test_download_tv_overlay_apk_redirects_to_override_url(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "https://example.com/pr-133/app-debug.apk")
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
-    assert response.status_code == 200
-    assert response.data == apk_bytes
-    assert response.headers["Content-Type"] == "application/vnd.android.package-archive"
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://example.com/pr-133/app-debug.apk"
+
+
+def test_download_tv_overlay_apk_redirects_to_latest_github_release(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "")
+    monkeypatch.setattr(
+        wsgi.requests,
+        "get",
+        lambda *a, **kw: type(
+            "Resp",
+            (),
+            {
+                "ok": True,
+                "json": lambda self: {
+                    "assets": [
+                        {"name": "pipup-v1.2.3.apk", "browser_download_url": "https://github.com/example/pipup-v1.2.3.apk"}
+                    ]
+                },
+            },
+        )(),
+    )
+
+    response = client.get("/downloads/android-tv-overlay-debug.apk")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://github.com/example/pipup-v1.2.3.apk"
 
 
 def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "")
     monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
     expected = {
         "error": (
-            "android tv overlay apk not found — no GitHub release found and no local APK present"
+            "android tv overlay apk not found — no PR override URL configured and no GitHub release APK found"
         )
     }
 
     assert response.status_code == 404
     assert response.get_json() == expected
-
-
-def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkeypatch):
-    apk_path = tmp_path / "android-tv-overlay-debug.apk"
-    apk_bytes = b"data-dir-apk"
-    apk_path.write_bytes(apk_bytes)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(apk_path))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
-    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
-
-    response = client.get("/downloads/android-tv-overlay-debug.apk")
-
-    assert response.status_code == 200
-    assert response.data == apk_bytes
-
-
-def test_download_tv_overlay_apk_uses_bundled_fallback(client, tmp_path, monkeypatch):
-    apk_path = tmp_path / "android-tv-overlay-debug.apk"
-    apk_bytes = b"bundled-apk"
-    apk_path.write_bytes(apk_bytes)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUNDLED_FILE", str(apk_path))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
-    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
-    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
-
-    response = client.get("/downloads/android-tv-overlay-debug.apk")
-
-    assert response.status_code == 200
-    assert response.data == apk_bytes
 
 
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
