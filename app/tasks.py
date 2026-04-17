@@ -1138,7 +1138,10 @@ def process_alert(image_path, config):
                 tag,
             )
             if tv_result.get("skipped"):
-                logger.info(f"{tag} TV dispatch skipped (no RTSP URL)")
+                if _tv_stream_type == "mjpg":
+                    logger.info(f"{tag} TV dispatch skipped (no MJPG proxy URL)")
+                else:
+                    logger.info(f"{tag} TV dispatch skipped (no RTSP URL)")
             elif tv_result.get("error"):
                 logger.warning(f"{tag} TV dispatch error: {tv_result['error']}")
             else:

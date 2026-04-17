@@ -28,7 +28,7 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
-      #- BASE_URL=https://example.com
+      - BASE_URL=${BASE_URL:-}
       #- TV_OVERLAY_APK_URL=https://example.com/path/to/pr-or-test-apk.apk
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys, urllib.request, urllib.error; url='http://localhost:5000/health';\ntry: urllib.request.urlopen(url, timeout=5).read(); sys.exit(0)\nexcept urllib.error.HTTPError: sys.exit(0)\nexcept Exception: sys.exit(1)"]
@@ -49,6 +49,7 @@ services:
       - redis
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - BASE_URL=${BASE_URL:-}
     healthcheck:
       test: ["CMD", "python3", "-c", "from service_health import heartbeat_status; import sys; sys.exit(0 if heartbeat_status('worker')['status'] == 'ok' else 1)"]
       interval: 30s

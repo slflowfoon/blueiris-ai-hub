@@ -181,6 +181,8 @@ environment:
   - BASE_URL=http://192.168.0.51:5000
 ```
 
+The provided `docker-compose.yml` passes the same `BASE_URL` value into both `web` and `worker`, so you only need to set it once for Compose.
+
 For MJPG cameras, the TV overlay uses the hub proxy endpoint:
 
 ```text
