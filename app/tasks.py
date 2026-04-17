@@ -11,11 +11,10 @@ import subprocess
 import redis
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
-from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
+from bi_export_shared import EXPORT_REQUEST_QUEUE, bi_lookup_alert, recommended_action_for
 from db_utils import connect as sqlite_connect
 from settings_store import get_auto_mute_settings
 
@@ -908,23 +907,6 @@ def _parse_offset_ms(filename):
     return int(m.group(1)) if m else None
 
 
-def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
-    """
-    Reuse the shared BI session and look up clip details for trigger_filename
-    immediately, while the alert is guaranteed fresh in the alertlist.
-    """
-    json_url = urljoin(bi_url.rstrip("/") + "/", "json")
-    sess, sid = get_session(bi_url, bi_user, bi_pass, tag)
-    if not sid:
-        raise RuntimeError("BI login failed")
-    al = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
-    al.raise_for_status()
-    for alert in al.json().get("data", []):
-        if alert.get("file") == trigger_filename:
-            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
-    return None
-
-
 def build_bi_export_payload(config, output_path, tag, delivery_context=None):
     """Build the staged BI export request payload after resolving clip metadata."""
     request_id = str(uuid.uuid4())
@@ -935,7 +917,7 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
     bvr_clip = config.get("bvr_clip", "")
     if trigger_filename and config.get("bi_url") and config.get("bi_user"):
         try:
-            result = _bi_lookup_alert(
+            result = bi_lookup_alert(
                 config["bi_url"], config["bi_user"], config["bi_pass"],
                 trigger_filename, tag,
             )
