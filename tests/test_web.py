@@ -428,9 +428,14 @@ def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monk
     monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
+    expected = {
+        "error": (
+            "android tv overlay apk not found — no GitHub release found and no local APK present"
+        )
+    }
 
     assert response.status_code == 404
-    assert response.get_json() == {"error": "android tv overlay apk not found — no GitHub release found and no local APK present"}
+    assert response.get_json() == expected
 
 
 def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkeypatch):
