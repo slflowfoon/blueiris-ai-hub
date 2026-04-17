@@ -21,11 +21,10 @@ from settings_store import (
 )
 from tasks import process_alert
 from werkzeug.utils import secure_filename
+from bi_mjpg import bi_mjpg_bp
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "super_secret_key_change_this")
-
-from bi_mjpg import bi_mjpg_bp
 app.register_blueprint(bi_mjpg_bp)
 
 BASE_URL = os.getenv('BASE_URL')
@@ -1866,7 +1865,6 @@ def delete_config(id):
 @app.route('/test-tv/<id>', methods=['POST'])
 def test_tv_alert(id):
     import tv_delivery
-    from settings_store import get_global_settings
     conn = get_db_connection()
     row = conn.execute(
         "SELECT id, name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, tv_mute_audio, tv_stream_type, bi_url, bi_user, bi_pass FROM configs WHERE id=?",
