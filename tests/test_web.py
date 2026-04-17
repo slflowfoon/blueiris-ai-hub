@@ -374,6 +374,7 @@ def test_download_tv_overlay_apk_serves_file(client, tmp_path, monkeypatch):
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", str(apk_path))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
@@ -386,11 +387,12 @@ def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monk
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
     assert response.status_code == 404
-    assert response.get_json() == {"error": "android tv overlay apk not found"}
+    assert response.get_json() == {"error": "android tv overlay apk not found — no GitHub release found and no local APK present"}
 
 
 def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkeypatch):
@@ -400,6 +402,7 @@ def test_download_tv_overlay_apk_uses_data_dir_fallback(client, tmp_path, monkey
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_FILE", None)
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(apk_path))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 
@@ -415,6 +418,7 @@ def test_download_tv_overlay_apk_uses_bundled_fallback(client, tmp_path, monkeyp
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUNDLED_FILE", str(apk_path))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_DATA_FILE", str(tmp_path / "missing-data.apk"))
     monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_BUILD_FILE", str(tmp_path / "missing-build.apk"))
+    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
 
     response = client.get("/downloads/android-tv-overlay-debug.apk")
 

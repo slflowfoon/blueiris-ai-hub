@@ -1891,6 +1891,9 @@ def test_tv_alert(id):
     }
     tag = f"[test-tv:{config['name']}]"
     result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
+    if "error" in result:
+        logging.warning(f"{tag} test dispatch error: {result['error']}")
+        result = {**result, "error": "dispatch failed"}
     return jsonify(result)
 
 
@@ -2040,8 +2043,7 @@ def download_tv_overlay_apk():
     # Prefer the signed release APK from GitHub releases so the TV's in-app
     # update button (which also pulls from GitHub) uses the same signing cert.
     try:
-        import requests as _req
-        r = _req.get(
+        r = requests.get(
             f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
             headers={"Accept": "application/vnd.github+json"},
             timeout=5,

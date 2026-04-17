@@ -249,6 +249,11 @@ def test_process_alert_dispatches_tv_alert_when_enabled(tmp_path, monkeypatch):
         "tv_rtsp_url": "rtsp://camera/live",
         "tv_duration_seconds": 25,
         "tv_group": "driveway",
+        "tv_mute_audio": None,
+        "tv_stream_type": "rtsp",
+        "bi_url": None,
+        "bi_user": None,
+        "bi_pass": None,
     }
 
 
