@@ -389,12 +389,37 @@ def test_test_tv_route_sanitizes_dispatch_result(client, monkeypatch):
 
     response = client.post(f"/test-tv/{config_id}")
 
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+
+
+def test_test_tv_route_returns_sent_status_on_success(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": ["tv-1"], "failed": []},
+    )
+
+    response = client.post(f"/test-tv/{config_id}")
+
     assert response.status_code == 200
-    assert response.get_json() == {
-        "delivered": [],
-        "failed": [],
-        "error": "dispatch failed",
-    }
+    assert response.get_json() == {"status": "sent"}
 
 
 def test_dashboard_shows_tv_apk_downloader_url(client):

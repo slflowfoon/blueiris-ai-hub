@@ -1547,7 +1547,7 @@ async function testTvAlert(configId, btn){
     try{
         const r=await fetch('/test-tv/'+configId, {method:'POST'});
         const d=await r.json();
-        if(r.ok && d.delivered && d.delivered.length>0){
+        if(r.ok && d.status==='sent'){
             btn.textContent='✓ Sent';
             btn.classList.replace('btn-outline-info','btn-info');
         } else {
@@ -1891,16 +1891,10 @@ def test_tv_alert(id):
     }
     tag = f"[test-tv:{config['name']}]"
     result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
-    response_payload = {
-        "delivered": list(result.get("delivered") or []),
-        "failed": list(result.get("failed") or []),
-    }
-    if result.get("skipped"):
-        response_payload["skipped"] = True
-    if "error" in result:
+    if result.get("error") or not result.get("delivered"):
         logging.warning("%s test dispatch failed", tag)
-        return jsonify({"delivered": [], "failed": [], "error": "dispatch failed"})
-    return jsonify(response_payload)
+        return jsonify({"error": "dispatch failed"}), 502
+    return jsonify({"status": "sent"}), 200
 
 
 @app.route('/tv/pair/code', methods=['POST'])
