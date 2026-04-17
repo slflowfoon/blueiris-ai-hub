@@ -1916,8 +1916,10 @@ def delete_paired_tv(tv_id):
 
     deleted = delete_paired_tv_helper(tv_id)
     if not deleted:
-        return jsonify({"error": "tv not found"}), 404
-    return jsonify({"status": "deleted"}), 200
+        flash('TV not found.', 'warning')
+        return redirect(url_for('index') + '#tv-groups-pane')
+    flash('TV deleted.', 'warning')
+    return redirect(url_for('index') + '#tv-groups-pane')
 
 
 @app.route('/tv/groups/<group_name>/priority', methods=['POST'])

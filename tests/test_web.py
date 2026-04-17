@@ -479,6 +479,39 @@ def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monk
     assert response.get_json() == expected
 
 
+def test_delete_paired_tv_redirects_back_to_tv_settings(client, tmp_path, monkeypatch):
+    import tv_delivery
+
+    db_path = tmp_path / "paired_tv_delete.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(tv_delivery, "get_redis_client", lambda: fake_redis)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO paired_tvs (id, name, ip_address, port, shared_secret)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("tv-1", "Living Room", "192.168.1.88", 7979, "secret"),
+            )
+
+        response = client.post("/tv/devices/tv-1/delete", follow_redirects=False)
+
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/#tv-groups-pane")
+
+        with sqlite3.connect(db_path) as conn:
+            remaining = conn.execute("SELECT COUNT(*) FROM paired_tvs").fetchone()[0]
+        assert remaining == 0
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
