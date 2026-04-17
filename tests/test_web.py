@@ -1,9 +1,32 @@
 import io
+import importlib
 import sqlite3
 import uuid
 from unittest.mock import MagicMock, patch
 import wsgi
 from settings_store import get_global_settings
+
+
+class FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+    def setex(self, key, ex, value):
+        self.store[key] = value
+        return True
+
+    def delete(self, key):
+        self.store.pop(key, None)
+        return 1
 
 
 def _insert_config(config_id):
@@ -89,6 +112,10 @@ def test_dashboard_loads(client):
     assert b"Blue Iris AI Hub" in response.data
     assert b"logo-mark.svg" in response.data
     assert b"Auto-mute Policy" in response.data
+    assert b"Pair TV" in response.data
+    assert b"Push stream to TV overlay" in response.data
+    assert b"Alert Controls" in response.data
+    assert b"TV Settings" in response.data
     assert b"Copy Trace" in response.data
     assert b"copyWebhookTrace(this)" in response.data
 
@@ -106,6 +133,510 @@ def test_api_check_update(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert "update_available" in data
+
+
+def test_init_db_adds_tv_columns_and_tables(tmp_path, monkeypatch):
+    original_state = {
+        "DATA_DIR": wsgi.DATA_DIR,
+        "DB_FILE": wsgi.DB_FILE,
+        "KNOWN_PLATES_FILE": wsgi.KNOWN_PLATES_FILE,
+        "TEMP_IMAGE_DIR": wsgi.TEMP_IMAGE_DIR,
+        "LOG_FILE": wsgi.LOG_FILE,
+    }
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    try:
+        importlib.reload(wsgi)
+
+        with sqlite3.connect(wsgi.DB_FILE) as conn:
+            config_columns = {row[1] for row in conn.execute("PRAGMA table_info(configs)")}
+            assert "tv_push_enabled" in config_columns
+            assert "tv_rtsp_url" in config_columns
+            assert "tv_duration_seconds" in config_columns
+            assert "tv_group" in config_columns
+
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            assert "paired_tvs" in tables
+            assert "camera_tv_targets" in tables
+            assert "camera_group_priorities" in tables
+    finally:
+        wsgi.DATA_DIR = original_state["DATA_DIR"]
+        wsgi.DB_FILE = original_state["DB_FILE"]
+        wsgi.KNOWN_PLATES_FILE = original_state["KNOWN_PLATES_FILE"]
+        wsgi.TEMP_IMAGE_DIR = original_state["TEMP_IMAGE_DIR"]
+        wsgi.LOG_FILE = original_state["LOG_FILE"]
+
+
+def test_add_config_persists_tv_settings(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream1",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "secret",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute(
+        "SELECT tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group FROM configs WHERE name=?",
+        ("Driveway",),
+    ).fetchone()
+    conn.close()
+
+    assert row["tv_push_enabled"] == 1
+    assert row["tv_rtsp_url"] == "rtsp://camuser:secret@192.168.1.50:554/stream1"
+    assert row["tv_duration_seconds"] == 20
+    assert row["tv_group"] == "driveway"
+
+
+def test_edit_config_rtsp_password_with_at_sign(client, monkeypatch):
+    """Passwords containing @ must be stored with literal @ (not %40) so media3 authenticates correctly."""
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.90.2:554/h264Preview_01_main",
+        "tv_rtsp_username": "monkeyrush",
+        "tv_rtsp_password": ".RoKff@wgYDfvFV4@JdE",
+        "tv_duration_seconds": "20",
+        "tv_group": "",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute("SELECT tv_rtsp_url FROM configs WHERE name=?", ("Driveway",)).fetchone()
+    conn.close()
+
+    # @ in password must not be percent-encoded — media3 uses Uri.getUserInfo() which
+    # returns the raw (still-encoded) string, so %40 would be sent literally to the camera
+    assert row["tv_rtsp_url"] == "rtsp://monkeyrush:.RoKff@wgYDfvFV4@JdE@192.168.90.2:554/h264Preview_01_main"
+
+
+def test_edit_config_preserves_existing_rtsp_password_when_blank(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "get_mute_status", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(wsgi, "get_caption_mode", lambda *_args, **_kwargs: None)
+
+    response = client.post("/add", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream1",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "secret",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    row = conn.execute("SELECT id FROM configs WHERE name=?", ("Driveway",)).fetchone()
+    conn.close()
+
+    response = client.post(f"/edit/{row['id']}", data={
+        "name": "Driveway",
+        "gemini_key": "g",
+        "telegram_token": "t",
+        "chat_id": "1",
+        "prompt": "Describe motion.",
+        "tv_push_enabled": "on",
+        "tv_rtsp_base_url": "rtsp://192.168.1.50:554/stream2",
+        "tv_rtsp_username": "camuser",
+        "tv_rtsp_password": "",
+        "tv_duration_seconds": "20",
+        "tv_group": "driveway",
+    }, follow_redirects=True)
+    assert response.status_code == 200
+
+    conn = wsgi.get_db_connection()
+    updated = conn.execute(
+        "SELECT tv_rtsp_url FROM configs WHERE id=?",
+        (row["id"],),
+    ).fetchone()
+    conn.close()
+
+    assert updated["tv_rtsp_url"] == "rtsp://camuser:secret@192.168.1.50:554/stream2"
+
+
+def test_pair_tv_by_manual_code_with_ip_pairs_remote_tv(client, monkeypatch):
+    import tv_delivery
+
+    captured = {}
+
+    def fake_pair_remote_tv_by_code(ip_address, manual_code, port=7979):
+        captured["ip_address"] = ip_address
+        captured["manual_code"] = manual_code
+        captured["port"] = port
+        return "tv-remote-1"
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fake_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "paired", "tv_id": "tv-remote-1"}
+    assert captured == {
+        "ip_address": "192.168.10.6",
+        "manual_code": "ABC123",
+        "port": 7979,
+    }
+
+
+def test_pair_tv_by_manual_code(client, monkeypatch):
+    import tv_delivery
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(tv_delivery, "get_redis_client", lambda: fake_redis)
+    monkeypatch.setattr(wsgi, "get_redis_client", lambda: fake_redis)
+
+    session = tv_delivery.create_pairing_session({
+        "tv_name": "Lounge TV",
+        "ip_address": "192.168.1.88",
+        "port": 7979,
+        "device_id": "tv-device-web-1",
+    })
+
+    response = client.post("/tv/pair/code", data={"manual_code": session["manual_code"]})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "paired"
+    assert data["tv_id"]
+
+
+def test_pair_tv_by_manual_code_returns_generic_server_error(client, monkeypatch):
+    import tv_delivery
+
+    def fail_pair_remote_tv_by_code(_ip_address, _manual_code, port=7979):
+        raise RuntimeError(f"boom on port {port}")
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fail_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "tv pairing failed"}
+
+
+def test_pair_tv_by_manual_code_sanitizes_unexpected_value_error(client, monkeypatch):
+    import tv_delivery
+
+    def fail_pair_remote_tv_by_code(_ip_address, _manual_code, port=7979):
+        raise ValueError(f"unexpected failure on port {port}")
+
+    monkeypatch.setattr(tv_delivery, "pair_remote_tv_by_code", fail_pair_remote_tv_by_code)
+
+    response = client.post(
+        "/tv/pair/code",
+        data={"manual_code": "ABC123", "ip_address": "192.168.10.6", "port": "7979"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "invalid tv pairing request"}
+
+
+def test_test_tv_route_sanitizes_dispatch_result(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {
+            "delivered": ["tv-1"],
+            "failed": ["tv-2"],
+            "error": "boom with internal details",
+            "payload": {"shared_secret": "s3cr3t"},
+        },
+    )
+
+    response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+
+
+def test_test_tv_route_returns_sent_status_on_success(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": ["tv-1"], "failed": []},
+    )
+
+    response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "sent"}
+
+
+def test_test_tv_route_uses_configured_tv_duration(client, monkeypatch):
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream',
+                tv_duration_seconds=27
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    captured = {}
+
+    def fake_dispatch_tv_alert(dispatch_config, _tag):
+        captured["duration"] = dispatch_config["tv_duration_seconds"]
+        return {"delivered": ["tv-1"], "failed": []}
+
+    monkeypatch.setattr(tv_delivery, "dispatch_tv_alert", fake_dispatch_tv_alert)
+
+    response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "sent"}
+    assert captured["duration"] == 27
+
+
+def test_test_tv_route_logs_failed_targets(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": [], "failed": ["tv-1", "tv-2"]},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "failed_targets=tv-1,tv-2" in caplog.text
+    assert "reason=delivery_failed" in caplog.text
+
+
+def test_test_tv_route_logs_no_target_reason(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_rtsp_url='rtsp://camera/stream'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"delivered": [], "failed": []},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "reason=no_target_tvs" in caplog.text
+
+
+def test_test_tv_route_logs_missing_base_url_reason_for_mjpg(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_stream_type='mjpg',
+                bi_url='http://blueiris.local'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(tv_delivery, "BASE_URL", "")
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "reason=missing_base_url" in caplog.text
+
+
+def test_dashboard_shows_tv_apk_downloader_url(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"/downloads/android-tv-overlay.apk" in response.data
+    assert b"TV App Downloader URL" in response.data
+
+
+def test_download_tv_overlay_apk_redirects_to_override_url(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "https://example.com/pr-133/app-debug.apk")
+
+    response = client.get("/downloads/android-tv-overlay.apk")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://example.com/pr-133/app-debug.apk"
+
+
+def test_download_tv_overlay_apk_redirects_to_latest_github_release(client, monkeypatch):
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "")
+    monkeypatch.setattr(
+        wsgi.requests,
+        "get",
+        lambda *a, **kw: type(
+            "Resp",
+            (),
+            {
+                "ok": True,
+                "json": lambda self: {
+                    "assets": [
+                        {"name": "pipup-v1.2.3.apk", "browser_download_url": "https://github.com/example/pipup-v1.2.3.apk"}
+                    ]
+                },
+            },
+        )(),
+    )
+
+    response = client.get("/downloads/android-tv-overlay.apk")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://github.com/example/pipup-v1.2.3.apk"
+
+
+def test_download_tv_overlay_apk_returns_404_when_missing(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(wsgi, "TV_OVERLAY_APK_URL", "")
+    monkeypatch.setattr(wsgi.requests, "get", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("offline")))
+
+    response = client.get("/downloads/android-tv-overlay.apk")
+    expected = {
+        "error": (
+            "android tv overlay apk not found — no PR override URL configured and no GitHub release APK found"
+        )
+    }
+
+    assert response.status_code == 404
+    assert response.get_json() == expected
+
+
+def test_delete_paired_tv_redirects_back_to_tv_settings(client, tmp_path, monkeypatch):
+    import tv_delivery
+
+    db_path = tmp_path / "paired_tv_delete.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(tv_delivery, "get_redis_client", lambda: fake_redis)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO paired_tvs (id, name, ip_address, port, shared_secret)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("tv-1", "Living Room", "192.168.1.88", 7979, "secret"),
+            )
+
+        response = client.post("/tv/devices/tv-1/delete", follow_redirects=False)
+
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/#tv-groups-pane")
+
+        with sqlite3.connect(db_path) as conn:
+            remaining = conn.execute("SELECT COUNT(*) FROM paired_tvs").fetchone()[0]
+        assert remaining == 0
+    finally:
+        wsgi.DB_FILE = original_db_file
 
 
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
@@ -138,6 +669,32 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[0]["is_trigger"] is True
     assert entries[1]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[1]["is_trigger"] is False
+
+
+def test_get_log_entries_includes_test_tv_tags(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_file = log_dir / "system.log"
+    log_file.write_text(
+        "\n".join(
+            [
+                (
+                    "2026-04-17 21:21:05,476 - WARNING - [test-tv:Driveway] "
+                    "test dispatch failed reason=no_target_tvs failed_targets=none"
+                ),
+                "2026-04-17 21:21:06,000 - INFO - [test-tv:Driveway] Follow-up diagnostic line",
+            ]
+        )
+    )
+
+    monkeypatch.setattr(wsgi, "LOG_DIR", str(log_dir))
+
+    entries = wsgi.get_log_entries()
+
+    assert len(entries) == 2
+    assert entries[0]["alert_tag"] == "[test-tv:Driveway]"
+    assert entries[0]["is_trigger"] is False
+    assert entries[1]["alert_tag"] == "[test-tv:Driveway]"
 
 
 def test_save_global_settings_route_updates_auto_mute_defaults(client):

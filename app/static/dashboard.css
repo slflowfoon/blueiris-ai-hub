@@ -48,17 +48,12 @@ code, .webhook-box, .log-viewer, .table code {
   max-width: 1440px;
 }
 
-.hero-panel,
 .card,
 .modal-content,
 .tab-surface {
   background: var(--app-panel);
   border: 1px solid var(--app-border);
   box-shadow: var(--app-shadow);
-}
-
-.hero-panel {
-  border-radius: 14px;
 }
 
 .hero-grid {
@@ -340,7 +335,7 @@ code, .webhook-box, .log-viewer, .table code {
 
 .global-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
 }
 
@@ -383,6 +378,10 @@ code, .webhook-box, .log-viewer, .table code {
     justify-content: flex-start;
   }
 
+  .global-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .log-toolbar {
     flex-direction: column;
     align-items: stretch;
@@ -390,5 +389,11 @@ code, .webhook-box, .log-viewer, .table code {
 
   .log-toolbar-actions {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 768px) {
+  .global-grid {
+    grid-template-columns: 1fr;
   }
 }

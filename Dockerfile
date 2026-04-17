@@ -12,6 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appuser app /app
+COPY --chown=appuser:appuser android-tv-overlay/dist/android-tv-overlay-debug.apk /app/tv-overlay/android-tv-overlay-debug.apk
 ARG APP_VERSION=dev
 RUN echo "$APP_VERSION" > /app/VERSION
 

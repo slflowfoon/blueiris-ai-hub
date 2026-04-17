@@ -1126,6 +1126,46 @@ def process_alert(image_path, config):
         encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
+        # TV dispatch fires immediately — before AI analysis — so the stream appears on screen
+        # as soon as the alert is received rather than after the multi-second Gemini call.
+        _tv_stream_type = config.get("tv_stream_type") or "rtsp"
+        _tv_eligible = (
+            config.get('tv_push_enabled') == 1
+            and (
+                (_tv_stream_type == "rtsp" and config.get("tv_rtsp_url"))
+                or (_tv_stream_type == "mjpg" and config.get("bi_url"))
+            )
+        )
+        if _tv_eligible:
+            import tv_delivery
+            logger.info(f"{tag} TV dispatch: camera={config.get('name')!r} group={config.get('tv_group')!r} stream_type={_tv_stream_type!r}")
+            tv_result = tv_delivery.dispatch_tv_alert(
+                {
+                    "id": config.get("id"),
+                    "name": config.get("name"),
+                    "request_id": config.get("request_id"),
+                    "tv_rtsp_url": config.get("tv_rtsp_url"),
+                    "tv_duration_seconds": config.get("tv_duration_seconds"),
+                    "tv_group": config.get("tv_group"),
+                    "tv_mute_audio": config.get("tv_mute_audio"),
+                    "tv_stream_type": _tv_stream_type,
+                    "bi_url": config.get("bi_url"),
+                    "bi_user": config.get("bi_user"),
+                    "bi_pass": config.get("bi_pass"),
+                },
+                tag,
+            )
+            if tv_result.get("skipped"):
+                logger.info(f"{tag} TV dispatch skipped (no RTSP URL)")
+            elif tv_result.get("error"):
+                logger.warning(f"{tag} TV dispatch error: {tv_result['error']}")
+            else:
+                delivered = tv_result.get("delivered", [])
+                failed = tv_result.get("failed", [])
+                logger.info(f"{tag} TV dispatch: delivered={len(delivered)} failed={len(failed)}")
+                if failed:
+                    logger.warning(f"{tag} TV dispatch failed TV IDs: {failed}")
+
         ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
 
         still_caption = ai_text or "Motion detected."

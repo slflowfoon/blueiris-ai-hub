@@ -29,6 +29,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       #- BASE_URL=https://example.com
+      #- TV_OVERLAY_APK_URL=https://example.com/path/to/pr-or-test-apk.apk
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys, urllib.request, urllib.error; url='http://localhost:5000/health';\ntry: urllib.request.urlopen(url, timeout=5).read(); sys.exit(0)\nexcept urllib.error.HTTPError: sys.exit(0)\nexcept Exception: sys.exit(1)"]
       interval: 30s
