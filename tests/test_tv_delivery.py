@@ -227,10 +227,6 @@ def test_dispatch_tv_alert_uses_base_url_for_mjpg_when_global_setting_blank(monk
             captured.update({"payload": payload}) or {"delivered": ["tv-1"], "failed": []}
         ),
     )
-    monkeypatch.setattr(
-        "settings_store.get_global_settings",
-        lambda: {"hub_base_url": ""},
-    )
 
     result = tv_delivery.dispatch_tv_alert(
         {
@@ -249,6 +245,27 @@ def test_dispatch_tv_alert_uses_base_url_for_mjpg_when_global_setting_blank(monk
     assert result["delivered"] == ["tv-1"]
     assert captured["payload"]["mjpg_url"] == "http://hub.local:5000/bi-mjpg/cam-1"
     assert captured["payload"]["rtsp_url"] is None
+
+
+def test_dispatch_tv_alert_skips_mjpg_when_base_url_missing(monkeypatch):
+    monkeypatch.setattr(tv_delivery, "BASE_URL", "")
+
+    result = tv_delivery.dispatch_tv_alert(
+        {
+            "id": "cam-1",
+            "name": "Driveway",
+            "tv_stream_type": "mjpg",
+            "bi_url": "http://blueiris.local",
+            "tv_duration_seconds": 12,
+            "tv_group": "driveway",
+            "tv_mute_audio": 1,
+            "request_id": "req-1",
+        },
+        "[Driveway][req-1]",
+    )
+
+    assert result["skipped"] is True
+    assert result["payload"]["mjpg_url"] is None
 
 
 def test_create_pairing_session_retries_manual_code_collision(monkeypatch):

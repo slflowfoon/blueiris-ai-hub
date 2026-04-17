@@ -520,6 +520,35 @@ def test_test_tv_route_logs_no_target_reason(client, monkeypatch, caplog):
     assert "reason=no_target_tvs" in caplog.text
 
 
+def test_test_tv_route_logs_missing_base_url_reason_for_mjpg(client, monkeypatch, caplog):
+    import logging
+    import tv_delivery
+
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    with sqlite3.connect(wsgi.DB_FILE) as conn:
+        conn.execute(
+            """
+            UPDATE configs
+            SET tv_push_enabled=1,
+                tv_stream_type='mjpg',
+                bi_url='http://blueiris.local'
+            WHERE id=?
+            """,
+            (config_id,),
+        )
+
+    monkeypatch.setattr(tv_delivery, "BASE_URL", "")
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(f"/test-tv/{config_id}")
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "dispatch failed"}
+    assert "reason=missing_base_url" in caplog.text
+
+
 def test_dashboard_shows_tv_apk_downloader_url(client):
     response = client.get("/")
 
@@ -675,7 +704,6 @@ def test_save_global_settings_route_updates_auto_mute_defaults(client):
             "auto_mute_threshold": "7",
             "auto_mute_window_minutes": "15",
             "auto_mute_duration_minutes": "45",
-            "hub_base_url": "http://192.168.0.51:5000/",
         },
         follow_redirects=False,
     )
@@ -686,7 +714,6 @@ def test_save_global_settings_route_updates_auto_mute_defaults(client):
     assert settings["auto_mute_threshold"] == "7"
     assert settings["auto_mute_window_minutes"] == "15"
     assert settings["auto_mute_duration_minutes"] == "45"
-    assert settings["hub_base_url"] == "http://192.168.0.51:5000"
 
 
 def test_get_log_entries_keeps_last_100_trigger_groups(tmp_path, monkeypatch):

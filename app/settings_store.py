@@ -8,7 +8,6 @@ DEFAULT_SETTINGS = {
     "auto_mute_threshold": "5",
     "auto_mute_window_minutes": "10",
     "auto_mute_duration_minutes": "30",
-    "hub_base_url": "",
 }
 
 
@@ -100,7 +99,6 @@ def save_global_settings(values):
             minimum=1,
             maximum=1440,
         ),
-        "hub_base_url": (values.get("hub_base_url") or "").strip().rstrip("/"),
     }
 
     with _connect() as conn:

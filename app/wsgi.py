@@ -930,11 +930,6 @@ HTML_TEMPLATE = r"""
                                         <span class="input-group-text">min</span>
                                     </div>
                                 </div>
-                                <div class="col-12 mb-3">
-                                    <label class="form-label">Hub Base URL</label>
-                                    <input type="url" name="hub_base_url" class="form-control" value="{{ global_settings.hub_base_url }}" placeholder="http://192.168.0.131:5000">
-                                    <div class="form-text">Used to build the MJPG proxy URL sent to TV devices (e.g. http://192.168.0.131:5000).</div>
-                                </div>
                             </div>
                             <button class="btn btn-primary">Save Global Settings</button>
                         </form>
@@ -1869,6 +1864,8 @@ def test_tv_alert(id):
         failed_targets = ",".join(result.get("failed") or [])
         if result.get("error"):
             reason = "dispatch_error"
+        elif stream_type == "mjpg" and not tv_delivery.BASE_URL:
+            reason = "missing_base_url"
         elif result.get("skipped"):
             reason = "skipped_no_stream_url"
         elif failed_targets:
@@ -1982,7 +1979,6 @@ def save_global_settings_route():
             "auto_mute_threshold": request.form.get("auto_mute_threshold"),
             "auto_mute_window_minutes": request.form.get("auto_mute_window_minutes"),
             "auto_mute_duration_minutes": request.form.get("auto_mute_duration_minutes"),
-            "hub_base_url": (request.form.get("hub_base_url") or "").strip().rstrip("/"),
         }
     )
     flash('Global settings updated.', 'success')

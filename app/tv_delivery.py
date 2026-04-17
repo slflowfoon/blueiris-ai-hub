@@ -457,12 +457,10 @@ def _load_target_tvs(camera_id, camera_name):
     return [tv for tv_id in tv_ids if (tv := get_paired_tv(tv_id))]
 
 def dispatch_tv_alert(config, tag):
-    from settings_store import get_global_settings
     stream_type = config.get("tv_stream_type") or "rtsp"
 
     if stream_type == "mjpg":
-        hub_base_url = (get_global_settings().get("hub_base_url") or "").rstrip("/") or BASE_URL
-        mjpg_url = f"{hub_base_url}/bi-mjpg/{config['id']}" if hub_base_url else None
+        mjpg_url = f"{BASE_URL}/bi-mjpg/{config['id']}" if BASE_URL else None
         rtsp_url = None
     else:
         mjpg_url = None
