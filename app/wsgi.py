@@ -25,6 +25,9 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "super_secret_key_change_this")
 
+from bi_mjpg import bi_mjpg_bp
+app.register_blueprint(bi_mjpg_bp)
+
 BASE_URL = os.getenv('BASE_URL')
 if BASE_URL and BASE_URL.endswith('/'):
     BASE_URL = BASE_URL[:-1]
@@ -165,7 +168,8 @@ def init_db():
                 tv_push_enabled INTEGER DEFAULT 0,
                 tv_rtsp_url TEXT,
                 tv_duration_seconds INTEGER,
-                tv_group TEXT
+                tv_group TEXT,
+                tv_mute_audio INTEGER DEFAULT 0
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_configs_chat_id ON configs(chat_id)")
@@ -188,6 +192,8 @@ def init_db():
             ("tv_rtsp_url", "TEXT"),
             ("tv_duration_seconds", "INTEGER"),
             ("tv_group", "TEXT"),
+            ("tv_mute_audio", "INTEGER DEFAULT 0"),
+            ("tv_stream_type", "TEXT DEFAULT 'rtsp'"),
         ]:
             try:
                 conn.execute(f"SELECT {col} FROM configs LIMIT 1")
@@ -846,6 +852,9 @@ HTML_TEMPLATE = r"""
                                 </div>
                                 <div class="btn-group">
                                     <button class="btn btn-sm btn-outline-secondary" onclick='openEditModal({{ config|tojson }})'>Edit</button>
+                                    {% if config.tv_push_enabled %}
+                                    <button class="btn btn-sm btn-outline-info ms-1" onclick="testTvAlert('{{ config.id }}', this)">📺 Test</button>
+                                    {% endif %}
                                     <form action="{{ url_for('delete_config', id=config.id) }}" method="POST" onsubmit="return confirm('Delete this config?');" style="display:inline;">
                                         <button class="btn btn-sm btn-outline-danger ms-1">Delete</button>
                                     </form>
@@ -859,7 +868,7 @@ HTML_TEMPLATE = r"""
                             <div class="mt-3 d-flex gap-2 flex-wrap">
                                 {% if config.send_video %}<span class="badge bg-info text-dark">🎞️ Video enabled</span>{% endif %}
                                 {% if config.instant_notify %}<span class="badge bg-success">⚡ Instant notify</span>{% endif %}
-                                {% if config.tv_push_enabled %}<span class="badge bg-primary">📺 TV overlay</span>{% endif %}
+                                {% if config.tv_push_enabled %}<span class="badge bg-primary">📺 TV overlay{% if config.tv_mute_audio %} 🔇{% endif %}</span>{% endif %}
                                 {% if config.tv_group %}<span class="badge bg-secondary">📺 TV group {{ config.tv_group }}</span>{% endif %}
                                 {% if config.message_thread_id %}<span class="badge bg-secondary">🧵 Thread {{ config.message_thread_id }}</span>{% endif %}
                                 {% if config.grok_api_key %}<span class="badge bg-warning text-dark">Grok ✓</span>{% endif %}
@@ -947,6 +956,11 @@ HTML_TEMPLATE = r"""
                                         <input type="number" min="1" max="1440" name="auto_mute_duration_minutes" class="form-control" value="{{ global_settings.auto_mute_duration_minutes }}" required>
                                         <span class="input-group-text">min</span>
                                     </div>
+                                </div>
+                                <div class="col-12 mb-3">
+                                    <label class="form-label">Hub Base URL</label>
+                                    <input type="url" name="hub_base_url" class="form-control" value="{{ global_settings.hub_base_url }}" placeholder="http://192.168.0.131:5000">
+                                    <div class="form-text">Used to build the MJPG proxy URL sent to TV devices (e.g. http://192.168.0.131:5000).</div>
                                 </div>
                             </div>
                             <button class="btn btn-primary">Save Global Settings</button>
@@ -1174,10 +1188,20 @@ HTML_TEMPLATE = r"""
 <div class="modal fade" id="addModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
-            <form action="{{ url_for('add_config') }}" method="POST">
+            <form action="{{ url_for('add_config') }}" method="POST" onsubmit="return validateTvForm(this)">
                 <div class="modal-header"><h5 class="modal-title">Add Configuration</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
                     <div class="mb-3"><label class="form-label">Name</label><input type="text" name="name" class="form-control" placeholder="e.g. Driveway" required></div>
+                    <div class="card mb-3 border-secondary">
+                        <div class="card-header py-2"><h6 class="mb-0 text-secondary">Blue Iris Connection <span class="text-muted fw-normal small">(used for video export &amp; TV streaming)</span></h6></div>
+                        <div class="card-body py-2">
+                            <div class="row">
+                                <div class="col-12 mb-2"><label class="form-label mb-1">Blue Iris URL</label><input type="text" name="bi_url" class="form-control" placeholder="http://192.168.0.11:81"></div>
+                                <div class="col-md-6 mb-2"><label class="form-label mb-1">BI Username</label><input type="text" name="bi_user" class="form-control"></div>
+                                <div class="col-md-6 mb-2"><label class="form-label mb-1">BI Password</label><div class="input-group"><input type="password" name="bi_pass" id="add_bi_pass" class="form-control"><button class="btn btn-outline-secondary btn-sm" type="button" onclick="togglePassword('add_bi_pass')">👁️</button></div></div>
+                            </div>
+                        </div>
+                    </div>
                     <ul class="nav nav-tabs mb-3" id="addConfigTabs" role="tablist">
                         <li class="nav-item" role="presentation"><button class="nav-link active" id="add-telegram-tab" data-bs-toggle="tab" data-bs-target="#add-telegram-pane" type="button" role="tab">Telegram Alert</button></li>
                         <li class="nav-item" role="presentation"><button class="nav-link" id="add-tv-tab" data-bs-toggle="tab" data-bs-target="#add-tv-pane" type="button" role="tab">TV Overlay</button></li>
@@ -1200,19 +1224,14 @@ HTML_TEMPLATE = r"""
                             </div>
                             <div class="mb-3"><label class="form-label">AI Prompt</label><textarea name="prompt" class="form-control" rows="3" required>The CCTV has detected motion. Describe any motion in a single sentence (max 145 characters) — vehicles (colour, make, plate), people, or deliveries. Do not describe static objects.</textarea></div>
                             <hr>
-                            <h6 class="text-primary">Blue Iris Video Settings</h6>
+                            <h6 class="text-primary">Video Export</h6>
                             <div class="row">
-                                <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" name="bi_url" class="form-control" placeholder="http://192.168.0.11:81"></div>
                                 <div class="col-md-6 mb-3">
-                                    <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="add_send_video"><label class="form-check-label" for="add_send_video">Fetch &amp; send video clip</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="send_video" id="add_send_video"><label class="form-check-label" for="add_send_video">Fetch &amp; send video clip</label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="add_delete_after_send" checked><label class="form-check-label" for="add_delete_after_send">Delete clip from BI after send</label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="add_instant_notify"><label class="form-check-label" for="add_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="add_verbose_logging"><label class="form-check-label" for="add_verbose_logging">Verbose logging</label></div>
                                 </div>
-                            </div>
-                            <div class="row">
-                                <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" name="bi_user" class="form-control"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" name="bi_pass" id="add_bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('add_bi_pass')">👁️</button></div></div>
                             </div>
                             <hr>
                             <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -1231,17 +1250,34 @@ HTML_TEMPLATE = r"""
                         <div class="tab-pane fade" id="add-tv-pane" role="tabpanel" aria-labelledby="add-tv-tab">
                             <h6 class="text-primary">TV Overlay Settings</h6>
                             <div class="row">
-                                <div class="col-md-6 mb-3">
+                                <div class="col-md-3 mb-3">
                                     <div class="form-check mt-2">
                                         <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="add_tv_push_enabled">
                                         <label class="form-check-label" for="add_tv_push_enabled">Push stream to TV overlay</label>
                                     </div>
                                 </div>
+                                <div class="col-md-3 mb-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" name="tv_mute_audio" id="add_tv_mute_audio">
+                                        <label class="form-check-label" for="add_tv_mute_audio">Mute audio</label>
+                                    </div>
+                                </div>
                                 <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" name="tv_group" class="form-control" placeholder="driveway"></div>
                                 <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" name="tv_duration_seconds" class="form-control" value="20"></div>
-                                <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
+                                <div class="col-12 mb-3">
+                                    <label class="form-label">Stream Source</label>
+                                    <div>
+                                        <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="tv_stream_type" id="add_stream_rtsp" value="rtsp" checked onchange="toggleAddStreamFields()"><label class="form-check-label" for="add_stream_rtsp">RTSP (manual URL)</label></div>
+                                        <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="tv_stream_type" id="add_stream_mjpg" value="mjpg" onchange="toggleAddStreamFields()"><label class="form-check-label" for="add_stream_mjpg">Blue Iris MJPG (via proxy)</label></div>
+                                    </div>
+                                </div>
+                                <div id="add_rtsp_fields" class="col-12">
+                                    <div class="row">
+                                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" name="tv_rtsp_base_url" class="form-control" placeholder="rtsp://192.168.1.50:554/stream1"></div>
+                                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" name="tv_rtsp_username" class="form-control" placeholder="camera-user"></div>
+                                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" name="tv_rtsp_password" id="add_tv_rtsp_password" class="form-control" placeholder="Optional"><div class="form-text">Stored server-side and merged into the saved RTSP URL.</div></div>
+                                    </div>
+                                </div>
                                 <div class="col-12 mb-3">
                                     <label class="form-label">Target TVs</label>
                                     <select name="tv_target_ids" class="form-select" multiple size="4">
@@ -1264,10 +1300,20 @@ HTML_TEMPLATE = r"""
 <div class="modal fade" id="editModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
-            <form id="editForm" method="POST">
+            <form id="editForm" method="POST" onsubmit="return validateTvForm(this)">
                 <div class="modal-header"><h5 class="modal-title">Edit Configuration</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                 <div class="modal-body">
                     <div class="mb-3"><label class="form-label">Name</label><input type="text" id="edit_name" name="name" class="form-control" required></div>
+                    <div class="card mb-3 border-secondary">
+                        <div class="card-header py-2"><h6 class="mb-0 text-secondary">Blue Iris Connection <span class="text-muted fw-normal small">(used for video export &amp; TV streaming)</span></h6></div>
+                        <div class="card-body py-2">
+                            <div class="row">
+                                <div class="col-12 mb-2"><label class="form-label mb-1">Blue Iris URL</label><input type="text" id="edit_bi_url" name="bi_url" class="form-control" placeholder="http://192.168.0.11:81"></div>
+                                <div class="col-md-6 mb-2"><label class="form-label mb-1">BI Username</label><input type="text" id="edit_bi_user" name="bi_user" class="form-control"></div>
+                                <div class="col-md-6 mb-2"><label class="form-label mb-1">BI Password</label><div class="input-group"><input type="password" id="edit_bi_pass" name="bi_pass" class="form-control"><button class="btn btn-outline-secondary btn-sm" type="button" onclick="togglePassword('edit_bi_pass')">👁️</button></div></div>
+                            </div>
+                        </div>
+                    </div>
                     <ul class="nav nav-tabs mb-3" id="editConfigTabs" role="tablist">
                         <li class="nav-item" role="presentation"><button class="nav-link active" id="edit-telegram-tab" data-bs-toggle="tab" data-bs-target="#edit-telegram-pane" type="button" role="tab">Telegram Alert</button></li>
                         <li class="nav-item" role="presentation"><button class="nav-link" id="edit-tv-tab" data-bs-toggle="tab" data-bs-target="#edit-tv-pane" type="button" role="tab">TV Overlay</button></li>
@@ -1290,19 +1336,14 @@ HTML_TEMPLATE = r"""
                             </div>
                             <div class="mb-3"><label class="form-label">AI Prompt</label><textarea id="edit_prompt" name="prompt" class="form-control" rows="3" required></textarea></div>
                             <hr>
-                            <h6 class="text-primary">Blue Iris Video Settings</h6>
+                            <h6 class="text-primary">Video Export</h6>
                             <div class="row">
-                                <div class="col-md-6 mb-3"><label class="form-label">Blue Iris URL</label><input type="text" id="edit_bi_url" name="bi_url" class="form-control"></div>
                                 <div class="col-md-6 mb-3">
-                                    <div class="form-check mt-4"><input class="form-check-input" type="checkbox" name="send_video" id="edit_send_video"><label class="form-check-label" for="edit_send_video">Fetch &amp; send video clip</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" name="send_video" id="edit_send_video"><label class="form-check-label" for="edit_send_video">Fetch &amp; send video clip</label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="delete_after_send" id="edit_delete_after_send"><label class="form-check-label" for="edit_delete_after_send">Delete clip from BI after send</label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="instant_notify" id="edit_instant_notify"><label class="form-check-label" for="edit_instant_notify">Instant notify <span class="text-muted small">(send immediately, caption follows)</span></label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" name="verbose_logging" id="edit_verbose_logging"><label class="form-check-label" for="edit_verbose_logging">Verbose logging</label></div>
                                 </div>
-                            </div>
-                            <div class="row">
-                                <div class="col-md-6 mb-3"><label class="form-label">BI Username</label><input type="text" id="edit_bi_user" name="bi_user" class="form-control"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">BI Password</label><div class="input-group"><input type="password" id="edit_bi_pass" name="bi_pass" class="form-control"><button class="btn btn-outline-secondary" type="button" onclick="togglePassword('edit_bi_pass')">👁️</button></div></div>
                             </div>
                             <hr>
                             <h6 class="text-primary">AI Fallback Keys <span class="text-muted fw-normal small">(optional)</span></h6>
@@ -1321,17 +1362,34 @@ HTML_TEMPLATE = r"""
                         <div class="tab-pane fade" id="edit-tv-pane" role="tabpanel" aria-labelledby="edit-tv-tab">
                             <h6 class="text-primary">TV Overlay Settings</h6>
                             <div class="row">
-                                <div class="col-md-6 mb-3">
+                                <div class="col-md-3 mb-3">
                                     <div class="form-check mt-2">
                                         <input class="form-check-input" type="checkbox" name="tv_push_enabled" id="edit_tv_push_enabled">
                                         <label class="form-check-label" for="edit_tv_push_enabled">Push stream to TV overlay</label>
                                     </div>
                                 </div>
+                                <div class="col-md-3 mb-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" name="tv_mute_audio" id="edit_tv_mute_audio">
+                                        <label class="form-check-label" for="edit_tv_mute_audio">Mute audio</label>
+                                    </div>
+                                </div>
                                 <div class="col-md-3 mb-3"><label class="form-label">TV Group</label><input type="text" id="edit_tv_group" name="tv_group" class="form-control"></div>
                                 <div class="col-md-3 mb-3"><label class="form-label">Duration (seconds)</label><input type="number" min="5" max="120" id="edit_tv_duration_seconds" name="tv_duration_seconds" class="form-control" value="20"></div>
-                                <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
-                                <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
+                                <div class="col-12 mb-3">
+                                    <label class="form-label">Stream Source</label>
+                                    <div>
+                                        <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="tv_stream_type" id="edit_stream_rtsp" value="rtsp" checked onchange="toggleEditStreamFields()"><label class="form-check-label" for="edit_stream_rtsp">RTSP (manual URL)</label></div>
+                                        <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="tv_stream_type" id="edit_stream_mjpg" value="mjpg" onchange="toggleEditStreamFields()"><label class="form-check-label" for="edit_stream_mjpg">Blue Iris MJPG (via proxy)</label></div>
+                                    </div>
+                                </div>
+                                <div id="edit_rtsp_fields" class="col-12">
+                                    <div class="row">
+                                        <div class="col-12 mb-3"><label class="form-label">RTSP Base URL</label><input type="text" id="edit_tv_rtsp_base_url" name="tv_rtsp_base_url" class="form-control"></div>
+                                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Username</label><input type="text" id="edit_tv_rtsp_username" name="tv_rtsp_username" class="form-control"></div>
+                                        <div class="col-md-6 mb-3"><label class="form-label">RTSP Password</label><input type="password" id="edit_tv_rtsp_password" name="tv_rtsp_password" class="form-control"><div class="form-text">Leave blank to keep the currently saved password.</div></div>
+                                    </div>
+                                </div>
                                 <div class="col-12 mb-3">
                                     <label class="form-label">Target TVs</label>
                                     <select id="edit_tv_target_ids" name="tv_target_ids" class="form-select" multiple size="4">
@@ -1440,6 +1498,18 @@ function setTheme(t){html.setAttribute('data-bs-theme',t);localStorage.setItem('
 function toggleTheme(){setTheme(html.getAttribute('data-bs-theme')==='dark'?'light':'dark');}
 setTheme(localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'));
 function togglePassword(id){const el=document.getElementById(id);el.type=el.type==='password'?'text':'password';}
+function toggleAddStreamFields(){const mjpg=document.getElementById('add_stream_mjpg').checked;document.getElementById('add_rtsp_fields').style.display=mjpg?'none':'';}
+function toggleEditStreamFields(){const mjpg=document.getElementById('edit_stream_mjpg').checked;document.getElementById('edit_rtsp_fields').style.display=mjpg?'none':'';}
+function validateTvForm(form){
+    const tvEnabled=form.querySelector('[name=tv_push_enabled]')?.checked;
+    if(!tvEnabled)return true;
+    const biUrl=(form.querySelector('[name=bi_url]')?.value||'').trim();
+    const streamType=form.querySelector('[name=tv_stream_type]:checked')?.value||'rtsp';
+    const rtspUrl=(form.querySelector('[name=tv_rtsp_base_url]')?.value||'').trim();
+    if(streamType==='mjpg'&&!biUrl){alert('Blue Iris URL is required when using MJPG stream source.');return false;}
+    if(streamType==='rtsp'&&!rtspUrl){alert('RTSP Base URL is required when using RTSP stream source.');return false;}
+    return true;
+}
 function withCopySuccess(btn){
     const orig=btn.innerHTML;
     const origClass=btn.className;
@@ -1473,6 +1543,24 @@ function copyWebhookTrace(btn){
     copyTextToClipboard(decodeURIComponent(group.dataset.copyTrace),btn);
 }
 function copyToClipboard(id,btn){copyTextToClipboard(document.getElementById(id).innerText.trim(),btn);}
+async function testTvAlert(configId, btn){
+    btn.disabled=true; btn.textContent='Sending…';
+    try{
+        const r=await fetch('/test-tv/'+configId, {method:'POST'});
+        const d=await r.json();
+        if(r.ok && d.delivered && d.delivered.length>0){
+            btn.textContent='✓ Sent';
+            btn.classList.replace('btn-outline-info','btn-info');
+        } else {
+            btn.textContent='✗ Failed';
+            btn.classList.replace('btn-outline-info','btn-danger');
+        }
+    } catch(e){
+        btn.textContent='✗ Error';
+        btn.classList.replace('btn-outline-info','btn-danger');
+    }
+    setTimeout(()=>{btn.disabled=false;btn.textContent='📺 Test';btn.className=btn.className.replace('btn-info','btn-outline-info').replace('btn-danger','btn-outline-info');},3000);
+}
 async function submitTvPairing(event){
     event.preventDefault();
     const statusEl=document.getElementById('pairTvStatus');
@@ -1503,7 +1591,11 @@ function openEditModal(c){
     document.getElementById('edit_instant_notify').checked=c.instant_notify===1;
     document.getElementById('edit_verbose_logging').checked=c.verbose_logging===1;
     document.getElementById('edit_tv_push_enabled').checked=c.tv_push_enabled===1;
+    document.getElementById('edit_tv_mute_audio').checked=c.tv_mute_audio===1;
     document.getElementById('edit_tv_group').value=c.tv_group||'';
+    const streamType=c.tv_stream_type||'rtsp';
+    document.getElementById(streamType==='mjpg'?'edit_stream_mjpg':'edit_stream_rtsp').checked=true;
+    toggleEditStreamFields();
     document.getElementById('edit_tv_rtsp_base_url').value=c.tv_rtsp_base_url||'';
     document.getElementById('edit_tv_rtsp_username').value=c.tv_rtsp_username||'';
     document.getElementById('edit_tv_rtsp_password').value='';
@@ -1639,6 +1731,7 @@ def add_config():
     try:
         camera_id = str(uuid.uuid4())
         tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
+        tv_mute_audio = 1 if 'tv_mute_audio' in request.form else 0
         tv_rtsp_url = _compose_rtsp_url(
             request.form.get('tv_rtsp_base_url'),
             request.form.get('tv_rtsp_username'),
@@ -1651,8 +1744,8 @@ def add_config():
             'INSERT INTO configs (id,name,gemini_key,telegram_token,chat_id,prompt,bi_url,bi_user,bi_pass,'
             'send_video,verbose_logging,delete_after_send,message_thread_id,grok_api_key,groq_api_key,'
             'bi_restart_url,bi_restart_token,instant_notify,dvla_api_key,tv_push_enabled,tv_rtsp_url,'
-            'tv_duration_seconds,tv_group) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'tv_duration_seconds,tv_group,tv_mute_audio,tv_stream_type) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (camera_id, request.form['name'], request.form['gemini_key'],
              request.form['telegram_token'], request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -1669,7 +1762,9 @@ def add_config():
              tv_push_enabled,
              tv_rtsp_url,
              tv_duration_seconds,
-             tv_group)
+             tv_group,
+             tv_mute_audio,
+             request.form.get('tv_stream_type', 'rtsp'))
         )
         conn.commit()
         conn.close()
@@ -1686,7 +1781,7 @@ def edit_config(id):
         conn = get_db_connection()
         existing = conn.execute(
             """
-            SELECT name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group
+            SELECT name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, tv_mute_audio, tv_stream_type
             FROM configs
             WHERE id=?
             """,
@@ -1695,6 +1790,7 @@ def edit_config(id):
         tv_section_present = any(key.startswith("tv_") for key in request.form)
         if tv_section_present:
             tv_push_enabled = 1 if 'tv_push_enabled' in request.form else 0
+            tv_mute_audio = 1 if 'tv_mute_audio' in request.form else 0
             tv_rtsp_url = _compose_rtsp_url(
                 request.form.get('tv_rtsp_base_url'),
                 request.form.get('tv_rtsp_username'),
@@ -1703,16 +1799,20 @@ def edit_config(id):
             )
             tv_duration_seconds = _parse_tv_duration_seconds(request.form.get('tv_duration_seconds'))
             tv_group = request.form.get('tv_group') or None
+            tv_stream_type = request.form.get('tv_stream_type', 'rtsp')
         else:
             tv_push_enabled = existing['tv_push_enabled'] if existing else 0
+            tv_mute_audio = existing['tv_mute_audio'] if existing else 0
             tv_rtsp_url = existing['tv_rtsp_url'] if existing else None
             tv_duration_seconds = existing['tv_duration_seconds'] if existing else None
             tv_group = existing['tv_group'] if existing else None
+            tv_stream_type = existing['tv_stream_type'] if existing else 'rtsp'
         conn.execute(
             'UPDATE configs SET name=?,gemini_key=?,telegram_token=?,chat_id=?,prompt=?,bi_url=?,bi_user=?,'
             'bi_pass=?,send_video=?,verbose_logging=?,delete_after_send=?,message_thread_id=?,'
             'grok_api_key=?,groq_api_key=?,bi_restart_url=?,bi_restart_token=?,instant_notify=?,'
-            'dvla_api_key=?,tv_push_enabled=?,tv_rtsp_url=?,tv_duration_seconds=?,tv_group=? WHERE id=?',
+            'dvla_api_key=?,tv_push_enabled=?,tv_rtsp_url=?,tv_duration_seconds=?,tv_group=?,'
+            'tv_mute_audio=?,tv_stream_type=? WHERE id=?',
             (request.form['name'], request.form['gemini_key'], request.form['telegram_token'],
              request.form['chat_id'], request.form['prompt'],
              request.form.get('bi_url'), request.form.get('bi_user'), request.form.get('bi_pass'),
@@ -1730,6 +1830,8 @@ def edit_config(id):
              tv_rtsp_url,
              tv_duration_seconds,
              tv_group,
+             tv_mute_audio,
+             tv_stream_type,
              id)
         )
         conn.commit()
@@ -1759,6 +1861,39 @@ def delete_config(id):
     conn.close()
     flash('Configuration deleted.', 'warning')
     return redirect(url_for('index'))
+
+
+@app.route('/test-tv/<id>', methods=['POST'])
+def test_tv_alert(id):
+    import tv_delivery
+    from settings_store import get_global_settings
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT id, name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, tv_mute_audio, tv_stream_type, bi_url, bi_user, bi_pass FROM configs WHERE id=?",
+        (id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "config not found"}), 404
+
+    config = dict(row)
+    stream_type = config.get("tv_stream_type") or "rtsp"
+    bi_url = (config.get("bi_url") or "").strip()
+    rtsp_url = config.get("tv_rtsp_url") or ""
+
+    if stream_type == "mjpg" and not bi_url:
+        return jsonify({"error": "MJPG selected but bi_url not configured"}), 400
+    if stream_type == "rtsp" and not rtsp_url:
+        return jsonify({"error": "RTSP selected but tv_rtsp_url not configured"}), 400
+
+    dispatch_config = {
+        **config,
+        "tv_duration_seconds": 10,
+        "request_id": "test",
+    }
+    tag = f"[test-tv:{config['name']}]"
+    result = tv_delivery.dispatch_tv_alert(dispatch_config, tag)
+    return jsonify(result)
 
 
 @app.route('/tv/pair/code', methods=['POST'])
@@ -1856,6 +1991,7 @@ def save_global_settings_route():
             "auto_mute_threshold": request.form.get("auto_mute_threshold"),
             "auto_mute_window_minutes": request.form.get("auto_mute_window_minutes"),
             "auto_mute_duration_minutes": request.form.get("auto_mute_duration_minutes"),
+            "hub_base_url": (request.form.get("hub_base_url") or "").strip().rstrip("/"),
         }
     )
     flash('Global settings updated.', 'success')
@@ -1903,14 +2039,30 @@ def plate_audit_image(filename):
 
 @app.route('/downloads/android-tv-overlay-debug.apk')
 def download_tv_overlay_apk():
+    # Prefer the signed release APK from GitHub releases so the TV's in-app
+    # update button (which also pulls from GitHub) uses the same signing cert.
+    try:
+        import requests as _req
+        r = _req.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=5,
+        )
+        if r.ok:
+            for asset in r.json().get("assets", []):
+                if asset["name"].endswith(".apk"):
+                    return redirect(asset["browser_download_url"], code=302)
+    except Exception:
+        pass
+    # Fallback: serve locally bundled/debug APK
     apk_file = _resolve_tv_overlay_apk_file()
     if not os.path.isfile(apk_file):
-        return jsonify({"error": "android tv overlay apk not found"}), 404
+        return jsonify({"error": "android tv overlay apk not found — no GitHub release found and no local APK present"}), 404
     return send_file(
         apk_file,
         mimetype='application/vnd.android.package-archive',
         as_attachment=True,
-        download_name='android-tv-overlay-debug.apk',
+        download_name='android-tv-overlay.apk',
     )
 
 

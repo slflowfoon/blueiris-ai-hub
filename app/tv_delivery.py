@@ -398,7 +398,11 @@ def resolve_group_winner(group_name, triggered_configs):
     eligible_configs = [
         config
         for config in triggered_configs
-        if int(config.get("tv_push_enabled") or 0) == 1 and config.get("tv_rtsp_url")
+        if int(config.get("tv_push_enabled") or 0) == 1
+        and (
+            config.get("tv_rtsp_url")
+            or ((config.get("tv_stream_type") or "rtsp") == "mjpg" and config.get("bi_url"))
+        )
     ]
     if not eligible_configs:
         return None
@@ -451,18 +455,31 @@ def _load_target_tvs(camera_id, camera_name):
     return [tv for tv_id in tv_ids if (tv := get_paired_tv(tv_id))]
 
 def dispatch_tv_alert(config, tag):
+    from settings_store import get_global_settings
+    stream_type = config.get("tv_stream_type") or "rtsp"
+
+    if stream_type == "mjpg":
+        hub_base_url = (get_global_settings().get("hub_base_url") or "").rstrip("/")
+        mjpg_url = f"{hub_base_url}/bi-mjpg/{config['id']}" if hub_base_url else None
+        rtsp_url = None
+    else:
+        mjpg_url = None
+        rtsp_url = config.get("tv_rtsp_url")
+
     payload = {
         "camera_id": config.get("id"),
         "camera_name": config.get("name"),
-        "rtsp_url": config.get("tv_rtsp_url"),
+        "rtsp_url": rtsp_url,
+        "mjpg_url": mjpg_url,
         "duration": int(config.get("tv_duration_seconds") or 0),
         "tv_group": config.get("tv_group"),
+        "mute_audio": bool(int(config.get("tv_mute_audio") or 0)),
         "request_id": config.get("request_id", "unknown"),
         "tag": tag,
     }
 
     try:
-        if not config.get("tv_rtsp_url"):
+        if not rtsp_url and not mjpg_url:
             return {"delivered": [], "failed": [], "skipped": True, "payload": payload}
 
         targets = _load_target_tvs(config.get("id"), config.get("name"))

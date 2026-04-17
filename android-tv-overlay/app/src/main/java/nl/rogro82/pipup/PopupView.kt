@@ -2,8 +2,11 @@ package nl.rogro82.pipup
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -17,6 +20,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 // TODO: convert dimensions from px to dp
 
@@ -108,6 +114,7 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
                 setMediaItem(MediaItem.fromUri(Uri.parse(media.uri)))
                 prepare()
                 playWhenReady = true
+                volume = if (media.muteAudio) 0f else 1f
             }
 
             playerView.player = player
@@ -182,6 +189,80 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
         }
     }
 
+    private class Mjpeg(context: Context, popup: PopupProps, val media: PopupProps.Media.Mjpeg): PopupView(context, popup) {
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private var imageView: ImageView? = null
+        @Volatile private var running = false
+        private var thread: Thread? = null
+
+        init { create() }
+
+        override fun create() {
+            super.create()
+            val frame = findViewById<FrameLayout>(R.id.popup_frame)
+            imageView = ImageView(context).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+            frame.addView(imageView, FrameLayout.LayoutParams(media.width, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+            })
+            running = true
+            thread = Thread {
+                try {
+                    val conn = (URL(media.uri).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 5000
+                        readTimeout = 30000
+                        connect()
+                    }
+                    val stream = conn.inputStream
+                    val buf = ByteArrayOutputStream()
+                    var prev = -1
+                    val tmp = ByteArray(4096)
+                    while (running) {
+                        val n = stream.read(tmp)
+                        if (n < 0) break
+                        for (i in 0 until n) {
+                            val b = tmp[i].toInt() and 0xFF
+                            buf.write(b)
+                            // detect JPEG EOI
+                            if (prev == 0xFF && b == 0xD9) {
+                                val bytes = buf.toByteArray()
+                                // find SOI start
+                                val soiIdx = run {
+                                    var idx = -1
+                                    for (k in 0 until bytes.size - 1) {
+                                        if ((bytes[k].toInt() and 0xFF) == 0xFF && (bytes[k+1].toInt() and 0xFF) == 0xD8) {
+                                            idx = k; break
+                                        }
+                                    }
+                                    idx
+                                }
+                                if (soiIdx >= 0) {
+                                    val jpegBytes = bytes.copyOfRange(soiIdx, bytes.size)
+                                    val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                                    if (bmp != null) {
+                                        mainHandler.post { imageView?.setImageBitmap(bmp) }
+                                    }
+                                }
+                                buf.reset()
+                            }
+                            prev = b
+                        }
+                    }
+                    stream.close()
+                } catch (e: Exception) {
+                    Log.e(LOG_TAG, "MJPEG stream error: ${e.message}")
+                }
+            }.also { it.isDaemon = true; it.start() }
+        }
+
+        override fun destroy() {
+            running = false
+            thread?.interrupt()
+            imageView?.setImageDrawable(null)
+        }
+    }
+
     private class Web(context: Context, popup: PopupProps, val media: PopupProps.Media.Web): PopupView(context, popup) {
         private lateinit var webView: WebView
         init { create() }
@@ -232,6 +313,7 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
                 is PopupProps.Media.Video -> Video(context, popup, popup.media)
                 is PopupProps.Media.Image -> Image(context, popup, popup.media)
                 is PopupProps.Media.Bitmap -> Bitmap(context, popup, popup.media)
+                is PopupProps.Media.Mjpeg -> Mjpeg(context, popup, popup.media)
                 else -> Default(context, popup)
             }
         }

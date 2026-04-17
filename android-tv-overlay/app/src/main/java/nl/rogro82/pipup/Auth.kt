@@ -8,22 +8,28 @@ data class SignedNotifyPayload(
     val camera_name: String? = null,
     val camera_id: String? = null,
     val rtsp_url: String? = null,
+    val mjpg_url: String? = null,
     val duration: Int? = null,
     val tv_group: String? = null,
+    val mute_audio: Boolean = false,
     val request_id: String? = null,
     val tag: String? = null
 ) {
     fun toPopupProps(): PopupProps {
+        val mjpgUrl = mjpg_url?.trim().orEmpty()
         val rtspUrl = rtsp_url?.trim().orEmpty()
-        if (rtspUrl.isEmpty()) {
-            throw SecurityException("missing rtsp_url")
+
+        val media = when {
+            mjpgUrl.isNotEmpty() -> PopupProps.Media.Mjpeg(mjpgUrl)
+            rtspUrl.isNotEmpty() -> PopupProps.Media.Video(rtspUrl, muteAudio = mute_audio)
+            else -> throw SecurityException("missing rtsp_url or mjpg_url")
         }
 
         return PopupProps(
             duration = duration ?: PopupProps.DEFAULT_DURATION,
             title = camera_name,
             message = null,
-            media = PopupProps.Media.Video(rtspUrl)
+            media = media
         )
     }
 }
