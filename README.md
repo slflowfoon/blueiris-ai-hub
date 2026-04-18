@@ -173,12 +173,22 @@ The hub can push camera popups to an Android TV running the bundled `PiPup` rece
 - `RTSP (manual URL)`: enter the camera RTSP details in the camera config.
 - `Blue Iris MJPG (via proxy)`: the hub builds a proxy stream URL for the TV from `BASE_URL`.
 
-If you use `Blue Iris MJPG (via proxy)`, set `BASE_URL` in the `web` container environment to the exact hub address the TV can reach:
+If you use `Blue Iris MJPG (via proxy)`, `BASE_URL` is required. Set it in a `.env` file to the exact hub address the TV can reach:
+
+```env
+BASE_URL=http://192.168.0.51:5000
+```
+
+The provided `docker-compose.yml` reads that one value and passes it into both `web` and `worker`.
+
+Compose will fail fast if `BASE_URL` is missing.
+
+Relevant Compose snippet:
 
 ```yaml
 environment:
   - REDIS_URL=redis://redis:6379/0
-  - BASE_URL=http://192.168.0.51:5000
+  - BASE_URL=${BASE_URL:?Set BASE_URL in .env to the hub URL reachable by TVs}
 ```
 
 For MJPG cameras, the TV overlay uses the hub proxy endpoint:
