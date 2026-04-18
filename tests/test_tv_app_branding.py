@@ -11,6 +11,9 @@ def test_tv_app_branding_uses_hub_logo_mark_and_android_identity():
     manifest = (ANDROID_APP_DIR / "src" / "main" / "AndroidManifest.xml").read_text()
     strings = (ANDROID_APP_DIR / "src" / "main" / "res" / "values" / "strings.xml").read_text()
 
+    assert '<svg width="512" height="512" viewBox="0 0 512 512"' in hub_logo_mark
+    assert hub_logo_mark.count("<path") >= 3
+    assert hub_logo_mark.count("<circle") >= 3
     assert "shieldGradient" in hub_logo_mark
     assert "irisGradient" in hub_logo_mark
     assert 'namespace "io.slflowfoon.blueirisaihub.tv"' in build_gradle
