@@ -542,6 +542,18 @@ def queue_retry(job, reason):
     retry_request["_export_attempts"] = job.get("export_attempts", 1)
     retry_request["_recovery_attempts"] = job.get("recovery_attempts", 0)
     retry_request["_previous_target_path"] = job.get("target_path")
+    retry_request["_original_submitted_at"] = retry_request.get(
+        "_original_submitted_at",
+        job.get("submitted_at"),
+    )
+    retry_request["_original_monitor_started_at"] = retry_request.get(
+        "_original_monitor_started_at",
+        job.get("monitor_started_at", job.get("submitted_at")),
+    )
+    retry_request["_original_queue_ack_at"] = retry_request.get(
+        "_original_queue_ack_at",
+        job.get("queue_ack_at"),
+    )
 
     job["status"] = "retry_queued"
     job["last_error"] = reason

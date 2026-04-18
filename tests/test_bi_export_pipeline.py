@@ -290,6 +290,39 @@ class TestQueueMonitor:
         retry_req = json.loads(raw[1])
         assert retry_req["_previous_target_path"] == "@22833"
 
+    def test_queue_retry_preserves_original_queue_timing(self):
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@22833",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "queued",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "submitted_at": 1000,
+            "monitor_started_at": 1005,
+            "queue_ack_at": 1010,
+            "last_transition_at": time.time(),
+        }
+
+        bi_export_shared.queue_retry(job, "watchdog: export queue stale")
+
+        raw = _r.blpop(bi_export_shared.EXPORT_REQUEST_QUEUE, timeout=1)
+        assert raw is not None
+        retry_req = json.loads(raw[1])
+        assert retry_req["_original_submitted_at"] == 1000
+        assert retry_req["_original_monitor_started_at"] == 1005
+        assert retry_req["_original_queue_ack_at"] == 1010
+
     def test_queue_retry_persists_retry_request_onto_saved_job(self):
         """Watchdog stall path: job["request"] must carry _previous_target_path so that
         bi_watchdog.py's json.dumps(job["request"]) requeue doesn't lose it on a second stall."""
@@ -318,6 +351,30 @@ class TestQueueMonitor:
 
         stored = bi_export_shared.load_job(job["request_id"])
         assert stored["request"]["_previous_target_path"] == "@22833"
+
+    def test_reattach_preserves_original_queue_age(self, monkeypatch):
+        payload = _request_payload(
+            _export_attempts=1,
+            _previous_target_path="@22833",
+            _original_submitted_at=1000,
+            _original_monitor_started_at=1005,
+            _original_queue_ack_at=1010,
+        )
+
+        monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (object(), "sid"))
+        monkeypatch.setattr(
+            bi_exporter,
+            "bi_get_export_queue",
+            lambda *args, **kwargs: [{"path": "@22833", "uri": "Clipboard\\foo.mp4"}],
+        )
+
+        job, error = bi_exporter._prepare_export(payload, "[T]")
+
+        assert error is None
+        assert job["status"] == "queued"
+        assert job["submitted_at"] == 1000
+        assert job["monitor_started_at"] == 1005
+        assert job["queue_ack_at"] == 1010
 
     def test_unacknowledged_export_is_retried(self, monkeypatch):
         payload = _request_payload()

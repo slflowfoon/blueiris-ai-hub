@@ -179,6 +179,8 @@ def _prepare_export(req, tag):
                 target_path=previous_target,
             )
             now = time.time()
+            submitted_at = float(req.get("_original_submitted_at", now) or now)
+            monitor_started_at = float(req.get("_original_monitor_started_at", submitted_at) or submitted_at)
             job = {
                 "request_id": req["request_id"],
                 "alert_request_id": req.get("alert_request_id"),
@@ -200,8 +202,9 @@ def _prepare_export(req, tag):
                 "status": "queued",
                 "export_attempts": int(req.get("_export_attempts", 0)),
                 "recovery_attempts": int(req.get("_recovery_attempts", 0)),
-                "submitted_at": now,
-                "monitor_started_at": now,
+                "submitted_at": submitted_at,
+                "monitor_started_at": monitor_started_at,
+                "queue_ack_at": req.get("_original_queue_ack_at"),
                 "last_transition_at": now,
                 "last_progress_log": 0,
                 "next_poll_at": now,
