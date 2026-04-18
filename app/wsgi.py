@@ -22,6 +22,7 @@ from settings_store import (
 from tasks import process_alert
 from werkzeug.utils import secure_filename
 from bi_mjpg import bi_mjpg_bp
+import psutil
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "super_secret_key_change_this")
@@ -784,6 +785,21 @@ HTML_TEMPLATE = r"""
     <link rel="icon" href="{{ url_for('static', filename='logo-mark.svg') }}" type="image/svg+xml">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="{{ url_for('static', filename='dashboard.css') }}" rel="stylesheet">
+    <style>
+        /* System health strip */
+        .status-strip { display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; padding:0.4rem 0.75rem; background:var(--bs-tertiary-bg); border:1px solid var(--bs-border-color); border-radius:0.5rem; font-size:0.72rem; color:var(--bs-secondary-color); min-height:2rem; }
+        .status-strip-divider { width:1px; height:1rem; background:var(--bs-border-color); flex-shrink:0; }
+        .status-strip-services,.status-strip-queues,.status-strip-resources { display:flex; align-items:center; gap:0.35rem; flex-wrap:wrap; }
+        .svc-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+        .svc-ok { background:#22c55e; } .svc-stale { background:#f59e0b; } .svc-dead { background:#ef4444; }
+        .svc-label { color:var(--bs-secondary-color); }
+        .queue-badge { padding:0.1rem 0.35rem; border-radius:0.25rem; background:var(--bs-body-bg); border:1px solid var(--bs-border-color); white-space:nowrap; }
+        .queue-badge.queue-hot { border-color:#f59e0b; color:#f59e0b; }
+        .status-strip-resources { gap:0.3rem; }
+        .status-res-label { color:var(--bs-secondary-color); }
+        .status-res-val { min-width:2.5rem; font-weight:600; color:var(--bs-body-color); }
+        .sparkline { vertical-align:middle; color:var(--bs-primary); opacity:0.8; }
+    </style>
 </head>
 <body>
 <div class="container py-4 py-lg-5 app-shell">
@@ -814,6 +830,22 @@ HTML_TEMPLATE = r"""
         <a id="update-link" href="#" target="_blank" rel="noopener">GitHub</a>.
         Run <code>docker compose pull && docker compose up -d</code> to update.
         <button type="button" id="dismiss-update" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+
+    <!-- System health strip -->
+    <div class="status-strip mb-3" id="statusStrip">
+        <div class="status-strip-services" id="statusServices"></div>
+        <div class="status-strip-divider"></div>
+        <div class="status-strip-queues" id="statusQueues"></div>
+        <div class="status-strip-divider"></div>
+        <div class="status-strip-resources">
+            <span class="status-res-label">CPU</span>
+            <svg id="cpuSparkline" class="sparkline" width="60" height="16" viewBox="0 0 60 16" preserveAspectRatio="none"></svg>
+            <span class="status-res-val" id="cpuVal">–</span>
+            <span class="status-res-label">RAM</span>
+            <svg id="ramSparkline" class="sparkline" width="60" height="16" viewBox="0 0 60 16" preserveAspectRatio="none"></svg>
+            <span class="status-res-val" id="ramVal">–</span>
+        </div>
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -1744,6 +1776,58 @@ document.addEventListener('DOMContentLoaded',()=>{
             });
         }
     }).catch(()=>{});
+
+    // --- System health strip ---
+    const METRICS_MAX_PTS = 20;
+    const METRICS_INTERVAL = 30000;
+    let _cpuHist = [], _ramHist = [];
+
+    const SERVICE_LABELS = {
+        worker: 'Worker', mute_bot: 'Mute Bot', bi_exporter: 'Exporter',
+        bi_queue_monitor: 'Q-Mon', bi_downloader: 'Downloader',
+        bi_watchdog: 'Watchdog', video_delivery_worker: 'Delivery'
+    };
+    const QUEUE_LABELS = {
+        export_requests: 'Export', download_requests: 'Download',
+        video_delivery_requests: 'Delivery', active_exports: 'Active'
+    };
+
+    function renderSparkline(svgEl, history) {
+        if (history.length < 2) return;
+        const w = 60, h = 16;
+        const pts = history.map((v, i) =>
+            `${(i / (METRICS_MAX_PTS - 1)) * w},${h - (v / 100) * h}`
+        ).join(' ');
+        svgEl.innerHTML = `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+
+    function fetchMetrics() {
+        fetch('/metrics').then(r => r.json()).then(data => {
+            _cpuHist.push(data.cpu_percent); if (_cpuHist.length > METRICS_MAX_PTS) _cpuHist.shift();
+            _ramHist.push(data.mem_percent); if (_ramHist.length > METRICS_MAX_PTS) _ramHist.shift();
+            document.getElementById('cpuVal').textContent = Math.round(data.cpu_percent) + '%';
+            document.getElementById('ramVal').textContent = Math.round(data.mem_percent) + '%';
+            renderSparkline(document.getElementById('cpuSparkline'), _cpuHist);
+            renderSparkline(document.getElementById('ramSparkline'), _ramHist);
+
+            const svcs = data.pipeline?.services || {};
+            document.getElementById('statusServices').innerHTML = Object.entries(SERVICE_LABELS).map(([k, label]) => {
+                const s = svcs[k]?.status || 'missing';
+                const cls = s === 'ok' ? 'svc-ok' : s === 'stale' ? 'svc-stale' : 'svc-dead';
+                return `<span class="svc-dot ${cls}" title="${k}: ${s}"></span><span class="svc-label">${label}</span>`;
+            }).join('');
+
+            const qs = data.pipeline?.queue_depths || {};
+            document.getElementById('statusQueues').innerHTML = Object.entries(QUEUE_LABELS).map(([k, label]) => {
+                const n = qs[k] ?? '?';
+                const hot = n > 0 ? ' queue-hot' : '';
+                return `<span class="queue-badge${hot}">${label} <strong>${n}</strong></span>`;
+            }).join('');
+        }).catch(() => {});
+    }
+
+    fetchMetrics();
+    setInterval(fetchMetrics, METRICS_INTERVAL);
 });
 </script>
 </body>
@@ -1821,6 +1905,16 @@ def status():
         "redis": redis_health,
         "pipeline": pipeline,
     }), 200 if redis_health["status"] == "ok" else 503
+
+
+@app.route('/metrics')
+def metrics():
+    pipeline = get_pipeline_status()
+    return jsonify({
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "mem_percent": psutil.virtual_memory().percent,
+        "pipeline": pipeline,
+    })
 
 
 @app.route('/api/check-update')
