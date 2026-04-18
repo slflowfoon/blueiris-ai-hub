@@ -1199,13 +1199,17 @@ def process_alert(image_path, config):
         still_caption = ai_text or "Motion detected."
 
         if instant_notify:
-            if ai_text:
-                update_telegram_caption(
-                    config,
-                    still_caption,
-                    caption_source="still",
-                    previous_text="Motion detected.",
-                )
+            if config.get('last_msg_id'):
+                if ai_text:
+                    update_telegram_caption(
+                        config,
+                        still_caption,
+                        caption_source="still",
+                        previous_text="Motion detected.",
+                    )
+            else:
+                # Initial placeholder send failed — fall back to sending the final still.
+                send_telegram(config, image_path, still_caption)
         else:
             send_telegram(config, image_path, still_caption)
 
