@@ -10,6 +10,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -34,6 +35,8 @@ class PiPupService : Service(), WebServer.Handler {
     private val mHandler: Handler = Handler()
     private var mOverlay: FrameLayout? = null
     private var mPopup: PopupView? = null
+    private var mCurrentPopupProps: PopupProps? = null
+    private var mExpanded = false
     private val mPairingStore by lazy { PairingStore(this) }
     private lateinit var mWebServer: WebServer
 
@@ -95,6 +98,8 @@ class PiPupService : Service(), WebServer.Handler {
     private fun removePopup(removeOverlay: Boolean = false) {
 
         mHandler.removeCallbacksAndMessages(null)
+        mCurrentPopupProps = null
+        mExpanded = false
 
         mPopup = mPopup?.let {
             it.destroy()
@@ -114,14 +119,16 @@ class PiPupService : Service(), WebServer.Handler {
     }
 
     @Suppress("DEPRECATION")
-    private fun createPopup(popup: PopupProps) {
+    private fun createPopup(popup: PopupProps, expanded: Boolean = false) {
         try {
 
-            Log.d(LOG_TAG, "Create popup: $popup")
+            Log.d(LOG_TAG, "Create popup: $popup expanded=$expanded")
 
             // remove current popup
 
             removePopup()
+            mCurrentPopupProps = popup
+            mExpanded = expanded
 
             // create or reuse the current overlay
 
@@ -130,6 +137,10 @@ class PiPupService : Service(), WebServer.Handler {
                 else -> FrameLayout(this).apply {
 
                     setPadding(0, 0, 0, 0)
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    setOnKeyListener { _, keyCode, event -> handleOverlayKey(event, keyCode) }
 
                     val layoutFlags: Int = when {
                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -140,7 +151,7 @@ class PiPupService : Service(), WebServer.Handler {
                         WindowManager.LayoutParams.MATCH_PARENT,
                         WindowManager.LayoutParams.MATCH_PARENT,
                         layoutFlags,
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        0,
                         PixelFormat.TRANSLUCENT
                     )
 
@@ -151,11 +162,16 @@ class PiPupService : Service(), WebServer.Handler {
 
                 // inflate the popup layout
 
-                mPopup = PopupView.build(this, popup)
+                mPopup = PopupView.build(this, popup).apply {
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    setOnKeyListener { _, keyCode, event -> handleOverlayKey(event, keyCode) }
+                    setOnClickListener { expandCurrentPopup() }
+                }
 
                 it.addView(mPopup, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
+                    if (expanded) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT,
+                    if (expanded) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT
                 ). apply {
 
                     // position the popup
@@ -168,17 +184,57 @@ class PiPupService : Service(), WebServer.Handler {
                         PopupProps.Position.Center -> Gravity.CENTER
                     }
                 })
+
+                it.post {
+                    (mPopup ?: it).requestFocus()
+                }
             }
 
             // schedule removal
 
-            mHandler.postDelayed({
-                removePopup(true)
-            }, (popup.duration * 1000).toLong())
+            if (shouldAutoDismiss(popup, expanded)) {
+                mHandler.postDelayed({
+                    removePopup(true)
+                }, (popup.duration * 1000).toLong())
+            }
 
         } catch (ex: Throwable) {
             ex.printStackTrace()
         }
+    }
+
+    private fun handleOverlayKey(event: KeyEvent?, keyCode: Int): Boolean {
+        if (event?.action != KeyEvent.ACTION_UP) {
+            return false
+        }
+        return when (keyCode) {
+            KeyEvent.KEYCODE_BACK -> {
+                removePopup(true)
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                expandCurrentPopup()
+                true
+            }
+            else -> false
+        }
+    }
+
+    private fun expandCurrentPopup() {
+        val popup = mCurrentPopupProps ?: return
+        if (mExpanded) {
+            return
+        }
+        createPopup(
+            buildExpandedPopup(
+                popup,
+                resources.displayMetrics.widthPixels,
+                resources.displayMetrics.heightPixels,
+            ),
+            expanded = true,
+        )
     }
 
     override fun handleHttpRequest(session: NanoHTTPD.IHTTPSession?): NanoHTTPD.Response {
@@ -294,6 +350,26 @@ class PiPupService : Service(), WebServer.Handler {
                 contentType.startsWith(MULTIPART_FORM_DATA) -> throw SecurityException("multipart notify is not supported")
                 else -> throw SecurityException("invalid content-type")
             }
+        }
+
+        internal fun buildExpandedPopup(popup: PopupProps, screenWidth: Int, screenHeight: Int): PopupProps {
+            val expandedMedia = when (val media = popup.media) {
+                is PopupProps.Media.Video -> media.copy(width = screenWidth)
+                is PopupProps.Media.Image -> media.copy(width = screenWidth)
+                is PopupProps.Media.Bitmap -> media.copy(width = screenWidth)
+                is PopupProps.Media.Mjpeg -> media.copy(width = screenWidth)
+                is PopupProps.Media.Web -> media.copy(width = screenWidth, height = screenHeight)
+                else -> media
+            }
+            return popup.copy(
+                duration = 0,
+                position = PopupProps.Position.Center,
+                media = expandedMedia,
+            )
+        }
+
+        internal fun shouldAutoDismiss(popup: PopupProps, expanded: Boolean): Boolean {
+            return !expanded && popup.duration > 0
         }
     }
 }
