@@ -471,6 +471,50 @@ def _load_tv_target_ids(camera_id, camera_name):
     return [row["tv_id"] for row in rows if row["tv_id"]]
 
 
+def _build_tv_group_priority_groups(configs):
+    from tv_delivery import get_group_priority_ids
+
+    grouped = {}
+    for config in configs:
+        group_name = (config.get("tv_group") or "").strip()
+        if not group_name:
+            continue
+        grouped.setdefault(group_name, []).append(
+            {
+                "id": config["id"],
+                "name": config["name"],
+                "tv_push_enabled": bool(int(config.get("tv_push_enabled") or 0)),
+                "stream_type": config.get("tv_stream_type") or "rtsp",
+                "has_stream": bool(
+                    config.get("tv_rtsp_url")
+                    or ((config.get("tv_stream_type") or "rtsp") == "mjpg" and config.get("bi_url"))
+                ),
+            }
+        )
+
+    groups = []
+    for group_name, cameras in grouped.items():
+        saved_ids = get_group_priority_ids(group_name)
+        cameras_by_id = {camera["id"]: camera for camera in cameras}
+        ordered = []
+        seen = set()
+
+        for camera_id in saved_ids:
+            camera = cameras_by_id.get(camera_id)
+            if camera:
+                ordered.append(camera)
+                seen.add(camera_id)
+
+        for camera in sorted(cameras, key=lambda item: (item["name"].lower(), item["id"])):
+            if camera["id"] not in seen:
+                ordered.append(camera)
+                seen.add(camera["id"])
+
+        groups.append({"name": group_name, "cameras": ordered})
+
+    return sorted(groups, key=lambda item: item["name"].lower())
+
+
 def _save_tv_targets(camera_id, camera_name, tv_ids):
     with get_db_connection() as conn:
         conn.execute(
@@ -1047,8 +1091,47 @@ HTML_TEMPLATE = r"""
                 <div class="card h-100">
                     <div class="card-body">
                         <h5 class="card-title">TV Group Priorities</h5>
-                        <p class="text-muted small">Grouped cameras can share a TV target. Drag-and-drop ordering is still pending; this release includes the persistence API and placeholder panel.</p>
-                        <div id="tv-group-priority-root" class="text-muted">Priority management UI is available in this feature branch, but the drag-and-drop editor is not finalized yet.</div>
+                        <p class="text-muted small">Drag cameras into the order you want the TV to prefer when multiple cameras from the same group are active at the same time.</p>
+                        {% if tv_group_priority_groups %}
+                        <div id="tv-group-priority-root" class="d-grid gap-3">
+                            {% for group in tv_group_priority_groups %}
+                            <section class="border rounded p-3 tv-group-priority-card" data-group-name="{{ group.name }}">
+                                <div class="d-flex justify-content-between align-items-center gap-3 mb-2">
+                                    <div>
+                                        <h6 class="mb-1">{{ group.name }}</h6>
+                                        <p class="text-muted small mb-0">Top item wins within this group. Different groups still replace each other by most recent trigger.</p>
+                                    </div>
+                                    <div class="text-end">
+                                        <button class="btn btn-sm btn-primary" type="button" onclick="saveTvGroupPriority('{{ group.name|e }}', this)" disabled>Save order</button>
+                                        <div class="small text-muted mt-1 tv-group-priority-status">Saved</div>
+                                    </div>
+                                </div>
+                                <div class="list-group tv-group-priority-list" data-group-name="{{ group.name }}">
+                                    {% for camera in group.cameras %}
+                                    <div class="list-group-item d-flex justify-content-between align-items-center gap-3 tv-group-priority-item" data-camera-id="{{ camera.id }}" draggable="true">
+                                        <div class="d-flex align-items-center gap-3">
+                                            <span class="text-muted" aria-hidden="true">↕</span>
+                                            <div>
+                                                <div>{{ camera.name }}</div>
+                                                <div class="small text-muted">{{ camera.stream_type|upper }}{% if not camera.has_stream %} • no stream configured{% endif %}</div>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex gap-2 flex-wrap justify-content-end">
+                                            {% if camera.tv_push_enabled %}
+                                            <span class="badge bg-primary">TV enabled</span>
+                                            {% else %}
+                                            <span class="badge bg-secondary">TV disabled</span>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </section>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div id="tv-group-priority-root" class="text-muted">Assign at least one camera to a TV group to manage priority order here.</div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -1544,6 +1627,67 @@ async function submitTvPairing(event){
     }
     return false;
 }
+function markTvGroupPriorityDirty(groupCard, message='Unsaved changes'){
+    if(!groupCard)return;
+    const button=groupCard.querySelector('button[onclick^="saveTvGroupPriority"]');
+    const status=groupCard.querySelector('.tv-group-priority-status');
+    if(button)button.disabled=false;
+    if(status){status.textContent=message;status.classList.remove('text-success');status.classList.add('text-muted');}
+}
+function initTvGroupPriorityEditor(){
+    const root=document.getElementById('tv-group-priority-root');
+    if(!root)return;
+    let draggedItem=null;
+    root.querySelectorAll('.tv-group-priority-item').forEach(item=>{
+        item.addEventListener('dragstart',()=>{
+            draggedItem=item;
+            item.classList.add('opacity-50');
+        });
+        item.addEventListener('dragend',()=>{
+            item.classList.remove('opacity-50');
+            draggedItem=null;
+        });
+    });
+    root.querySelectorAll('.tv-group-priority-list').forEach(list=>{
+        list.addEventListener('dragover',event=>{
+            event.preventDefault();
+            const afterElement=[...list.querySelectorAll('.tv-group-priority-item:not(.opacity-50)')].find(child=>{
+                const box=child.getBoundingClientRect();
+                return event.clientY < box.top + (box.height / 2);
+            });
+            if(!draggedItem)return;
+            if(afterElement){list.insertBefore(draggedItem, afterElement);}else{list.appendChild(draggedItem);}
+        });
+        list.addEventListener('drop',event=>{
+            event.preventDefault();
+            markTvGroupPriorityDirty(list.closest('.tv-group-priority-card'));
+        });
+    });
+}
+async function saveTvGroupPriority(groupName, btn){
+    const groupCard=btn.closest('.tv-group-priority-card');
+    const status=groupCard?.querySelector('.tv-group-priority-status');
+    const list=groupCard?.querySelector('.tv-group-priority-list');
+    if(!list)return;
+    const cameraIds=[...list.querySelectorAll('.tv-group-priority-item')].map(item=>item.dataset.cameraId).filter(Boolean);
+    btn.disabled=true;
+    if(status){status.textContent='Saving...';status.classList.remove('text-success');status.classList.add('text-muted');}
+    try{
+        const response=await fetch('/tv/groups/'+encodeURIComponent(groupName)+'/priority',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({camera_ids:cameraIds}),
+        });
+        if(!response.ok){
+            throw new Error('Save failed');
+        }
+        if(status){status.textContent='Saved';status.classList.remove('text-muted');status.classList.add('text-success');}
+    }catch(_err){
+        if(status){status.textContent='Save failed';status.classList.remove('text-success');status.classList.add('text-muted');}
+        btn.disabled=false;
+        return;
+    }
+}
 function openEditModal(c){
     document.getElementById('edit_name').value=c.name;
     document.getElementById('edit_gemini_key').value=c.gemini_key;
@@ -1586,6 +1730,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     const logSourceFilter=document.getElementById('logSourceFilter');
     if(logSourceFilter)logSourceFilter.addEventListener('change',renderLogs);
     renderLogs();
+    initTvGroupPriorityEditor();
     function relativeTime(ts){const diff=Math.floor((Date.now()-new Date(ts.replace(' ','T')))/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago';}
     document.querySelectorAll('.last-seen[data-ts]').forEach(el=>{el.textContent='Last triggered: '+relativeTime(el.dataset.ts);el.title=el.dataset.ts;});
     fetch('/api/check-update').then(r=>r.json()).then(d=>{
@@ -1633,6 +1778,7 @@ def index():
     caption_mode = get_caption_mode(primary_chat_id) if primary_chat_id else None
     known_plates = load_known_plates()
     global_settings = get_global_settings()
+    tv_group_priority_groups = _build_tv_group_priority_groups(configs)
     tv_apk_download_path = url_for('download_tv_overlay_apk')
     tv_apk_download_url = (
         f"{BASE_URL}{tv_apk_download_path}"
@@ -1652,6 +1798,7 @@ def index():
         primary_chat_id=primary_chat_id,
         known_plates=known_plates,
         global_settings=global_settings,
+        tv_group_priority_groups=tv_group_priority_groups,
         tv_apk_download_url=tv_apk_download_url,
         current_version=CURRENT_VERSION,
     )

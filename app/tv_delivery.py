@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 
 import requests
 
@@ -392,35 +393,115 @@ def get_group_priority_ids(group_name):
     return [row["camera_id"] for row in rows if row["camera_id"]]
 
 
-def resolve_group_winner(group_name, triggered_configs):
-    priority_ids = get_group_priority_ids(group_name)
-    if not priority_ids:
-        return None
+def _config_has_tv_stream(config):
+    stream_type = config.get("tv_stream_type") or "rtsp"
+    return (
+        int(config.get("tv_push_enabled") or 0) == 1
+        and (
+            (stream_type == "rtsp" and config.get("tv_rtsp_url"))
+            or (stream_type == "mjpg" and config.get("bi_url"))
+        )
+    )
 
+
+def _ordered_group_configs(group_name, candidate_configs):
+    priority_ids = get_group_priority_ids(group_name)
+    candidate_by_id = {
+        config.get("id"): config
+        for config in candidate_configs
+        if config.get("id")
+    }
+    ordered = []
+    seen = set()
+
+    for camera_id in priority_ids:
+        config = candidate_by_id.get(camera_id)
+        if config:
+            ordered.append(config)
+            seen.add(camera_id)
+
+    for config in sorted(
+        candidate_configs,
+        key=lambda item: ((item.get("name") or "").lower(), item.get("id") or ""),
+    ):
+        camera_id = config.get("id")
+        if camera_id and camera_id not in seen:
+            ordered.append(config)
+            seen.add(camera_id)
+
+    return ordered
+
+
+def resolve_group_winner(group_name, triggered_configs):
     eligible_configs = [
         config
         for config in triggered_configs
-        if int(config.get("tv_push_enabled") or 0) == 1
-        and (
-            config.get("tv_rtsp_url")
-            or ((config.get("tv_stream_type") or "rtsp") == "mjpg" and config.get("bi_url"))
-        )
+        if _config_has_tv_stream(config)
     ]
     if not eligible_configs:
         return None
 
-    eligible_by_identifier = {}
-    for config in eligible_configs:
-        camera_id = config.get("id")
-        if camera_id and camera_id not in eligible_by_identifier:
-            eligible_by_identifier[camera_id] = config
+    ordered_configs = _ordered_group_configs(group_name, eligible_configs)
+    return ordered_configs[0] if ordered_configs else None
 
-    for camera_id in priority_ids:
-        winner = eligible_by_identifier.get(camera_id)
-        if winner:
-            return winner
 
-    return None
+def _parse_last_triggered(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _is_group_camera_active(config, now_timestamp):
+    if not _config_has_tv_stream(config):
+        return False
+
+    triggered_at = _parse_last_triggered(config.get("last_triggered"))
+    if not triggered_at:
+        return False
+
+    try:
+        duration = int(config.get("tv_duration_seconds") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration <= 0:
+        return False
+
+    return triggered_at.timestamp() + duration >= now_timestamp
+
+
+def should_dispatch_group_alert(config, now_timestamp=None):
+    group_name = (config.get("tv_group") or "").strip()
+    if not group_name:
+        return True, config
+
+    if now_timestamp is None:
+        now_timestamp = time.time()
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, tv_push_enabled, tv_rtsp_url, tv_duration_seconds,
+                   tv_group, tv_stream_type, bi_url, last_triggered
+            FROM configs
+            WHERE tv_group=?
+            """,
+            (group_name,),
+        ).fetchall()
+
+    active_configs = [dict(row) for row in rows if _is_group_camera_active(dict(row), now_timestamp)]
+    current_id = config.get("id")
+    if current_id and current_id not in {item.get("id") for item in active_configs}:
+        active_configs.append(dict(config))
+
+    winner = resolve_group_winner(group_name, active_configs)
+    if not winner:
+        return True, config
+    return winner.get("id") == current_id, winner
 
 
 def get_paired_tv(tv_id):

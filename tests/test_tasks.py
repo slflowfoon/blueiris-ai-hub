@@ -235,6 +235,11 @@ def test_process_alert_dispatches_tv_alert_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "send_telegram", lambda cfg, *_args, **_kwargs: cfg.update({"last_msg_id": 321}))
     monkeypatch.setattr(
         tv_delivery,
+        "should_dispatch_group_alert",
+        lambda *_args, **_kwargs: (True, config),
+    )
+    monkeypatch.setattr(
+        tv_delivery,
         "dispatch_tv_alert",
         lambda cfg, tag: dispatched.setdefault("call", {"config": cfg, "tag": tag}),
     )
@@ -295,6 +300,55 @@ def test_process_alert_logs_mjpg_skip_reason_without_rtsp_message(tmp_path, monk
 
     assert "TV dispatch skipped (no MJPG proxy URL)" in caplog.text
     assert "no RTSP URL" not in caplog.text
+
+
+def test_process_alert_skips_tv_dispatch_when_higher_priority_group_camera_is_active(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "id": "cfg-low",
+        "name": "Lower Driveway",
+        "request_id": "req12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "prompt": "Describe motion.",
+        "instant_notify": 0,
+        "send_video": 0,
+        "trigger_filename": "",
+        "tv_push_enabled": 1,
+        "tv_rtsp_url": "rtsp://camera/live",
+        "tv_duration_seconds": 25,
+        "tv_group": "driveway",
+    }
+
+    dispatch_calls = []
+
+    monkeypatch.setattr(tasks, "is_muted", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "check_auto_mute", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "build_prompt", lambda *_args, **_kwargs: "Describe motion.")
+    monkeypatch.setattr(tasks, "optimize_image", lambda *_args, **_kwargs: "encoded")
+    monkeypatch.setattr(tasks, "analyze_image_parallel", lambda *_args, **_kwargs: "Vehicle arrived")
+    monkeypatch.setattr(tasks, "send_telegram", lambda cfg, *_args, **_kwargs: cfg.update({"last_msg_id": 321}))
+    monkeypatch.setattr(
+        tv_delivery,
+        "should_dispatch_group_alert",
+        lambda *_args, **_kwargs: (
+            False,
+            {"id": "cfg-high", "name": "High Driveway"},
+        ),
+    )
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: dispatch_calls.append(True),
+    )
+
+    with caplog.at_level(logging.INFO):
+        tasks.process_alert(str(image_path), config)
+
+    assert dispatch_calls == []
+    assert "TV dispatch skipped (higher-priority camera active: 'High Driveway')" in caplog.text
 
 
 # ---------------------------------------------------------------------------

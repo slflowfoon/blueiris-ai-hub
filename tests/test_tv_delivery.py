@@ -82,6 +82,102 @@ def test_higher_priority_camera_wins_group(tmp_path):
         wsgi.DB_FILE = original_db_file
 
 
+def test_should_dispatch_group_alert_blocks_lower_priority_when_higher_priority_is_active(tmp_path):
+    db_path = tmp_path / "group_priority_active.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+        tv_delivery.set_group_priority("driveway", ["high", "low"])
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, last_triggered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("high", "High Driveway", "g", "t", "c", "p", 1, "rtsp://high", 20, "driveway", "2026-04-18 10:00:05"),
+            )
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, last_triggered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("low", "Lower Driveway", "g", "t", "c", "p", 1, "rtsp://low", 20, "driveway", "2026-04-18 10:00:00"),
+            )
+
+        should_dispatch, winner = tv_delivery.should_dispatch_group_alert(
+            {
+                "id": "low",
+                "name": "Lower Driveway",
+                "tv_push_enabled": 1,
+                "tv_rtsp_url": "rtsp://low",
+                "tv_duration_seconds": 20,
+                "tv_group": "driveway",
+                "last_triggered": "2026-04-18 10:00:00",
+            },
+            now_timestamp=1713434410.0,
+        )
+
+        assert should_dispatch is False
+        assert winner["id"] == "high"
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
+def test_should_dispatch_group_alert_allows_current_camera_when_higher_priority_is_inactive(tmp_path):
+    db_path = tmp_path / "group_priority_inactive.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+        tv_delivery.set_group_priority("driveway", ["high", "low"])
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, last_triggered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("high", "High Driveway", "g", "t", "c", "p", 1, "rtsp://high", 5, "driveway", "2026-04-18 10:00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group, last_triggered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("low", "Lower Driveway", "g", "t", "c", "p", 1, "rtsp://low", 20, "driveway", "2026-04-18 10:00:10"),
+            )
+
+        should_dispatch, winner = tv_delivery.should_dispatch_group_alert(
+            {
+                "id": "low",
+                "name": "Lower Driveway",
+                "tv_push_enabled": 1,
+                "tv_rtsp_url": "rtsp://low",
+                "tv_duration_seconds": 20,
+                "tv_group": "driveway",
+                "last_triggered": "2026-04-18 10:00:10",
+            },
+            now_timestamp=1776506420.0,
+        )
+
+        assert should_dispatch is True
+        assert winner["id"] == "low"
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
 def test_group_winner_skips_camera_without_rtsp(tmp_path):
     db_path = tmp_path / "group_priority_rtsp.sqlite"
     original_db_file = wsgi.DB_FILE
