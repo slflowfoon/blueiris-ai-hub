@@ -148,6 +148,27 @@ def _safe_request_error(exc):
     return type(exc).__name__
 
 
+def _safe_telegram_response_error(resp):
+    """Return a sanitized Telegram API error summary for logs."""
+    status = getattr(resp, "status_code", None)
+    detail = None
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            description = payload.get("description")
+            if isinstance(description, str) and description.strip():
+                detail = description.strip().replace("\n", " ")
+    except Exception:
+        detail = None
+
+    if detail:
+        detail = detail[:160]
+        return f"status={status} detail={detail}" if status else f"detail={detail}"
+    if status:
+        return f"status={status}"
+    return type(resp).__name__
+
+
 def get_api_keys(config):
     raw = config.get('gemini_key') or ''
     return [k.strip() for k in raw.split(',') if k.strip()]
@@ -648,8 +669,9 @@ def send_telegram(config, img_path, caption, service_logger=None):
                     config,
                     service_logger=service_logger,
                     error_code="telegram_photo_send_failed",
+                    reason=_safe_telegram_response_error(resp),
                 )
-    except Exception:
+    except Exception as exc:
         log_telegram_event(
             logging.ERROR,
             tag,
@@ -658,6 +680,7 @@ def send_telegram(config, img_path, caption, service_logger=None):
             config,
             service_logger=service_logger,
             error_code="telegram_photo_send_failed",
+            reason=_safe_request_error(exc),
         )
 
 

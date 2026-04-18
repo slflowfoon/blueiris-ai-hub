@@ -45,6 +45,34 @@ def test_send_telegram_logs_photo_sent(tmp_path, monkeypatch, caplog):
     assert "message_id=321" in caplog.text
 
 
+def test_send_telegram_logs_photo_send_failure_reason(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    monkeypatch.setattr(
+        tasks.requests,
+        "post",
+        lambda *args, **kwargs: _DummyResponse(
+            ok=False,
+            status_code=400,
+            payload={"description": "Bad Request: chat not found"},
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        tasks.send_telegram(config, str(image_path), "Motion detected.")
+
+    assert "phase=telegram_photo_send_failed" in caplog.text
+    assert "reason=status=400 detail=Bad Request: chat not found" in caplog.text
+
+
 def test_update_telegram_caption_logs_source_and_change(monkeypatch, caplog):
     config = {
         "name": "Driveway",
