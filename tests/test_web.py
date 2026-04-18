@@ -639,6 +639,93 @@ def test_delete_paired_tv_redirects_back_to_tv_settings(client, tmp_path, monkey
         wsgi.DB_FILE = original_db_file
 
 
+def test_tv_group_priorities_render_saved_camera_order(client, tmp_path):
+    db_path = tmp_path / "tv_group_priority_index.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+        wsgi.get_mute_status = lambda *_args, **_kwargs: []
+        wsgi.get_caption_mode = lambda *_args, **_kwargs: None
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("cam-high", "High Driveway", "g", "t", "1", "p", 1, "rtsp://high", 20, "driveway"),
+            )
+            conn.execute(
+                """
+                INSERT INTO configs (
+                    id, name, gemini_key, telegram_token, chat_id, prompt,
+                    tv_push_enabled, tv_rtsp_url, tv_duration_seconds, tv_group
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("cam-low", "Lower Driveway", "g", "t", "1", "p", 1, "rtsp://low", 20, "driveway"),
+            )
+            conn.execute(
+                """
+                INSERT INTO camera_group_priorities (id, camera_id, group_name, priority)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), "cam-high", "driveway", 0),
+            )
+            conn.execute(
+                """
+                INSERT INTO camera_group_priorities (id, camera_id, group_name, priority)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), "cam-low", "driveway", 1),
+            )
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'data-group-name="driveway"' in html
+        tv_priority_section = html.split('data-group-name="driveway"', 1)[1]
+        assert tv_priority_section.index("High Driveway") < tv_priority_section.index("Lower Driveway")
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
+def test_save_tv_group_priority_persists_order(client, tmp_path):
+    db_path = tmp_path / "tv_group_priority_save.sqlite"
+    original_db_file = wsgi.DB_FILE
+
+    try:
+        wsgi.DB_FILE = str(db_path)
+        wsgi.init_db()
+
+        response = client.post(
+            "/tv/groups/driveway/priority",
+            json={"camera_ids": ["cam-high", "cam-low"]},
+        )
+
+        assert response.status_code == 200
+
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT camera_id, group_name, priority
+                FROM camera_group_priorities
+                ORDER BY priority ASC, created_at ASC, id ASC
+                """
+            ).fetchall()
+
+        assert [row["camera_id"] for row in rows] == ["cam-high", "cam-low"]
+        assert [row["priority"] for row in rows] == [0, 1]
+        assert all(row["group_name"] == "driveway" for row in rows)
+    finally:
+        wsgi.DB_FILE = original_db_file
+
+
 def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
