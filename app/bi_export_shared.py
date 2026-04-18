@@ -27,6 +27,8 @@ VIDEO_DELIVERY_QUEUE     = "bi:delivery:requests"
 ACTIVE_EXPORT_SET        = "bi:exports:active"
 JOB_KEY_PREFIX           = "bi:job:"
 RESULT_KEY_PREFIX        = "bi:result:"
+DELIVERY_CLAIM_KEY_PREFIX = "bi:delivery:claim:"
+DELIVERY_HEARTBEAT_KEY_PREFIX = "bi:delivery:heartbeat:"
 RESULT_KEY_TTL           = 300
 STALE_REQUEST_AGE        = 600
 EXPORT_QUEUE_TIMEOUT     = 180
@@ -37,6 +39,7 @@ QUEUE_PROGRESS_LOG_INTERVAL = 15
 MAX_EXPORT_ATTEMPTS      = 2
 MAX_RECOVERY_ATTEMPTS    = 1
 MAX_DELIVERY_ATTEMPTS    = 3
+DELIVERY_CLAIM_TTL       = 180
 SESSION_KEY_PREFIX       = "bi:session:"
 SESSION_TTL              = 3600
 WATCHDOG_INTERVAL        = 15
@@ -93,6 +96,14 @@ def job_key(request_id):
 
 def result_key(request_id):
     return f"{RESULT_KEY_PREFIX}{request_id}"
+
+
+def delivery_claim_key(request_id):
+    return f"{DELIVERY_CLAIM_KEY_PREFIX}{request_id}"
+
+
+def delivery_heartbeat_key(request_id):
+    return f"{DELIVERY_HEARTBEAT_KEY_PREFIX}{request_id}"
 
 
 def job_tag(job):
@@ -403,6 +414,57 @@ def write_result(request_id, output_path, ok, error_msg=None):
     r.expire(result_key(request_id), RESULT_KEY_TTL)
 
 
+def claim_delivery(request_id, owner, ttl=DELIVERY_CLAIM_TTL):
+    claimed = r.set(delivery_claim_key(request_id), owner, nx=True, ex=ttl)
+    if claimed:
+        touch_delivery_heartbeat(request_id, ttl=ttl)
+    return bool(claimed)
+
+
+def refresh_delivery_claim(request_id, owner, ttl=DELIVERY_CLAIM_TTL):
+    key = delivery_claim_key(request_id)
+    current = r.get(key)
+    if isinstance(current, bytes):
+        current = current.decode()
+    if current != owner:
+        return False
+    r.expire(key, ttl)
+    touch_delivery_heartbeat(request_id, ttl=ttl)
+    return True
+
+
+def touch_delivery_heartbeat(request_id, ttl=DELIVERY_CLAIM_TTL):
+    now = time.time()
+    r.setex(delivery_heartbeat_key(request_id), ttl, str(now))
+    return now
+
+
+def delivery_heartbeat_age(request_id, now=None):
+    raw = r.get(delivery_heartbeat_key(request_id))
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        ts = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return (now or time.time()) - ts
+
+
+def clear_delivery_claim(request_id, owner=None):
+    key = delivery_claim_key(request_id)
+    if owner is None:
+        r.delete(key, delivery_heartbeat_key(request_id))
+        return
+
+    current = r.get(key)
+    if isinstance(current, bytes):
+        current = current.decode()
+    if current == owner:
+        r.delete(key, delivery_heartbeat_key(request_id))
+
+
 def finish_job(job, ok, error_msg=None):
     request_id = job["request_id"]
     if ok:
@@ -417,6 +479,7 @@ def finish_job(job, ok, error_msg=None):
 
 
 def mark_delivery_queued(job):
+    clear_delivery_claim(job["request_id"])
     job["delivery_status"] = "queued"
     job["delivery_queued_at"] = time.time()
     job["last_transition_at"] = job["delivery_queued_at"]
@@ -425,6 +488,7 @@ def mark_delivery_queued(job):
 
 
 def finish_delivery(job, ok, error_msg=None):
+    clear_delivery_claim(job["request_id"])
     if ok:
         job["delivery_status"] = "completed"
         job["status"] = "completed"
@@ -437,6 +501,7 @@ def finish_delivery(job, ok, error_msg=None):
 
 
 def requeue_delivery(job, reason):
+    clear_delivery_claim(job["request_id"])
     job["delivery_status"] = "retry_queued"
     job["delivery_error"] = reason
     job["delivery_attempts"] = int(job.get("delivery_attempts", 0))

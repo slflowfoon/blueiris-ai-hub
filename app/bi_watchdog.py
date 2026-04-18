@@ -21,6 +21,7 @@ from bi_export_shared import (
     VIDEO_DELIVERY_QUEUE,
     WATCHDOG_INTERVAL,
     WATCHDOG_STALE_BUFFER,
+    delivery_heartbeat_age,
     finish_delivery,
     iter_job_ids,
     job_tag,
@@ -177,6 +178,9 @@ def _repair_job(job):
                 return
 
             if delivery_status == "processing" and transition_age >= (DELIVERY_QUEUE_STALE_AGE * 2):
+                heartbeat_age = delivery_heartbeat_age(request_id, now=now)
+                if heartbeat_age is not None and heartbeat_age < DELIVERY_QUEUE_STALE_AGE:
+                    return
                 if int(job.get("delivery_attempts", 0)) < MAX_DELIVERY_ATTEMPTS:
                     log_job_event(
                         logging.WARNING,

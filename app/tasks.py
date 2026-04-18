@@ -1120,13 +1120,11 @@ def process_alert(image_path, config):
 
         current_time = datetime.now().strftime("%I:%M %p")
         prompt = f"Current time: {current_time}. {build_prompt(config)}"
-
-        encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
-        ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
+        if instant_notify:
+            send_telegram(config, image_path, "Motion detected.")
 
-        still_caption = ai_text or "Motion detected."
         export_payload_future = None
         if (
             config.get('send_video') == 1
@@ -1146,8 +1144,11 @@ def process_alert(image_path, config):
         else:
             export_prepare_executor = None
 
+        encoded = optimize_image(image_path)
+        ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
+        still_caption = ai_text or "Motion detected."
+
         if instant_notify:
-            send_telegram(config, image_path, "Motion detected.")
             if ai_text:
                 update_telegram_caption(
                     config,

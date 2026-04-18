@@ -208,3 +208,13 @@ graph LR
     mute_bot -->|/mute /unmute /caption| TG
     bi_watchdog -. monitors .-> VP
 ```
+
+## Delivery Scaling
+
+The follow-up video delivery stage can be scaled independently when Telegram video replacements start queueing behind:
+
+```bash
+docker compose up -d --scale video_delivery_worker=2
+```
+
+The delivery worker uses a Redis claim plus heartbeat per request, so duplicate queue items or watchdog requeues do not cause two replicas to process the same Telegram delivery concurrently.
