@@ -61,12 +61,12 @@ jobs:
 
       - name: Rename APK
         if: github.event_name == 'release'
-        run: cp app/build/outputs/apk/release/app-release.apk pipup-${{ github.ref_name }}.apk
+        run: cp app/build/outputs/apk/release/app-release.apk blue-iris-ai-hub-tv-${{ github.ref_name }}.apk
 
       - name: Upload APK to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: android-tv-overlay/pipup-${{ github.ref_name }}.apk
+          files: android-tv-overlay/blue-iris-ai-hub-tv-${{ github.ref_name }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
