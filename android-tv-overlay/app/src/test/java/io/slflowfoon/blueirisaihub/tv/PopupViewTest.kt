@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import android.view.ViewGroup
 import org.junit.Assert.assertEquals

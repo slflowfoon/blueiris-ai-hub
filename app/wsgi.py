@@ -1030,10 +1030,10 @@ HTML_TEMPLATE = r"""
                     <span class="text-muted small">Expand</span>
                 </summary>
                 <ol class="mb-0 mt-3 ps-3">
-                    <li>Copy the <strong>TV App Downloader URL</strong> below, open <code>Downloader</code> on the TV, and enter the URL to install the PiPup APK.</li>
-                    <li>Open the <strong>PiPup</strong> app on the TV and note the <strong>server address</strong> and <strong>pairing code</strong> shown on screen.</li>
+                    <li>Copy the <strong>TV App Downloader URL</strong> below, open <code>Downloader</code> on the TV, and enter the URL to install the Blue Iris AI Hub TV APK.</li>
+                    <li>Open the <strong>Blue Iris AI Hub TV</strong> app on the TV and note the <strong>server address</strong> and <strong>pairing code</strong> shown on screen.</li>
                     <li>On the TV, go to <strong>Settings &rarr; Apps &rarr; Special app access &rarr; Display over other apps</strong> (or <em>Appear on top</em>).</li>
-                    <li>Find <strong>PiPup / nl.rogro82.pipup</strong> in the list and <strong>enable</strong> the permission. Without this the overlay will not appear.</li>
+                    <li>Find <strong>Blue Iris AI Hub TV / io.slflowfoon.blueirisaihub.tv</strong> in the list and <strong>enable</strong> the permission. Without this the overlay will not appear.</li>
                     <li>Use the <strong>Pair TV</strong> form below, entering the TV&rsquo;s IP and the pairing code from step 2.</li>
                     <li>In each camera&rsquo;s config, enable <strong>Push stream to TV overlay</strong> and set the RTSP URL, duration, and TV group.</li>
                 </ol>

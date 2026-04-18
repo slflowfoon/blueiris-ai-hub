@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import com.fasterxml.jackson.databind.JsonNode
 import javax.crypto.Mac

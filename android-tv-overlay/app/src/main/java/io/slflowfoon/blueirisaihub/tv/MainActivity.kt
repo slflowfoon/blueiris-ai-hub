@@ -12,7 +12,7 @@
  * the License.
  */
 
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import android.app.Activity
 import android.content.Intent
@@ -25,7 +25,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import nl.rogro82.pipup.Utils.getIpAddress
+import io.slflowfoon.blueirisaihub.tv.Utils.getIpAddress
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -50,12 +50,12 @@ class MainActivity : Activity() {
                 textViewConnection.setText(R.string.server_running)
                 textViewServerAddress.apply {
                     visibility = View.VISIBLE
-                    text = resources.getString(R.string.server_address, ipAddress, PiPupService.SERVER_PORT)
+                    text = resources.getString(R.string.server_address, ipAddress, OverlayReceiverService.SERVER_PORT)
                 }
                 val pending = pairingStore.getOrCreatePendingPairing(
                     tvName = Build.MODEL ?: "Android TV",
                     ipAddress = ipAddress,
-                    port = PiPupService.SERVER_PORT,
+                    port = OverlayReceiverService.SERVER_PORT,
                 )
                 val isPaired = pairingStore.getSharedSecret() != null
                 textViewPairingStatus.setText(if (isPaired) R.string.pairing_status_paired else R.string.pairing_status_waiting)
@@ -70,7 +70,7 @@ class MainActivity : Activity() {
 
         buttonCheckUpdate.setOnClickListener { checkForUpdate(buttonCheckUpdate) }
 
-        val serviceIntent = Intent(this, PiPupService::class.java)
+        val serviceIntent = Intent(this, OverlayReceiverService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
@@ -143,13 +143,13 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     btn.isEnabled = true
                     btn.text = "Check for Updates"
-                    Toast.makeText(this, "Enable 'Install unknown apps' for PiPup first", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Enable 'Install unknown apps' for Blue Iris AI Hub TV first", Toast.LENGTH_LONG).show()
                     startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
                 }
                 return
             }
 
-            val apkFile = File(cacheDir, "pipup-update.apk")
+            val apkFile = File(cacheDir, "blueiris-ai-hub-tv-update.apk")
             val conn = URL(apkUrl).openConnection() as HttpURLConnection
             conn.connectTimeout = 10000
             conn.readTimeout = 60000
@@ -172,7 +172,7 @@ class MainActivity : Activity() {
                 }
             }
 
-            val uri = FileProvider.getUriForFile(this, "nl.rogro82.pipup.fileprovider", apkFile)
+            val uri = FileProvider.getUriForFile(this, "io.slflowfoon.blueirisaihub.tv.fileprovider", apkFile)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK

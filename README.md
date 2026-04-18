@@ -158,13 +158,13 @@ Do not run `docker compose down -v` unless you intentionally want to delete pers
 
 ## Android TV Overlay
 
-The hub can push camera popups to an Android TV running the bundled `PiPup` receiver app. A camera can target one or more paired TVs, and the same webhook flow that drives Telegram alerts can also trigger TV overlays.
+The hub can push camera popups to an Android TV running the bundled `Blue Iris AI Hub TV` receiver app. A camera can target one or more paired TVs, and the same webhook flow that drives Telegram alerts can also trigger TV overlays.
 
 ### Setup
 
 1. Open the hub dashboard and copy the `TV App Downloader URL`.
-2. On the TV, open the `Downloader` app and install `PiPup`.
-3. Launch `PiPup` on the TV and note the pairing code it shows.
+2. On the TV, open the `Downloader` app and install `Blue Iris AI Hub TV`.
+3. Launch `Blue Iris AI Hub TV` on the TV and note the pairing code it shows.
 4. In the hub dashboard, pair the TV using its IP address and pairing code.
 5. Edit the camera config and enable `Push stream to TV overlay`.
 

@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import android.app.*
 import android.content.Context
@@ -31,7 +31,7 @@ data class PairingCompleteResponse(
     val device_id: String,
 )
 
-class PiPupService : Service(), WebServer.Handler {
+class OverlayReceiverService : Service(), WebServer.Handler {
     private val mHandler: Handler = Handler()
     private var mOverlay: FrameLayout? = null
     private var mPopup: PopupView? = null
@@ -52,7 +52,7 @@ class PiPupService : Service(), WebServer.Handler {
         )
 
         val mBuilder = NotificationCompat.Builder(this, "service_channel")
-            .setContentTitle("PiPup")
+            .setContentTitle("Blue Iris AI Hub TV")
             .setContentText("Service running")
             .setContentIntent(pendingIntent)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -333,7 +333,7 @@ class PiPupService : Service(), WebServer.Handler {
     }
 
     companion object {
-        const val LOG_TAG = "PiPupService"
+        const val LOG_TAG = "OverlayReceiverService"
         const val SERVER_PORT = 7979
         const val ONGOING_NOTIFICATION_ID = 123
         const val MULTIPART_FORM_DATA = "multipart/form-data"

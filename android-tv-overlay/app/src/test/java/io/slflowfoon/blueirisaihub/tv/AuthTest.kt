@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -82,7 +82,7 @@ class AuthTest {
     @Test
     fun rejectsMultipartNotifyRequests() {
         assertThrows(SecurityException::class.java) {
-            PiPupService.parseNotifyPopup(
+            OverlayReceiverService.parseNotifyPopup(
                 "multipart/form-data; boundary=----test",
                 "payload=not-json",
                 "secret-123"

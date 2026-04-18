@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import com.fasterxml.jackson.core.JsonFactory
 import com.fasterxml.jackson.databind.ObjectMapper

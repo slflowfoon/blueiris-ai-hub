@@ -14,7 +14,7 @@ Install [ADB](https://www.xda-developers.com/install-adb-windows-macos-linux/#ad
 
 Enable Developer Options on your AndroidTV/[FireTV](https://www.xda-developers.com/how-to-access-developer-options-amazon-fire-tv/)
 
-Download the APK from the [release page](https://github.com/desertblade/PiPup/releases)
+Download the APK from the Blue Iris AI Hub GitHub release page.
 
 In a Terminal run the following commands to install the APK:
 
@@ -23,7 +23,7 @@ In a Terminal run the following commands to install the APK:
 
 ./adb install app-debug.apk
 
-./adb shell appops set nl.rogro82.pipup SYSTEM_ALERT_WINDOW allow
+./adb shell appops set io.slflowfoon.blueirisaihub.tv SYSTEM_ALERT_WINDOW allow
 ```
 
 Windows users probably don't need the ./
@@ -122,7 +122,7 @@ Here is the automation I use. Change media_player.firetv_cube to your device and
     - service: androidtv.adb_command                         
       data:                            
         entity_id: media_player.firetv_cube                   
-        command: ps -ef | grep -v grep | grep pipup || am start nl.rogro82.pipup/.MainActivity
+        command: ps -ef | grep -v grep | grep blueirisaihub || am start io.slflowfoon.blueirisaihub.tv/.MainActivity
   # This will exit the screensaver
     - service: androidtv.adb_command
       data:
