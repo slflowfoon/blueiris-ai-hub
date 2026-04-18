@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

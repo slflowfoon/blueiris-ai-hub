@@ -1,12 +1,12 @@
-# PiPup
+# Blue Iris AI Hub TV
 
-PiPup is an application that allows displaying user-defined custom notifications on Android TV.
+Blue Iris AI Hub TV is an Android TV receiver app that displays camera overlays pushed from Blue Iris AI Hub.
 
 __This Fork adds a transparent background to the WebView (instead of white), full screen WebView, all default padding/margins removed, Javascript support, Allows insecure connections (HTTP), (desertblade) and better closing of the webview, which should kill connections to the server.__
 
-APK can be found here: https://github.com/my-ugly-code/PiPupTransparent/releases
+APK is built and released from the Blue Iris AI Hub repository releases.
 
-![](https://github.com/rogro82/PiPup/raw/master/graphics/screenshot-1.png)
+This fork is tailored for Blue Iris AI Hub pairing, signed alerts, and TV overlay playback.
 
 __Some example scenarios:__
 
@@ -26,12 +26,12 @@ On Android TV (8.0+), when sideloading, you will need to set the permission for 
 
 To give the application the required permission to draw overlays you will need to run:
 ```
-adb shell appops set nl.rogro82.pipup SYSTEM_ALERT_WINDOW allow
+adb shell appops set io.slflowfoon.blueirisaihub.tv SYSTEM_ALERT_WINDOW allow
 ```
 
 ## Integrating
 
-PiPup uses an embedded webserver (NanoHTTPD) which runs on port 7979.
+Blue Iris AI Hub TV uses an embedded webserver (NanoHTTPD) which runs on port 7979.
 
 ### Sending notifications
 

@@ -1,4 +1,4 @@
-package nl.rogro82.pipup
+package io.slflowfoon.blueirisaihub.tv
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -9,7 +9,7 @@ class Receiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         with(context) {
-            val serviceIntent = Intent(this, PiPupService::class.java)
+            val serviceIntent = Intent(this, OverlayReceiverService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
             } else {
