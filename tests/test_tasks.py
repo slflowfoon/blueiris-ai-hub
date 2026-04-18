@@ -1,7 +1,9 @@
 import logging
 import threading
+from datetime import datetime
 
 import tasks
+import tv_delivery
 
 
 class _DummyResponse:
@@ -254,6 +256,98 @@ def test_enrich_caption_without_plate_returns_original_text(monkeypatch):
     assert caption == "Vehicle arrived on driveway"
 
 
+def test_process_alert_dispatches_tv_alert_when_enabled(tmp_path, monkeypatch):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "id": "cfg1",
+        "name": "Front",
+        "request_id": "req12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "prompt": "Describe motion.",
+        "instant_notify": 0,
+        "send_video": 0,
+        "trigger_filename": "",
+        "tv_push_enabled": 1,
+        "tv_rtsp_url": "rtsp://camera/live",
+        "tv_duration_seconds": 25,
+        "tv_group": "driveway",
+    }
+
+    dispatched = {}
+
+    monkeypatch.setattr(tasks, "is_muted", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "check_auto_mute", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "build_prompt", lambda *_args, **_kwargs: "Describe motion.")
+    monkeypatch.setattr(tasks, "optimize_image", lambda *_args, **_kwargs: "encoded")
+    monkeypatch.setattr(tasks, "analyze_image_parallel", lambda *_args, **_kwargs: "Vehicle arrived")
+    monkeypatch.setattr(tasks, "send_telegram", lambda cfg, *_args, **_kwargs: cfg.update({"last_msg_id": 321}))
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda cfg, tag: dispatched.setdefault("call", {"config": cfg, "tag": tag}),
+    )
+
+    tasks.process_alert(str(image_path), config)
+
+    assert dispatched["call"]["tag"] == "[Front][req12345]"
+    assert dispatched["call"]["config"] == {
+        "id": "cfg1",
+        "name": "Front",
+        "request_id": "req12345",
+        "tv_rtsp_url": "rtsp://camera/live",
+        "tv_duration_seconds": 25,
+        "tv_group": "driveway",
+        "tv_mute_audio": None,
+        "tv_stream_type": "rtsp",
+        "bi_url": None,
+        "bi_user": None,
+        "bi_pass": None,
+    }
+
+
+def test_process_alert_logs_mjpg_skip_reason_without_rtsp_message(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "id": "cfg1",
+        "name": "Front",
+        "request_id": "req12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "prompt": "Describe motion.",
+        "instant_notify": 0,
+        "send_video": 0,
+        "trigger_filename": "",
+        "tv_push_enabled": 1,
+        "tv_stream_type": "mjpg",
+        "bi_url": "http://blueiris.local",
+        "dvla_api_key": "",
+        "verbose_logging": 0,
+    }
+
+    monkeypatch.setattr(tasks, "is_muted", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "check_auto_mute", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "build_prompt", lambda *_args, **_kwargs: "Describe motion.")
+    monkeypatch.setattr(tasks, "optimize_image", lambda *_args, **_kwargs: "encoded")
+    monkeypatch.setattr(tasks, "analyze_image_parallel", lambda *_args, **_kwargs: "Vehicle arrived")
+    monkeypatch.setattr(tasks, "send_telegram", lambda cfg, *_args, **_kwargs: cfg.update({"last_msg_id": 321}))
+    monkeypatch.setattr(
+        tv_delivery,
+        "dispatch_tv_alert",
+        lambda *_args, **_kwargs: {"skipped": True, "payload": {"mjpg_url": None, "rtsp_url": None}},
+    )
+
+    with caplog.at_level(logging.INFO):
+        tasks.process_alert(str(image_path), config)
+
+    assert "TV dispatch skipped (no MJPG proxy URL)" in caplog.text
+    assert "no RTSP URL" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # replace_telegram_media — fallback to sendAnimation when last_msg_id is None
 # ---------------------------------------------------------------------------
@@ -312,6 +406,74 @@ def test_replace_telegram_media_falls_back_when_key_missing(tmp_path, monkeypatc
     assert result is True
     assert "sendAnimation" in captured["url"]
     assert config["last_msg_id"] == 42
+
+
+def test_check_auto_mute_uses_global_settings(monkeypatch):
+    stored = {}
+
+    class DummyRedis:
+        def lpush(self, key, value):
+            stored.setdefault(key, []).insert(0, value)
+
+        def ltrim(self, key, start, end):
+            stored[key] = stored.get(key, [])[start : end + 1]
+
+        def expire(self, key, _seconds):
+            return True
+
+        def lrange(self, key, _start, _end):
+            return [item.encode() if isinstance(item, str) else item for item in stored.get(key, [])]
+
+        def set(self, key, value, ex=None):
+            stored[key] = {"value": value, "ex": ex}
+
+        def delete(self, key):
+            stored.pop(key, None)
+
+    monkeypatch.setattr(
+        tasks,
+        "get_auto_mute_settings",
+        lambda: {"threshold": 2, "window_minutes": 15, "duration_minutes": 45},
+    )
+    monkeypatch.setattr(tasks, "r", DummyRedis())
+
+    config = {"id": "cfg-1", "name": "Driveway", "chat_id": "chat-1"}
+
+    assert tasks.check_auto_mute(config) is False
+    assert tasks.check_auto_mute(config) is True
+
+    mute_key = "mute:driveway:chat-1"
+    assert mute_key in stored
+    assert stored[mute_key]["ex"] == 45 * 60 + 60
+    assert datetime.fromisoformat(stored[mute_key]["value"]) > datetime.now()
+
+
+def test_send_auto_mute_notification_uses_global_settings(monkeypatch):
+    captured = {}
+
+    def fake_post(url, data=None, timeout=None):
+        captured.update({"url": url, "data": data, "timeout": timeout})
+        return _DummyResponse()
+
+    monkeypatch.setattr(
+        tasks,
+        "get_auto_mute_settings",
+        lambda: {"threshold": 7, "window_minutes": 15, "duration_minutes": 45},
+    )
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+
+    tasks.send_auto_mute_notification(
+        {
+            "name": "Driveway",
+            "request_id": "abc12345",
+            "telegram_token": "token",
+            "chat_id": "chat-1",
+        }
+    )
+
+    assert "sendMessage" in captured["url"]
+    assert "45 min" in captured["data"]["text"]
+    assert "7+ triggers in 15 min" in captured["data"]["text"]
 
 
 def test_replace_telegram_media_uses_edit_when_msg_id_present(tmp_path, monkeypatch):

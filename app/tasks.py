@@ -11,12 +11,12 @@ import subprocess
 import redis
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin
 from logging.handlers import RotatingFileHandler
 from PIL import Image
 from datetime import datetime, timedelta
-from bi_export_shared import EXPORT_REQUEST_QUEUE, get_session, recommended_action_for
+from bi_export_shared import EXPORT_REQUEST_QUEUE, bi_lookup_alert, recommended_action_for
 from db_utils import connect as sqlite_connect
+from settings_store import get_auto_mute_settings
 
 # --- LOGGING SETUP ---
 LOG_FILE = os.getenv("LOG_FILE", "/app/logs/system.log")
@@ -112,10 +112,6 @@ PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-
-AUTO_MUTE_WINDOW_MINUTES = 10
-AUTO_MUTE_THRESHOLD = 5
-AUTO_MUTE_DURATION_MINUTES = 30
 
 CAPTION_PROMPTS = {
     "normal": None,
@@ -313,29 +309,34 @@ def is_muted(config):
 
 def check_auto_mute(config):
     """Track trigger frequency. Returns True if auto-mute was just triggered."""
+    settings = get_auto_mute_settings()
+    threshold = settings["threshold"]
+    window_minutes = settings["window_minutes"]
+    duration_minutes = settings["duration_minutes"]
     config_id = config['id']
     now = datetime.now()
     key = f'triggers:{config_id}'
 
     r.lpush(key, now.isoformat())
-    r.ltrim(key, 0, AUTO_MUTE_THRESHOLD + 5)
-    r.expire(key, (AUTO_MUTE_WINDOW_MINUTES + 1) * 60)
+    r.ltrim(key, 0, threshold + 5)
+    r.expire(key, (window_minutes + 1) * 60)
 
     entries = r.lrange(key, 0, -1)
-    window_start = now - timedelta(minutes=AUTO_MUTE_WINDOW_MINUTES)
+    window_start = now - timedelta(minutes=window_minutes)
     recent = [e for e in entries if datetime.fromisoformat(e.decode()) > window_start]
 
-    if len(recent) >= AUTO_MUTE_THRESHOLD:
+    if len(recent) >= threshold:
         chat_id = config.get('chat_id', '')
         cam_name = config.get('name', '').lower()
-        expiry = (now + timedelta(minutes=AUTO_MUTE_DURATION_MINUTES)).isoformat(timespec='seconds')
-        r.set(f'mute:{cam_name}:{chat_id}', expiry, ex=AUTO_MUTE_DURATION_MINUTES * 60 + 60)
+        expiry = (now + timedelta(minutes=duration_minutes)).isoformat(timespec='seconds')
+        r.set(f'mute:{cam_name}:{chat_id}', expiry, ex=duration_minutes * 60 + 60)
         r.delete(key)
         return True
     return False
 
 
 def send_auto_mute_notification(config):
+    settings = get_auto_mute_settings()
     cam_name = config.get('name', 'Camera')
     req_id = config.get('request_id', 'unknown')
     tag = f"[{cam_name}][{req_id}]"
@@ -345,8 +346,8 @@ def send_auto_mute_notification(config):
     thread_id = config.get('message_thread_id') or ''
 
     text = (
-        f"🔇 {cam_name} auto-muted for {AUTO_MUTE_DURATION_MINUTES} min "
-        f"({AUTO_MUTE_THRESHOLD}+ triggers in {AUTO_MUTE_WINDOW_MINUTES} min)"
+        f"🔇 {cam_name} auto-muted for {settings['duration_minutes']} min "
+        f"({settings['threshold']}+ triggers in {settings['window_minutes']} min)"
     )
     keyboard = {"inline_keyboard": [[{
         "text": "Remove Mute",
@@ -906,23 +907,6 @@ def _parse_offset_ms(filename):
     return int(m.group(1)) if m else None
 
 
-def _bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
-    """
-    Reuse the shared BI session and look up clip details for trigger_filename
-    immediately, while the alert is guaranteed fresh in the alertlist.
-    """
-    json_url = urljoin(bi_url.rstrip("/") + "/", "json")
-    sess, sid = get_session(bi_url, bi_user, bi_pass, tag)
-    if not sid:
-        raise RuntimeError("BI login failed")
-    al = sess.post(json_url, json={"cmd": "alertlist", "camera": "Index", "session": sid}, timeout=10)
-    al.raise_for_status()
-    for alert in al.json().get("data", []):
-        if alert.get("file") == trigger_filename:
-            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
-    return None
-
-
 def build_bi_export_payload(config, output_path, tag, delivery_context=None):
     """Build the staged BI export request payload after resolving clip metadata."""
     request_id = str(uuid.uuid4())
@@ -933,7 +917,7 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
     bvr_clip = config.get("bvr_clip", "")
     if trigger_filename and config.get("bi_url") and config.get("bi_user"):
         try:
-            result = _bi_lookup_alert(
+            result = bi_lookup_alert(
                 config["bi_url"], config["bi_user"], config["bi_pass"],
                 trigger_filename, tag,
             )
@@ -1124,6 +1108,49 @@ def process_alert(image_path, config):
 
         if instant_notify:
             send_telegram(config, image_path, "Motion detected.")
+        # TV dispatch fires immediately — before AI analysis — so the stream appears on screen
+        # as soon as the alert is received rather than after the multi-second Gemini call.
+        _tv_stream_type = config.get("tv_stream_type") or "rtsp"
+        _tv_eligible = (
+            config.get('tv_push_enabled') == 1
+            and (
+                (_tv_stream_type == "rtsp" and config.get("tv_rtsp_url"))
+                or (_tv_stream_type == "mjpg" and config.get("bi_url"))
+            )
+        )
+        if _tv_eligible:
+            import tv_delivery
+            logger.info(f"{tag} TV dispatch: camera={config.get('name')!r} group={config.get('tv_group')!r} stream_type={_tv_stream_type!r}")
+            tv_result = tv_delivery.dispatch_tv_alert(
+                {
+                    "id": config.get("id"),
+                    "name": config.get("name"),
+                    "request_id": config.get("request_id"),
+                    "tv_rtsp_url": config.get("tv_rtsp_url"),
+                    "tv_duration_seconds": config.get("tv_duration_seconds"),
+                    "tv_group": config.get("tv_group"),
+                    "tv_mute_audio": config.get("tv_mute_audio"),
+                    "tv_stream_type": _tv_stream_type,
+                    "bi_url": config.get("bi_url"),
+                    "bi_user": config.get("bi_user"),
+                    "bi_pass": config.get("bi_pass"),
+                },
+                tag,
+            )
+            if tv_result.get("skipped"):
+                if _tv_stream_type == "mjpg":
+                    logger.info(f"{tag} TV dispatch skipped (no MJPG proxy URL)")
+                else:
+                    logger.info(f"{tag} TV dispatch skipped (no RTSP URL)")
+            elif tv_result.get("error"):
+                logger.warning(f"{tag} TV dispatch error: {tv_result['error']}")
+            else:
+                delivered = tv_result.get("delivered", [])
+                failed = tv_result.get("failed", [])
+                logger.info(f"{tag} TV dispatch: delivered={len(delivered)} failed={len(failed)}")
+                if failed:
+                    logger.warning(f"{tag} TV dispatch failed TV IDs: {failed}")
+
 
         export_payload_future = None
         if (

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/static/logo-mark.svg" alt="Blue Iris AI Hub logo" width="156">
+</p>
+
 # Blue Iris AI Hub
 
 AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/). When a camera triggers, it analyses the image with Gemini AI, sends a Telegram notification with a caption, and optionally fetches and sends the full video clip.
@@ -10,6 +14,7 @@ AI-powered motion alert processor for [Blue Iris](https://blueirissoftware.com/)
 - **Instant notify** — optional per-camera mode that sends the photo immediately with a fallback caption, then updates it once AI analysis completes (guarantees delivery even when Gemini is slow)
 - **Auto-mute** — silences a camera automatically after 5 triggers in 10 minutes (prevents spam)
 - **Caption modes** — switch to `hilarious`, `witty`, or `rude` captions via Telegram bot commands
+- **Auto-mute policy in UI** — tune the trigger threshold, detection window, and mute duration used to suppress noisy cameras
 - **Known plates** — teach the AI to recognise and label your vehicles by number plate
 - **DVLA enrichment** — any UK number plate detected in a caption is automatically looked up against the DVLA API and annotated with make, colour, year, and tax/MOT status
 - **Plate audit log** — every plate lookup is recorded with full DVLA details and a thumbnail of the alert image, viewable in the web UI
@@ -150,6 +155,53 @@ docker compose up -d
 ```
 
 Do not run `docker compose down -v` unless you intentionally want to delete persisted Redis state, including staged BI export jobs.
+
+## Android TV Overlay
+
+The hub can push camera popups to an Android TV running the bundled `PiPup` receiver app. A camera can target one or more paired TVs, and the same webhook flow that drives Telegram alerts can also trigger TV overlays.
+
+### Setup
+
+1. Open the hub dashboard and copy the `TV App Downloader URL`.
+2. On the TV, open the `Downloader` app and install `PiPup`.
+3. Launch `PiPup` on the TV and note the pairing code it shows.
+4. In the hub dashboard, pair the TV using its IP address and pairing code.
+5. Edit the camera config and enable `Push stream to TV overlay`.
+
+### Stream Types
+
+- `RTSP (manual URL)`: enter the camera RTSP details in the camera config.
+- `Blue Iris MJPG (via proxy)`: the hub builds a proxy stream URL for the TV from `BASE_URL`.
+
+If you use `Blue Iris MJPG (via proxy)`, `BASE_URL` is required. Set it in a `.env` file to the exact hub address the TV can reach:
+
+```env
+BASE_URL=http://192.168.0.51:5000
+```
+
+The provided `docker-compose.yml` reads that one value and passes it into both `web` and `worker`.
+
+Compose will fail fast if `BASE_URL` is missing.
+
+Relevant Compose snippet:
+
+```yaml
+environment:
+  - REDIS_URL=redis://redis:6379/0
+  - BASE_URL=${BASE_URL:?Set BASE_URL in .env to the hub URL reachable by TVs}
+```
+
+For MJPG cameras, the TV overlay uses the hub proxy endpoint:
+
+```text
+http://<hub-host>:5000/bi-mjpg/<config_id>
+```
+
+Example:
+
+```text
+http://192.168.0.51:5000/bi-mjpg/6822c0f9-5deb-431f-b853-50e40a155327
+```
 
 ## Redis Persistence
 

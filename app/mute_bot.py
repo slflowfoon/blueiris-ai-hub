@@ -16,21 +16,29 @@ import requests
 from db_utils import connect as sqlite_connect
 from service_health import start_heartbeat_thread
 
-LOG_FILE = "/app/logs/mute_bot.log"
-DB_FILE = "/app/data/configs.db"
+LOG_FILE = os.getenv("MUTE_BOT_LOG_FILE", "/app/logs/mute_bot.log")
+DB_FILE = os.path.join(os.getenv("DATA_DIR", "/app/data"), "configs.db")
 REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/0')
-
 CAPTION_STYLES = ["hilarious", "witty", "rude"]
 CAPTION_DEFAULT_MINUTES = 60
 POLL_INTERVAL = 3
 
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+def configure_logging():
+    log_dir = os.path.dirname(LOG_FILE)
+    logging_kwargs = {
+        "level": logging.INFO,
+        "format": "%(asctime)s - %(levelname)s - %(message)s",
+    }
+    if log_dir:
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            logging_kwargs["filename"] = LOG_FILE
+        except OSError:
+            pass
+    logging.basicConfig(**logging_kwargs)
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+
+configure_logging()
 
 r = redis.from_url(REDIS_URL)
 
