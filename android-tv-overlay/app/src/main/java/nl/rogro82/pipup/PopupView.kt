@@ -246,8 +246,9 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
                                     val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                                     if (bmp != null) {
                                         mainHandler.post {
-                                            val targetHeight = scaledHeight(media.width, bmp.width, bmp.height)
-                                            imageLayoutParams?.height = targetHeight
+                                            val fitted = fittedDimensions(frame, bmp.width, bmp.height)
+                                            imageLayoutParams?.width = fitted.first
+                                            imageLayoutParams?.height = fitted.second
                                             imageView?.layoutParams = imageLayoutParams
                                             imageView?.setImageBitmap(bmp)
                                             this@Mjpeg.visibility = View.VISIBLE
@@ -270,6 +271,22 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
             running = false
             thread?.interrupt()
             imageView?.setImageDrawable(null)
+        }
+
+        private fun fittedDimensions(frame: FrameLayout, sourceWidth: Int, sourceHeight: Int): Pair<Int, Int> {
+            val availableWidth = frame.width
+                .takeIf { it > 0 }
+                ?: media.width
+            val availableHeight = frame.height
+                .takeIf { it > 0 }
+                ?: resources.displayMetrics.heightPixels
+
+            return fitWithinBounds(
+                availableWidth,
+                availableHeight,
+                sourceWidth,
+                sourceHeight,
+            )
         }
     }
 
@@ -321,6 +338,26 @@ sealed class PopupView(context: Context, val popup: PopupProps) : LinearLayout(c
                 return ViewGroup.LayoutParams.WRAP_CONTENT
             }
             return ((targetWidth.toFloat() / sourceWidth) * sourceHeight).toInt().coerceAtLeast(1)
+        }
+
+        internal fun fitWithinBounds(
+            maxWidth: Int,
+            maxHeight: Int,
+            sourceWidth: Int,
+            sourceHeight: Int,
+        ): Pair<Int, Int> {
+            if (maxWidth <= 0 || maxHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) {
+                return Pair(maxWidth.coerceAtLeast(1), ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+
+            val widthRatio = maxWidth.toFloat() / sourceWidth
+            val heightRatio = maxHeight.toFloat() / sourceHeight
+            val scale = minOf(widthRatio, heightRatio)
+
+            return Pair(
+                (sourceWidth * scale).toInt().coerceIn(1, maxWidth),
+                (sourceHeight * scale).toInt().coerceIn(1, maxHeight),
+            )
         }
 
         fun build(context: Context, popup: PopupProps): PopupView
