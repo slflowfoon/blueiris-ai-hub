@@ -45,6 +45,34 @@ def test_send_telegram_logs_photo_sent(tmp_path, monkeypatch, caplog):
     assert "message_id=321" in caplog.text
 
 
+def test_send_telegram_logs_photo_send_failure_reason(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    monkeypatch.setattr(
+        tasks.requests,
+        "post",
+        lambda *args, **kwargs: _DummyResponse(
+            ok=False,
+            status_code=400,
+            payload={"description": "Bad Request: chat not found"},
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        tasks.send_telegram(config, str(image_path), "Motion detected.")
+
+    assert "phase=telegram_photo_send_failed" in caplog.text
+    assert "reason=status=400 detail=Bad Request: chat not found" in caplog.text
+
+
 def test_update_telegram_caption_logs_source_and_change(monkeypatch, caplog):
     config = {
         "name": "Driveway",
@@ -157,6 +185,57 @@ def test_process_alert_starts_bi_export_prep_before_still_send_finishes(tmp_path
     tasks.process_alert(str(image_path), config)
 
     assert enqueued["payload"]["delivery_context"]["config"]["last_msg_id"] == 321
+
+
+def test_process_alert_instant_notify_sends_before_ai_work(tmp_path, monkeypatch):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "id": "cfg1",
+        "name": "Front",
+        "request_id": "req12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "prompt": "Describe motion.",
+        "instant_notify": 1,
+        "send_video": 0,
+        "trigger_filename": "",
+        "dvla_api_key": "",
+        "verbose_logging": 0,
+    }
+
+    order = []
+
+    monkeypatch.setattr(tasks, "is_muted", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "check_auto_mute", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tasks, "build_prompt", lambda *_args, **_kwargs: "Describe motion.")
+
+    def fake_send(cfg, *_args, **_kwargs):
+        order.append("send")
+        cfg["last_msg_id"] = 321
+
+    def fake_optimize(*_args, **_kwargs):
+        order.append("optimize")
+        return "encoded"
+
+    def fake_analyze(*_args, **_kwargs):
+        order.append("analyze")
+        return "Vehicle arrived"
+
+    def fake_update(*_args, **_kwargs):
+        order.append("update")
+        return True
+
+    monkeypatch.setattr(tasks, "send_telegram", fake_send)
+    monkeypatch.setattr(tasks, "optimize_image", fake_optimize)
+    monkeypatch.setattr(tasks, "analyze_image_parallel", fake_analyze)
+    monkeypatch.setattr(tasks, "update_telegram_caption", fake_update)
+    monkeypatch.setattr(tasks, "enrich_caption_with_dvla", lambda text, *_args, **_kwargs: text)
+
+    tasks.process_alert(str(image_path), config)
+
+    assert order == ["send", "optimize", "analyze", "update"]
 
 
 def test_enrich_caption_uses_correct_dvla_endpoint(monkeypatch):

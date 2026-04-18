@@ -290,6 +290,39 @@ class TestQueueMonitor:
         retry_req = json.loads(raw[1])
         assert retry_req["_previous_target_path"] == "@22833"
 
+    def test_queue_retry_preserves_original_queue_timing(self):
+        payload = _request_payload()
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@22833",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "queued",
+            "export_attempts": 1,
+            "recovery_attempts": 0,
+            "submitted_at": 1000,
+            "monitor_started_at": 1005,
+            "queue_ack_at": 1010,
+            "last_transition_at": time.time(),
+        }
+
+        bi_export_shared.queue_retry(job, "watchdog: export queue stale")
+
+        raw = _r.blpop(bi_export_shared.EXPORT_REQUEST_QUEUE, timeout=1)
+        assert raw is not None
+        retry_req = json.loads(raw[1])
+        assert retry_req["_original_submitted_at"] == 1000
+        assert retry_req["_original_monitor_started_at"] == 1005
+        assert retry_req["_original_queue_ack_at"] == 1010
+
     def test_queue_retry_persists_retry_request_onto_saved_job(self):
         """Watchdog stall path: job["request"] must carry _previous_target_path so that
         bi_watchdog.py's json.dumps(job["request"]) requeue doesn't lose it on a second stall."""
@@ -318,6 +351,30 @@ class TestQueueMonitor:
 
         stored = bi_export_shared.load_job(job["request_id"])
         assert stored["request"]["_previous_target_path"] == "@22833"
+
+    def test_reattach_preserves_original_queue_age(self, monkeypatch):
+        payload = _request_payload(
+            _export_attempts=1,
+            _previous_target_path="@22833",
+            _original_submitted_at=1000,
+            _original_monitor_started_at=1005,
+            _original_queue_ack_at=1010,
+        )
+
+        monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (object(), "sid"))
+        monkeypatch.setattr(
+            bi_exporter,
+            "bi_get_export_queue",
+            lambda *args, **kwargs: [{"path": "@22833", "uri": "Clipboard\\foo.mp4"}],
+        )
+
+        job, error = bi_exporter._prepare_export(payload, "[T]")
+
+        assert error is None
+        assert job["status"] == "queued"
+        assert job["submitted_at"] == 1000
+        assert job["monitor_started_at"] == 1005
+        assert job["queue_ack_at"] == 1010
 
     def test_unacknowledged_export_is_retried(self, monkeypatch):
         payload = _request_payload()
@@ -513,6 +570,37 @@ class TestWatchdog:
 
         queued_download = _r.blpop(bi_export_shared.DOWNLOAD_REQUEST_QUEUE, timeout=1)
         assert queued_download[1].decode() == job["request_id"]
+
+    def test_watchdog_does_not_requeue_processing_delivery_with_fresh_heartbeat(self, monkeypatch):
+        payload = _request_payload(output_path="/tmp/watchdog_processing.mp4")
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {"config": {"telegram_token": "token", "chat_id": "chat"}},
+            "delivery_status": "processing",
+            "delivery_attempts": 1,
+            "last_transition_at": time.time() - ((bi_export_shared.DELIVERY_QUEUE_STALE_AGE * 2) + 5),
+        }
+        bi_export_shared.save_job(job)
+
+        requeued = []
+        monkeypatch.setattr(bi_watchdog, "delivery_heartbeat_age", lambda *_args, **_kwargs: 5)
+        monkeypatch.setattr(bi_watchdog, "mark_delivery_queued", lambda job: requeued.append(job["request_id"]))
+
+        bi_watchdog._run_once()
+
+        assert requeued == []
 
 
 class TestVideoDeliveryWorker:
@@ -810,6 +898,59 @@ class TestVideoDeliveryWorker:
 
         stored = bi_export_shared.load_job(job["request_id"])
         assert stored["delivery_context"]["config"]["last_msg_id"] == 888
+
+    def test_duplicate_delivery_queue_item_is_skipped_when_claim_exists(self, monkeypatch):
+        raw_mp4 = "/tmp/video_delivery_worker_claim_raw.mp4"
+        with open(raw_mp4, "wb") as fh:
+            fh.write(b"video-data")
+
+        payload = _request_payload(output_path=raw_mp4)
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": payload,
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": raw_mp4,
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "downloaded",
+            "delivery_context": {
+                "config": {
+                    "id": 1,
+                    "name": "TestCam",
+                    "request_id": "req",
+                    "telegram_token": "token",
+                    "chat_id": "chat",
+                    "last_msg_id": 42,
+                    "dvla_api_key": "",
+                    "gemini_key": "gemini-key",
+                },
+                "prompt": "describe this",
+                "still_caption": "Motion detected.",
+            },
+            "delivery_status": "queued",
+            "delivery_attempts": 0,
+        }
+        bi_export_shared.save_job(job)
+        _r.set(bi_export_shared.delivery_claim_key(job["request_id"]), "other-worker", ex=60)
+
+        called = []
+        monkeypatch.setattr(
+            video_delivery_worker,
+            "optimize_video_for_telegram",
+            lambda *args, **kwargs: called.append("opt") or True,
+        )
+
+        video_delivery_worker._process_delivery_request(job["request_id"])
+
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert called == []
+        assert stored["delivery_status"] == "queued"
 
 
 def test_deferred_openbvr_retry_refreshes_alert_lookup_before_retry(monkeypatch):

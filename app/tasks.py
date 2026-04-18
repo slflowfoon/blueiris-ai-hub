@@ -148,6 +148,27 @@ def _safe_request_error(exc):
     return type(exc).__name__
 
 
+def _safe_telegram_response_error(resp):
+    """Return a sanitized Telegram API error summary for logs."""
+    status = getattr(resp, "status_code", None)
+    detail = None
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            description = payload.get("description")
+            if isinstance(description, str) and description.strip():
+                detail = description.strip().replace("\n", " ")
+    except Exception:
+        detail = None
+
+    if detail:
+        detail = detail[:160]
+        return f"status={status} detail={detail}" if status else f"detail={detail}"
+    if status:
+        return f"status={status}"
+    return type(resp).__name__
+
+
 def get_api_keys(config):
     raw = config.get('gemini_key') or ''
     return [k.strip() for k in raw.split(',') if k.strip()]
@@ -589,7 +610,7 @@ def optimize_video_for_telegram(input_path, output_path, tag, service_logger=Non
         subprocess.run([
             'ffmpeg', '-y', '-i', input_path,
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-            '-r', '10', '-vf', 'scale=640:-2', '-an', '-movflags', '+faststart',
+            '-r', '10', '-vf', 'scale=854:-2', '-an', '-movflags', '+faststart',
             output_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(output_path):
@@ -648,8 +669,9 @@ def send_telegram(config, img_path, caption, service_logger=None):
                     config,
                     service_logger=service_logger,
                     error_code="telegram_photo_send_failed",
+                    reason=_safe_telegram_response_error(resp),
                 )
-    except Exception:
+    except Exception as exc:
         log_telegram_event(
             logging.ERROR,
             tag,
@@ -658,6 +680,7 @@ def send_telegram(config, img_path, caption, service_logger=None):
             config,
             service_logger=service_logger,
             error_code="telegram_photo_send_failed",
+            reason=_safe_request_error(exc),
         )
 
 
@@ -1104,10 +1127,10 @@ def process_alert(image_path, config):
 
         current_time = datetime.now().strftime("%I:%M %p")
         prompt = f"Current time: {current_time}. {build_prompt(config)}"
-
-        encoded = optimize_image(image_path)
         instant_notify = config.get('instant_notify') == 1
 
+        if instant_notify:
+            send_telegram(config, image_path, "Motion detected.")
         # TV dispatch fires immediately — before AI analysis — so the stream appears on screen
         # as soon as the alert is received rather than after the multi-second Gemini call.
         _tv_stream_type = config.get("tv_stream_type") or "rtsp"
@@ -1157,9 +1180,7 @@ def process_alert(image_path, config):
                     if failed:
                         logger.warning(f"{tag} TV dispatch failed TV IDs: {failed}")
 
-        ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
 
-        still_caption = ai_text or "Motion detected."
         export_payload_future = None
         if (
             config.get('send_video') == 1
@@ -1179,15 +1200,22 @@ def process_alert(image_path, config):
         else:
             export_prepare_executor = None
 
+        encoded = optimize_image(image_path)
+        ai_text = analyze_image_parallel(config, encoded, prompt) if encoded else None
+        still_caption = ai_text or "Motion detected."
+
         if instant_notify:
-            send_telegram(config, image_path, "Motion detected.")
-            if ai_text:
-                update_telegram_caption(
-                    config,
-                    still_caption,
-                    caption_source="still",
-                    previous_text="Motion detected.",
-                )
+            if config.get('last_msg_id'):
+                if ai_text:
+                    update_telegram_caption(
+                        config,
+                        still_caption,
+                        caption_source="still",
+                        previous_text="Motion detected.",
+                    )
+            else:
+                # Initial placeholder send failed — fall back to sending the final still.
+                send_telegram(config, image_path, still_caption)
         else:
             send_telegram(config, image_path, still_caption)
 
