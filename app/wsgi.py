@@ -420,6 +420,7 @@ init_db()
 # --- HELPERS ---
 
 _LOG_TAG_RE = re.compile(r'(\[[^\]]+\]\[[^\]]+\]|\[test-tv:[^\]]+\])')
+_LOG_LEVEL_RE = re.compile(r' - (INFO|WARNING|ERROR) - ')
 _WEBHOOK_TRIGGER_LIMIT = 100
 
 
@@ -432,6 +433,8 @@ def _parse_log_line(source_name, line):
     message = line[33:] if " - " in line else line
     tag_match = _LOG_TAG_RE.search(message)
     alert_tag = tag_match.group(1) if tag_match else None
+    level_match = _LOG_LEVEL_RE.search(line)
+    level = level_match.group(1).lower() if level_match else "info"
 
     return {
         "source": source_name,
@@ -440,6 +443,7 @@ def _parse_log_line(source_name, line):
         "display": f"[{source_name}] {line}",
         "alert_tag": alert_tag,
         "is_trigger": source_name == "system.log" and "Webhook triggered." in message,
+        "level": level,
     }
 
 
@@ -632,6 +636,7 @@ def get_log_entries():
             "display": f"[system] Error reading logs: {e}",
             "alert_tag": None,
             "is_trigger": False,
+            "level": "error",
         }]
 
 
@@ -1191,10 +1196,10 @@ HTML_TEMPLATE = r"""
                             <option value="all">All sources</option>
                         </select>
                         <div id="logLevelFilters" class="btn-group btn-group-sm" role="group" aria-label="Filter log levels">
-                            <button type="button" class="btn btn-outline-secondary log-level-filter active" data-log-level="all" onclick="toggleLogLevelFilterChip('all', this)">ALL</button>
-                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="info" onclick="toggleLogLevelFilterChip('info', this)">INFO</button>
-                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="warning" onclick="toggleLogLevelFilterChip('warning', this)">WARNING</button>
-                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="error" onclick="toggleLogLevelFilterChip('error', this)">ERROR</button>
+                            <button type="button" class="btn btn-outline-secondary log-level-filter active" data-log-level="all" onclick="toggleLogLevelFilterChip('all')">ALL</button>
+                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="info" onclick="toggleLogLevelFilterChip('info')">INFO</button>
+                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="warning" onclick="toggleLogLevelFilterChip('warning')">WARNING</button>
+                            <button type="button" class="btn btn-outline-secondary log-level-filter" data-log-level="error" onclick="toggleLogLevelFilterChip('error')">ERROR</button>
                         </div>
                         <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Refresh</a>
                         <form action="{{ url_for('clear_logs') }}" method="POST" style="display:inline;">
@@ -1511,15 +1516,11 @@ function logSource(entry){return entry&&entry.source?entry.source:'unknown';}
 function logTag(entry){return entry&&entry.alert_tag?entry.alert_tag:'';}
 const LOG_LEVEL_STORAGE_KEY='logLevelFilters';
 const LOG_LEVELS=['info','warning','error'];
+const NO_LOG_LEVEL_MATCH_HTML='<div class="text-muted">No logs match the selected level filters.</div>';
 function colorKey(entry){
     const tag=logTag(entry);
     if(tag)return tag;
     return entry&&entry.source?entry.source:'';
-}
-function normalizeLogLevel(entry){
-    const display=String(entry&&entry.display?entry.display:'');
-    const match=display.match(/\s-\s(INFO|WARNING|ERROR)\s-\s/);
-    return match?match[1].toLowerCase():'info';
 }
 function getStoredLogLevels(){
     try{
@@ -1534,16 +1535,12 @@ function getStoredLogLevels(){
 function setStoredLogLevels(levels){
     const normalized=!levels.length||levels.includes('all')?['all']:[...new Set(levels.filter(v=>LOG_LEVELS.includes(v)))];
     localStorage.setItem(LOG_LEVEL_STORAGE_KEY, JSON.stringify(normalized));
-    return normalized;
-}
-function selectedLogLevels(){
-    return getStoredLogLevels();
 }
 function shouldShowLogLevel(level, levels){
     return levels.includes('all')||levels.includes(level);
 }
 function syncLogLevelFilterChips(){
-    const levels=selectedLogLevels();
+    const levels=getStoredLogLevels();
     document.querySelectorAll('.log-level-filter').forEach(btn=>{
         const active=levels.includes('all')?btn.dataset.logLevel==='all':levels.includes(btn.dataset.logLevel);
         btn.classList.toggle('active', active);
@@ -1552,7 +1549,7 @@ function syncLogLevelFilterChips(){
     });
 }
 function toggleLogLevelFilterChip(level){
-    let levels=selectedLogLevels();
+    let levels=getStoredLogLevels();
     if(level==='all'){
         levels=['all'];
     }else{
@@ -1578,14 +1575,13 @@ function populateLogSourceFilter(entries){
 }
 function renderLogLine(entry){
     const key=colorKey(entry);
-    const level=normalizeLogLevel(entry);
+    const level=(entry&&entry.level&&LOG_LEVELS.includes(entry.level))?entry.level:'info';
     return `<div class="log-entry-line" data-source="${escapeHtml(entry.source)}" data-level="${level}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(entry.display)}</div>`;
 }
-function buildGroupedLogs(entries){
+function buildGroupedLogs(entries, levels){
     const triggerTags=new Set(entries.filter(e=>e.is_trigger&&e.alert_tag).map(e=>e.alert_tag));
     const grouped=new Map();
     const ungrouped=[];
-    const levels=selectedLogLevels();
 
     entries.forEach(entry=>{
         if(entry.alert_tag && triggerTags.has(entry.alert_tag)){
@@ -1603,7 +1599,7 @@ function buildGroupedLogs(entries){
             if(seenGroups.has(entry.alert_tag))return;
             seenGroups.add(entry.alert_tag);
             const group=grouped.get(entry.alert_tag)||[];
-            const visibleEntries=group.filter(item=>shouldShowLogLevel(normalizeLogLevel(item), levels));
+            const visibleEntries=group.filter(item=>shouldShowLogLevel(item.level, levels));
             if(!visibleEntries.length)return;
             const trigger=levels.includes('all')?(group.find(e=>e.is_trigger)||group[0]):visibleEntries[0];
             const body=visibleEntries.map(renderLogLine).join('');
@@ -1612,7 +1608,7 @@ function buildGroupedLogs(entries){
                 `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-caret">▸</span><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary log-group-summary-action" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
             );
         }else{
-            if(shouldShowLogLevel(normalizeLogLevel(entry), levels))blocks.push(renderLogLine(entry));
+            if(shouldShowLogLevel(entry.level, levels))blocks.push(renderLogLine(entry));
         }
     });
     return blocks.join('');
@@ -1630,15 +1626,16 @@ function renderLogs(){
     populateLogSourceFilter(entries);
     const selected=(document.getElementById('logSourceFilter')||{}).value||'all';
     const filtered=selected==='all'?entries:entries.filter(e=>e.source===selected);
-    const levels=selectedLogLevels();
+    const levels=getStoredLogLevels();
     let html='';
     if(!filtered.length){
         html='<div class="text-muted">No logs yet.</div>';
     }else if(selected==='all'){
-        html=buildGroupedLogs(filtered);
+        html=buildGroupedLogs(filtered, levels);
+        if(!html)html=NO_LOG_LEVEL_MATCH_HTML;
     }else{
-        html=filtered.filter(e=>shouldShowLogLevel(normalizeLogLevel(e), levels)).map(renderLogLine).join('');
-        if(!html)html='<div class="text-muted">No logs match the selected level filters.</div>';
+        html=filtered.filter(e=>shouldShowLogLevel(e.level, levels)).map(renderLogLine).join('');
+        if(!html)html=NO_LOG_LEVEL_MATCH_HTML;
     }
     v.innerHTML=html;
     v.scrollTop=v.scrollHeight;
@@ -1828,7 +1825,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     document.querySelector('[data-bs-target="#logs-pane"]').addEventListener('shown.bs.tab',()=>{const v=document.getElementById('logViewer');if(v)v.scrollTop=v.scrollHeight;});
     const logSourceFilter=document.getElementById('logSourceFilter');
     if(logSourceFilter)logSourceFilter.addEventListener('change',renderLogs);
-    syncLogLevelFilterChips();
     renderLogs();
     initTvGroupPriorityEditor();
     function relativeTime(ts){const diff=Math.floor((Date.now()-new Date(ts.replace(' ','T')))/1000);if(diff<60)return diff+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return Math.floor(diff/86400)+'d ago';}

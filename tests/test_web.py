@@ -130,6 +130,8 @@ def test_dashboard_renders_log_severity_filter_controls(client):
     assert b'data-log-level="warning"' in response.data
     assert b'data-log-level="error"' in response.data
     assert b"toggleLogLevelFilterChip" in response.data
+    assert b"toggleLogLevelFilterChip('all')" in response.data
+    assert b"toggleLogLevelFilterChip('all', this)" not in response.data
 
 
 def test_dashboard_includes_log_severity_filter_state_logic(client):
@@ -137,7 +139,8 @@ def test_dashboard_includes_log_severity_filter_state_logic(client):
 
     assert response.status_code == 200
     assert b"logLevelFilters" in response.data
-    assert b"selectedLogLevels" in response.data
+    assert b"getStoredLogLevels" in response.data
+    assert b"selectedLogLevels" not in response.data
     assert b"LOG_LEVEL_STORAGE_KEY='logLevelFilters'" in response.data
     assert b"data-level=" in response.data
 
@@ -776,8 +779,10 @@ def test_get_log_entries_marks_webhook_trigger_and_alert_tag(tmp_path, monkeypat
     assert entries[0]["source"] == "system.log"
     assert entries[0]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[0]["is_trigger"] is True
+    assert entries[0]["level"] == "info"
     assert entries[1]["alert_tag"] == "[Driveway][0382523c]"
     assert entries[1]["is_trigger"] is False
+    assert entries[1]["level"] == "info"
 
 
 def test_get_log_entries_includes_test_tv_tags(tmp_path, monkeypatch):
@@ -803,7 +808,9 @@ def test_get_log_entries_includes_test_tv_tags(tmp_path, monkeypatch):
     assert len(entries) == 2
     assert entries[0]["alert_tag"] == "[test-tv:Driveway]"
     assert entries[0]["is_trigger"] is False
+    assert entries[0]["level"] == "warning"
     assert entries[1]["alert_tag"] == "[test-tv:Driveway]"
+    assert entries[1]["level"] == "info"
 
 
 def test_save_global_settings_route_updates_auto_mute_defaults(client):
