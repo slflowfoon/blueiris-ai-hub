@@ -120,6 +120,28 @@ def test_dashboard_loads(client):
     assert b"copyWebhookTrace(this)" in response.data
 
 
+def test_dashboard_renders_log_severity_filter_controls(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'id="logLevelFilters"' in response.data
+    assert b'data-log-level="all"' in response.data
+    assert b'data-log-level="info"' in response.data
+    assert b'data-log-level="warning"' in response.data
+    assert b'data-log-level="error"' in response.data
+    assert b"toggleLogLevelFilterChip" in response.data
+
+
+def test_dashboard_includes_log_severity_filter_state_logic(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"logLevelFilters" in response.data
+    assert b"selectedLogLevels" in response.data
+    assert b"LOG_LEVEL_STORAGE_KEY='logLevelFilters'" in response.data
+    assert b"data-level=" in response.data
+
+
 def test_api_check_update(client, monkeypatch):
     """Test that the update API endpoint returns JSON."""
     monkeypatch.setattr(wsgi.r, "get", lambda *_args, **_kwargs: None)
