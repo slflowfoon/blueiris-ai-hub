@@ -1578,6 +1578,14 @@ function renderLogLine(entry){
     const level=(entry&&entry.level&&LOG_LEVELS.includes(entry.level))?entry.level:'info';
     return `<div class="log-entry-line" data-source="${escapeHtml(entry.source)}" data-level="${level}" style="color:${key?stringToColor(key):'#888'}">${escapeHtml(entry.display)}</div>`;
 }
+function groupSummaryText(trigger, visibleEntries, levels, alertTag){
+    if(levels.includes('all')){
+        return trigger.display;
+    }
+    const count=visibleEntries.length;
+    const suffix=count===1?'matching line':'matching lines';
+    return `${alertTag||trigger.display} (${count} ${suffix})`;
+}
 function buildGroupedLogs(entries, levels){
     const triggerTags=new Set(entries.filter(e=>e.is_trigger&&e.alert_tag).map(e=>e.alert_tag));
     const grouped=new Map();
@@ -1601,11 +1609,12 @@ function buildGroupedLogs(entries, levels){
             const group=grouped.get(entry.alert_tag)||[];
             const visibleEntries=group.filter(item=>shouldShowLogLevel(item.level, levels));
             if(!visibleEntries.length)return;
-            const trigger=levels.includes('all')?(group.find(e=>e.is_trigger)||group[0]):visibleEntries[0];
+            const trigger=group.find(e=>e.is_trigger)||group[0];
             const body=visibleEntries.map(renderLogLine).join('');
             const copyTrace=encodeURIComponent(group.map(e=>e.display).join('\n'));
+            const summaryText=groupSummaryText(trigger, visibleEntries, levels, entry.alert_tag);
             blocks.push(
-                `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-caret">▸</span><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(trigger.display)}</span><button type="button" class="btn btn-sm btn-outline-secondary log-group-summary-action" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
+                `<details class="log-group" data-copy-trace="${copyTrace}"><summary><div class="log-group-summary"><span class="log-group-caret">▸</span><span class="log-group-summary-text" style="color:${stringToColor(colorKey(trigger))}">${escapeHtml(summaryText)}</span><button type="button" class="btn btn-sm btn-outline-secondary log-group-summary-action" onclick="event.preventDefault();event.stopPropagation();copyWebhookTrace(this)">Copy Trace</button></div></summary><div class="log-group-body">${body}</div></details>`
             );
         }else{
             if(shouldShowLogLevel(entry.level, levels))blocks.push(renderLogLine(entry));

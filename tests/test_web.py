@@ -143,6 +143,8 @@ def test_dashboard_includes_log_severity_filter_state_logic(client):
     assert b"selectedLogLevels" not in response.data
     assert b"LOG_LEVEL_STORAGE_KEY='logLevelFilters'" in response.data
     assert b"data-level=" in response.data
+    assert b"groupSummaryText" in response.data
+    assert b"matching line" in response.data
 
 
 def test_api_check_update(client, monkeypatch):
