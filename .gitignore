@@ -16,6 +16,7 @@ __pycache__/
 *.pyd
 .venv/
 .pytest_cache/
+.worktrees/
 
 # Docker volumes
 /dev/shm/
