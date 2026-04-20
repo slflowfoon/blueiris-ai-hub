@@ -94,10 +94,17 @@ def _refresh_export_request_after_openbvr(req, payload, tag):
         )
         return False, "BI alert lookup refresh found no matching alert after OpenBVR error"
 
-    clip_path, offset, duration = result
+    clip_path = result.get("export_source_path")
+    offset = result.get("offset", 0)
+    duration = result.get("msec", 10000)
     req["clip_path"] = clip_path
     req["offset"] = offset
     req["duration"] = duration
+    req["_lookup_file"] = result.get("file")
+    req["_lookup_path"] = result.get("path")
+    req["_lookup_clip"] = result.get("clip")
+    req["_lookup_match_type"] = result.get("lookup_match_type")
+    req["_export_source_field"] = result.get("export_source_field")
 
     refreshed_path = clip_path if clip_path.startswith("@") else f"@{clip_path}"
     if not refreshed_path.endswith(".bvr"):
@@ -110,13 +117,17 @@ def _refresh_export_request_after_openbvr(req, payload, tag):
     logger.info(
         f"{tag} BI alert lookup refreshed after OpenBVR error | "
         f"bi_instance={bi_instance_label(req['bi_url'])} phase=prequeue_lookup "
-        f"lookup_result=refreshed_after_openbvr_failure clip_path={clip_path} "
-        f"offset={offset} duration={duration}"
+        f"lookup_result=refreshed_after_openbvr_failure trigger_filename={trigger_filename} "
+        f"matched_file={result.get('file')} matched_path={result.get('path')} "
+        f"matched_clip={result.get('clip')} clip_path={clip_path} offset={offset} "
+        f"duration={duration} match_type={result.get('lookup_match_type')} "
+        f"export_source_field={result.get('export_source_field')}"
     )
     logger.info(
         f"{tag} Retrying BI export with refreshed alert metadata | "
         f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_submit_retry "
-        f"retry_reason=openbvr_failed clip_path={clip_path} offset={offset} duration={duration}"
+        f"retry_reason=openbvr_failed clip_path={clip_path} offset={offset} duration={duration} "
+        f"export_source_field={result.get('export_source_field')}"
     )
     return True, None
 
@@ -264,6 +275,7 @@ def _prepare_export(req, tag):
                             )
                     if target_path and relative_uri:
                         break
+                return None, f"BI export failed after refreshed OpenBVR retry: {res.get('result')}"
 
         return None, f"BI export command failed: {res.get('result')}"
 
@@ -345,6 +357,8 @@ def _process_request(raw):
             error_code = "missing_export_target"
         elif error_msg and error_msg.startswith("BI alert lookup refresh"):
             error_code = "openbvr_lookup_refresh_failed"
+        elif error_msg and error_msg.startswith("BI export failed after refreshed OpenBVR retry"):
+            error_code = "openbvr_failed_after_refresh"
         elif error_msg == "openbvr deferred retry queued":
             return
         log_terminal_diagnosis(

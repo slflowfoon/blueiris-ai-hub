@@ -205,6 +205,7 @@ def recommended_action_for(error_code):
         "missing_clip_path": "check_prequeue_lookup_and_bvr_clip_fallback",
         "offset_unparseable": "check_alert_filename_format_and_offset_parser",
         "openbvr_failed": "check_blue_iris_clip_integrity_and_source_bvr_path",
+        "openbvr_failed_after_refresh": "check_bi_alert_lookup_row_selection_and_export_source_field",
         "openbvr_lookup_refresh_failed": "check_bi_alert_lookup_freshness_and_source_clip_path_after_openbvr_failure",
         "persistent_404": "check_bi_clip_endpoint_visibility_after_export_completion",
         "queue_ack_timeout": "check_bi_export_queue_acknowledgement_and_export_submission",
@@ -341,7 +342,7 @@ def trigger_bi_recovery(restart_url, restart_token, tag):
 def bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
     """
     Look up an alert in BI's alert list using the shared session cache.
-    Returns (clip, offset, msec) or None if the alert is not present.
+    Returns structured metadata for the selected row or None if the alert is not present.
     """
     json_url = urljoin(bi_url.rstrip("/") + "/", "json")
     sess, sid = get_session(bi_url, bi_user, bi_pass, tag)
@@ -354,9 +355,30 @@ def bi_lookup_alert(bi_url, bi_user, bi_pass, trigger_filename, tag):
         timeout=10,
     )
     alert_list.raise_for_status()
-    for alert in alert_list.json().get("data", []):
-        if alert.get("file") == trigger_filename:
-            return alert.get("clip"), alert.get("offset", 0), alert.get("msec", 10000)
+    exact_matches = [alert for alert in alert_list.json().get("data", []) if alert.get("file") == trigger_filename]
+    if exact_matches:
+        alert = exact_matches[0]
+        export_source_path = alert.get("path") or alert.get("clip")
+        export_source_field = "path" if alert.get("path") else "clip"
+        lookup_match_type = "exact_file"
+        if len(exact_matches) > 1:
+            lookup_match_type = "exact_file_duplicate_first"
+            logging.warning(
+                f"{tag} BI alert lookup found duplicate exact file matches; using first row | "
+                f"phase=prequeue_lookup lookup_result=duplicate_exact_file "
+                f"trigger_filename={trigger_filename} duplicate_count={len(exact_matches)}"
+            )
+        return {
+            "camera": alert.get("camera"),
+            "file": alert.get("file"),
+            "path": alert.get("path"),
+            "clip": alert.get("clip"),
+            "offset": alert.get("offset", 0),
+            "msec": alert.get("msec", 10000),
+            "lookup_match_type": lookup_match_type,
+            "export_source_path": export_source_path,
+            "export_source_field": export_source_field,
+        }
     return None
 
 

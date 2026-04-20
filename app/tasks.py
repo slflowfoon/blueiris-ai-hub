@@ -945,7 +945,9 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
                 trigger_filename, tag,
             )
             if result is not None:
-                clip_path, offset, duration = result
+                clip_path = result.get("export_source_path")
+                offset = result.get("offset", 0)
+                duration = result.get("msec", 10000)
                 log_alert_event(
                     logging.INFO,
                     tag,
@@ -953,9 +955,15 @@ def build_bi_export_payload(config, output_path, tag, delivery_context=None):
                     "prequeue_lookup",
                     bi_instance=config["bi_url"],
                     lookup_result="resolved",
+                    trigger_filename=trigger_filename,
+                    matched_file=result.get("file"),
+                    matched_path=result.get("path"),
+                    matched_clip=result.get("clip"),
                     clip_path=clip_path,
                     offset=offset,
                     duration=duration,
+                    match_type=result.get("lookup_match_type"),
+                    export_source_field=result.get("export_source_field"),
                 )
             elif bvr_clip:
                 clip_path = bvr_clip
