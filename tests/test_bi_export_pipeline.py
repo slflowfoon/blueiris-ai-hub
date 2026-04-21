@@ -540,6 +540,60 @@ class TestSharedSessionCache:
         assert sid2 == "shared-sid"
 
 
+def test_bi_lookup_alert_returns_structured_metadata(monkeypatch):
+    alert_rows = [
+        {
+            "camera": "Garden",
+            "path": "@wrong_path.bvr",
+            "clip": "@wrong_clip.bvr",
+            "file": "Garden.20260418_170030.99999.3-1.jpg",
+            "offset": 99999,
+            "msec": 32115,
+        },
+        {
+            "camera": "Garden",
+            "path": "@4192553408.bvr",
+            "clip": "@4192491959.bvr",
+            "file": "Garden.20260418_170000.11995.3-1.jpg",
+            "offset": 11995,
+            "msec": 42557,
+        },
+    ]
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            class R:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"data": alert_rows}
+
+            return R()
+
+    monkeypatch.setattr(bi_export_shared, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+
+    result = bi_export_shared.bi_lookup_alert(
+        "http://192.168.0.11:81",
+        "admin",
+        "secret",
+        "Garden.20260418_170000.11995.3-1.jpg",
+        "[Garden][d81bbc11]",
+    )
+
+    assert result == {
+        "camera": "Garden",
+        "file": "Garden.20260418_170000.11995.3-1.jpg",
+        "path": "@4192553408.bvr",
+        "clip": "@4192491959.bvr",
+        "offset": 11995,
+        "msec": 42557,
+        "lookup_match_type": "exact_file",
+        "export_source_path": "@4192553408.bvr",
+        "export_source_field": "path",
+    }
+
+
 class TestWatchdog:
     def setup_method(self):
         _clear_pipeline_state()
@@ -966,7 +1020,17 @@ def test_deferred_openbvr_retry_refreshes_alert_lookup_before_retry(monkeypatch)
     monkeypatch.setattr(
         bi_exporter,
         "bi_lookup_alert",
-        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+        lambda *args, **kwargs: {
+            "camera": "TestCam",
+            "file": "alert.jpg",
+            "path": "@clip/refreshed",
+            "clip": "@clip/ignored",
+            "offset": 222,
+            "msec": 33333,
+            "lookup_match_type": "exact_file",
+            "export_source_path": "@clip/refreshed",
+            "export_source_field": "path",
+        },
     )
 
     posted = []
@@ -1075,7 +1139,17 @@ def test_openbvr_idle_second_failure_refreshes_and_retries(monkeypatch):
     monkeypatch.setattr(
         bi_exporter,
         "bi_lookup_alert",
-        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+        lambda *args, **kwargs: {
+            "camera": "TestCam",
+            "file": "alert.jpg",
+            "path": "@clip/refreshed",
+            "clip": "@clip/ignored",
+            "offset": 222,
+            "msec": 33333,
+            "lookup_match_type": "exact_file",
+            "export_source_path": "@clip/refreshed",
+            "export_source_field": "path",
+        },
     )
 
     class FakeRedis:
@@ -1120,6 +1194,81 @@ def test_openbvr_idle_second_failure_refreshes_and_retries(monkeypatch):
     assert posted[2]["msec"] == 33333
 
 
+def test_openbvr_refresh_then_export_failure_uses_specific_terminal_error(monkeypatch):
+    payload = _request_payload(
+        clip_path="@clip/original",
+        offset=10,
+        duration=10000,
+        trigger_filename="Garden.20260418_170000.11995.3-1.jpg",
+    )
+
+    monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        bi_exporter,
+        "bi_lookup_alert",
+        lambda *args, **kwargs: {
+            "camera": "Garden",
+            "file": "Garden.20260418_170000.11995.3-1.jpg",
+            "path": "@4192553408.bvr",
+            "clip": "@4192491959.bvr",
+            "offset": 11995,
+            "msec": 42557,
+            "lookup_match_type": "exact_file",
+            "export_source_path": "@4192553408.bvr",
+            "export_source_field": "path",
+        },
+    )
+
+    class FakeRedis:
+        def scard(self, key):
+            assert key == bi_export_shared.ACTIVE_EXPORT_SET
+            return 0
+
+        def llen(self, key):
+            raise AssertionError("deferred queue depth should not be checked when idle")
+
+        def rpush(self, key, value):
+            raise AssertionError("should not defer when already idle")
+
+        def sadd(self, *args, **kwargs):
+            raise AssertionError("job should not be marked active on terminal export failure")
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, json=None, timeout=None):
+            self.calls += 1
+
+            class R:
+                def __init__(self, body):
+                    self._body = body
+
+                def json(self):
+                    return self._body
+
+            if self.calls < 3:
+                return R({"result": "fail", "data": {"reason": "OpenBVR failed"}})
+            return R({"result": "fail", "data": {"reason": "fail"}})
+
+    terminal = {}
+    monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
+    monkeypatch.setattr(
+        bi_exporter,
+        "log_terminal_diagnosis",
+        lambda _logger, _tag, _job, _phase, error_code, **extra: terminal.update(
+            {"error_code": error_code, **extra}
+        ),
+    )
+    monkeypatch.setattr(bi_exporter, "write_result", lambda *args, **kwargs: None)
+
+    bi_exporter._process_request(json.dumps(payload).encode())
+
+    assert terminal["error_code"] == "openbvr_failed_after_refresh"
+    assert terminal["error"] == "BI export failed after refreshed OpenBVR retry: fail"
+
+
 def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
     payload = _request_payload(
         clip_path="@clip/original",
@@ -1131,7 +1280,17 @@ def test_defers_openbvr_retry_when_active_exports_running(monkeypatch):
     monkeypatch.setattr(
         bi_exporter,
         "bi_lookup_alert",
-        lambda *args, **kwargs: ("@clip/refreshed", 222, 33333),
+        lambda *args, **kwargs: {
+            "camera": "TestCam",
+            "file": "alert.jpg",
+            "path": "@clip/refreshed",
+            "clip": "@clip/ignored",
+            "offset": 222,
+            "msec": 33333,
+            "lookup_match_type": "exact_file",
+            "export_source_path": "@clip/refreshed",
+            "export_source_field": "path",
+        },
     )
     monkeypatch.setattr(bi_exporter, "bi_get_export_queue", lambda *args, **kwargs: [])
 
