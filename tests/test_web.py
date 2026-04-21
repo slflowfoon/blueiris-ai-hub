@@ -19,8 +19,8 @@ def _fake_image():
     return (io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 16), "alert_20240101_120000.jpg")
 
 
-def test_webhook_dedup_same_alert(client):
-    """Second request with same bvr+trigger_filename returns duplicate and does not enqueue."""
+def test_webhook_dedup_same_bvr_returns_duplicate(client):
+    """Second request with the same bvr (any trigger filename) returns duplicate and does not enqueue."""
     config_id = uuid.uuid4().hex
     _insert_config(config_id)
 
@@ -38,10 +38,10 @@ def test_webhook_dedup_same_alert(client):
         assert r1.status_code == 200
         assert r1.get_json()["status"] == "queued"
 
-        img2, name2 = _fake_image()
+        img2, _ = _fake_image()
         r2 = client.post(
             f"/webhook/{config_id}",
-            data={"image": (img2, name2), "bvr": "20240101_clip.bvr"},
+            data={"image": (img2, "alert_20240101_120040.jpg"), "bvr": "20240101_clip.bvr"},
             content_type="multipart/form-data",
         )
         assert r2.status_code == 200
@@ -50,8 +50,8 @@ def test_webhook_dedup_same_alert(client):
     assert fake_queue.enqueue.call_count == 1
 
 
-def test_webhook_dedup_different_trigger_on_same_bvr(client):
-    """Two alerts sharing the same .bvr but different trigger filenames both queue normally."""
+def test_webhook_dedup_different_bvr_both_queue(client):
+    """Two webhooks with different bvr clips both queue normally."""
     config_id = uuid.uuid4().hex
     _insert_config(config_id)
 
@@ -63,7 +63,7 @@ def test_webhook_dedup_different_trigger_on_same_bvr(client):
         img1, _ = _fake_image()
         r1 = client.post(
             f"/webhook/{config_id}",
-            data={"image": (img1, "alert_20240101_120000.jpg"), "bvr": "20240101_clip.bvr"},
+            data={"image": (img1, "alert_20240101_120000.jpg"), "bvr": "20240101_clip_a.bvr"},
             content_type="multipart/form-data",
         )
         assert r1.status_code == 200
@@ -72,7 +72,7 @@ def test_webhook_dedup_different_trigger_on_same_bvr(client):
         img2, _ = _fake_image()
         r2 = client.post(
             f"/webhook/{config_id}",
-            data={"image": (img2, "alert_20240101_120040.jpg"), "bvr": "20240101_clip.bvr"},
+            data={"image": (img2, "alert_20240101_120040.jpg"), "bvr": "20240101_clip_b.bvr"},
             content_type="multipart/form-data",
         )
         assert r2.status_code == 200
