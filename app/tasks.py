@@ -132,6 +132,14 @@ CAPTION_PROMPTS = {
     ),
 }
 
+# Appended to every analysis prompt to prevent Gemini from speculating on
+# vehicle make/model when no plate is visible — the root cause of photo/video
+# caption conflicts described in issue #159.
+_NO_VEHICLE_SPECULATION = (
+    " Do not state a vehicle make or model unless you can clearly read"
+    " the number plate in the image or video."
+)
+
 
 # =============================================================================
 # Helpers
@@ -307,10 +315,10 @@ def build_prompt(config):
     plate_note = f" Known plates: {plate_hint}." if plate_hint else ""
 
     if mode != 'normal' and mode in CAPTION_PROMPTS:
-        return CAPTION_PROMPTS[mode] + plate_note
+        return CAPTION_PROMPTS[mode] + plate_note + _NO_VEHICLE_SPECULATION
 
     base = config.get('prompt', 'Describe any motion detected by this CCTV camera in one sentence.')
-    return base + plate_note
+    return base + plate_note + _NO_VEHICLE_SPECULATION
 
 
 def is_muted(config):
