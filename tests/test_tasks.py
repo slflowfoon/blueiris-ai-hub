@@ -648,3 +648,169 @@ def test_replace_telegram_media_fallback_sets_last_msg_id_for_caption_update(tmp
 
     assert any("sendAnimation" in c for c in calls)
     assert any("editMessageCaption" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# send_telegram — retry and degraded-mode tests (issue #135)
+# ---------------------------------------------------------------------------
+
+class _CountingResponse:
+    """Fails for the first `fail_count` calls, then succeeds."""
+
+    def __init__(self, fail_count=1, fail_status=500, success_payload=None):
+        self._calls = 0
+        self._fail_count = fail_count
+        self._fail_status = fail_status
+        self._success_payload = success_payload or {"result": {"message_id": 42}}
+
+    def __call__(self, *args, **kwargs):
+        self._calls += 1
+        if self._calls <= self._fail_count:
+            return _DummyResponse(ok=False, status_code=self._fail_status)
+        return _DummyResponse(ok=True, payload=self._success_payload)
+
+    @property
+    def call_count(self):
+        return self._calls
+
+
+def test_send_telegram_retries_on_server_error_then_succeeds(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    responder = _CountingResponse(fail_count=1, fail_status=503)
+    monkeypatch.setattr(tasks.requests, "post", responder)
+    monkeypatch.setattr(tasks.time, "sleep", lambda _: None)
+
+    with caplog.at_level(logging.INFO):
+        tasks.send_telegram(config, str(image_path), "Motion detected.", max_attempts=3)
+
+    assert config.get("last_msg_id") == 42
+    assert not config.get("still_delivery_failed")
+    assert responder.call_count == 2
+    assert "phase=telegram_photo_send_failed" in caplog.text
+    assert "error_category=server_error" in caplog.text
+    assert "phase=telegram_photo_sent" in caplog.text
+
+
+def test_send_telegram_no_retry_on_auth_error(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    call_count = {"n": 0}
+
+    def fake_post(*args, **kwargs):
+        call_count["n"] += 1
+        return _DummyResponse(ok=False, status_code=401,
+                               payload={"description": "Unauthorized"})
+
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+    monkeypatch.setattr(tasks.time, "sleep", lambda _: None)
+
+    with caplog.at_level(logging.ERROR):
+        tasks.send_telegram(config, str(image_path), "Motion detected.", max_attempts=3)
+
+    assert call_count["n"] == 1
+    assert config.get("still_delivery_failed") is True
+    assert "error_category=auth" in caplog.text
+    assert "attempt=1/3" in caplog.text
+
+
+def test_send_telegram_all_retries_exhausted_sets_degraded_flag(tmp_path, monkeypatch, caplog):
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    monkeypatch.setattr(
+        tasks.requests,
+        "post",
+        lambda *args, **kwargs: _DummyResponse(ok=False, status_code=503),
+    )
+    monkeypatch.setattr(tasks.time, "sleep", lambda _: None)
+
+    with caplog.at_level(logging.WARNING):
+        tasks.send_telegram(config, str(image_path), "Motion detected.", max_attempts=3)
+
+    assert config.get("still_delivery_failed") is True
+    assert not config.get("last_msg_id")
+    assert "attempt=3/3" in caplog.text
+    assert "error_category=server_error" in caplog.text
+
+
+def test_send_telegram_transport_error_is_retriable(tmp_path, monkeypatch, caplog):
+    import requests as req_lib
+
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+    }
+
+    call_count = {"n": 0}
+
+    def fake_post(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise req_lib.exceptions.ConnectionError("network down")
+        return _DummyResponse(ok=True, payload={"result": {"message_id": 99}})
+
+    monkeypatch.setattr(tasks.requests, "post", fake_post)
+    monkeypatch.setattr(tasks.time, "sleep", lambda _: None)
+
+    with caplog.at_level(logging.WARNING):
+        tasks.send_telegram(config, str(image_path), "Motion detected.", max_attempts=3)
+
+    assert config.get("last_msg_id") == 99
+    assert not config.get("still_delivery_failed")
+    assert call_count["n"] == 3
+    assert "error_category=transport" in caplog.text
+
+
+def test_send_telegram_success_after_prior_failure_clears_degraded_flag(tmp_path, monkeypatch):
+    """A successful retry clears any still_delivery_failed flag left from a prior call."""
+    image_path = tmp_path / "alert.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    config = {
+        "name": "Driveway",
+        "request_id": "abc12345",
+        "telegram_token": "token",
+        "chat_id": "chat",
+        "still_delivery_failed": True,
+    }
+
+    monkeypatch.setattr(
+        tasks.requests,
+        "post",
+        lambda *args, **kwargs: _DummyResponse(ok=True, payload={"result": {"message_id": 7}}),
+    )
+    monkeypatch.setattr(tasks.time, "sleep", lambda _: None)
+
+    tasks.send_telegram(config, str(image_path), "Motion detected.")
+
+    assert config.get("last_msg_id") == 7
+    assert not config.get("still_delivery_failed")

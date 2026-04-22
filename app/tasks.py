@@ -81,12 +81,16 @@ def log_telegram_event(
     caption_changed=None,
     message_id=None,
     reason=None,
+    error_category=None,
+    attempt=None,
 ):
     log = _resolve_logger(service_logger)
     suffix = _format_log_fields(
         phase=phase,
         error_code=error_code,
         reason=reason,
+        error_category=error_category,
+        attempt=attempt,
         **_telegram_log_fields(
             config,
             text=text,
@@ -175,6 +179,34 @@ def _safe_telegram_response_error(resp):
     if status:
         return f"status={status}"
     return type(resp).__name__
+
+
+def _classify_telegram_error(status_code=None, exc=None):
+    """Map a Telegram send failure to a retriability category."""
+    if exc is not None:
+        if isinstance(exc, (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.RequestException,
+        )):
+            return "transport"
+        return "unknown"
+    if status_code is None:
+        return "unknown"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code in (401, 403):
+        return "auth"
+    if status_code in (400, 404):
+        return "bad_request"
+    if status_code >= 500:
+        return "server_error"
+    return "unknown"
+
+
+_RETRIABLE_CATEGORIES = frozenset({"transport", "rate_limited", "server_error"})
+# Delay in seconds before each attempt (index 0 = attempt 1, so first attempt is immediate).
+_STILL_RETRY_DELAYS = (0, 2, 5)
 
 
 def get_api_keys(config):
@@ -639,7 +671,7 @@ def _tg_thread(config):
     return str(t) if t else None
 
 
-def send_telegram(config, img_path, caption, service_logger=None):
+def send_telegram(config, img_path, caption, service_logger=None, max_attempts=3):
     req_id = config.get('request_id', 'unknown')
     tag = f"[{config['name']}][{req_id}]"
 
@@ -651,12 +683,19 @@ def send_telegram(config, img_path, caption, service_logger=None):
     data = {'chat_id': chat_id, 'caption': caption}
     if thread_id:
         data['message_thread_id'] = thread_id
-    try:
-        with open(img_path, 'rb') as f:
-            resp = requests.post(url, files={'photo': f}, data=data, timeout=15)
+
+    for attempt in range(1, max_attempts + 1):
+        delay = _STILL_RETRY_DELAYS[attempt - 1] if attempt - 1 < len(_STILL_RETRY_DELAYS) else _STILL_RETRY_DELAYS[-1]
+        if delay:
+            time.sleep(delay)
+        attempt_label = f"{attempt}/{max_attempts}"
+        try:
+            with open(img_path, 'rb') as f:
+                resp = requests.post(url, files={'photo': f}, data=data, timeout=15)
             if resp.ok:
                 message_id = resp.json()['result']['message_id']
                 config['last_msg_id'] = message_id
+                config.pop('still_delivery_failed', None)
                 log_telegram_event(
                     logging.INFO,
                     tag,
@@ -668,28 +707,42 @@ def send_telegram(config, img_path, caption, service_logger=None):
                     caption_source="still",
                     message_id=message_id,
                 )
-            else:
-                log_telegram_event(
-                    logging.ERROR,
-                    tag,
-                    "Telegram photo send failed",
-                    "telegram_photo_send_failed",
-                    config,
-                    service_logger=service_logger,
-                    error_code="telegram_photo_send_failed",
-                    reason=_safe_telegram_response_error(resp),
-                )
-    except Exception as exc:
-        log_telegram_event(
-            logging.ERROR,
-            tag,
-            "Telegram photo send error",
-            "telegram_photo_send_failed",
-            config,
-            service_logger=service_logger,
-            error_code="telegram_photo_send_failed",
-            reason=_safe_request_error(exc),
-        )
+                return
+            error_category = _classify_telegram_error(status_code=resp.status_code)
+            is_terminal = error_category not in _RETRIABLE_CATEGORIES or attempt == max_attempts
+            log_telegram_event(
+                logging.ERROR if is_terminal else logging.WARNING,
+                tag,
+                "Telegram photo send failed",
+                "telegram_photo_send_failed",
+                config,
+                service_logger=service_logger,
+                error_code="telegram_photo_send_failed",
+                reason=_safe_telegram_response_error(resp),
+                error_category=error_category,
+                attempt=attempt_label,
+            )
+            if is_terminal:
+                break
+        except Exception as exc:
+            error_category = _classify_telegram_error(exc=exc)
+            is_terminal = error_category not in _RETRIABLE_CATEGORIES or attempt == max_attempts
+            log_telegram_event(
+                logging.ERROR if is_terminal else logging.WARNING,
+                tag,
+                "Telegram photo send error",
+                "telegram_photo_send_failed",
+                config,
+                service_logger=service_logger,
+                error_code="telegram_photo_send_failed",
+                reason=_safe_request_error(exc),
+                error_category=error_category,
+                attempt=attempt_label,
+            )
+            if is_terminal:
+                break
+
+    config['still_delivery_failed'] = True
 
 
 def update_telegram_caption(config, text, service_logger=None, caption_source="unknown", previous_text=None):
@@ -1276,6 +1329,7 @@ def process_alert(image_path, config):
                     },
                     "prompt": prompt,
                     "still_caption": still_caption,
+                    "still_delivery_failed": config.get("still_delivery_failed", False),
                 }
                 payload = export_payload_future.result() if export_payload_future else build_bi_export_payload(
                     config,
@@ -1343,6 +1397,7 @@ def process_alert(image_path, config):
             final_status=final_status,
             recommended_action=recommended_action_for(summary_error_code),
             send_video=config.get('send_video') == 1,
+            still_delivery_failed=True if config.get('still_delivery_failed') else None,
             trigger_filename=bool(config.get('trigger_filename')),
         )
         for p in [image_path, raw_mp4, optimised_mp4]:

@@ -101,6 +101,17 @@ def _process_delivery_request(request_id):
             logger.info(f"{job_tag(job)} delivery already completed; skipping duplicate queue item")
             return
 
+        if delivery.get("still_delivery_failed"):
+            log_telegram_event(
+                logging.WARNING,
+                job_tag(job),
+                "Alert running in degraded mode: still photo was not delivered; video will be sent as new message",
+                "alert_degraded_still_not_delivered",
+                config,
+                service_logger=logger,
+                error_code="still_delivery_failed",
+            )
+
         tag = job_tag(job)
         raw_mp4 = job["output_path"]
         optimised_mp4 = _optimised_path(raw_mp4)
