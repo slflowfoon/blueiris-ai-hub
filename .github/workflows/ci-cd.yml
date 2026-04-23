@@ -48,7 +48,7 @@ jobs:
           export DATA_DIR=./test_data
           export LOG_FILE=./test_logs/system.log
           export TEMP_IMAGE_DIR=./test_tmp
-          export REDIS_URL=redis://localhost:6379/0
+          export REDIS_URL=redis://localhost:6379/15
           pytest
 
   build-and-push:
