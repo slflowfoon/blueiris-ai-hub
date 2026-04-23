@@ -284,6 +284,51 @@ def test_enrich_caption_without_plate_returns_original_text(monkeypatch):
     assert caption == "Vehicle arrived on driveway"
 
 
+class _FakeRedis:
+    """Minimal Redis stub for build_prompt tests."""
+    def __init__(self, caption_mode_value=None):
+        self._value = caption_mode_value
+
+    def get(self, _key):
+        return self._value
+
+
+def test_build_prompt_appends_no_vehicle_speculation_in_normal_mode(monkeypatch):
+    monkeypatch.setattr(tasks, "r", _FakeRedis())
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {})
+
+    prompt = tasks.build_prompt({"chat_id": "123", "prompt": "Describe motion."})
+
+    assert "Describe motion." in prompt
+    assert tasks._NO_VEHICLE_SPECULATION in prompt
+
+
+def test_build_prompt_appends_no_vehicle_speculation_in_caption_mode(monkeypatch):
+    import json
+    from datetime import datetime, timedelta
+
+    expires = (datetime.now() + timedelta(hours=1)).isoformat()
+    mode_data = json.dumps({"mode": "hilarious", "expires": expires}).encode()
+    monkeypatch.setattr(tasks, "r", _FakeRedis(caption_mode_value=mode_data))
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {})
+
+    prompt = tasks.build_prompt({"chat_id": "123"})
+
+    assert tasks.CAPTION_PROMPTS["hilarious"] in prompt
+    assert tasks._NO_VEHICLE_SPECULATION in prompt
+
+
+def test_build_prompt_includes_known_plates_before_speculation_note(monkeypatch):
+    monkeypatch.setattr(tasks, "r", _FakeRedis())
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {"AB12CDE": "Owner"})
+
+    prompt = tasks.build_prompt({"chat_id": "123", "prompt": "Describe motion."})
+
+    plate_pos = prompt.index("AB12CDE")
+    specul_pos = prompt.index(tasks._NO_VEHICLE_SPECULATION)
+    assert plate_pos < specul_pos
+
+
 def test_process_alert_dispatches_tv_alert_when_enabled(tmp_path, monkeypatch):
     image_path = tmp_path / "alert.jpg"
     image_path.write_bytes(b"fake-image")
