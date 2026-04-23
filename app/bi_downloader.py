@@ -3,15 +3,18 @@
 Downloader service for staged Blue Iris exports.
 """
 
+import json
 import logging
 import os
 import time
 
 from bi_export_shared import (
+    EXPORT_REQUEST_QUEUE,
     VIDEO_DELIVERY_QUEUE,
     DOWNLOAD_REQUEST_QUEUE,
     DOWNLOAD_TIMEOUT,
     MAX_RECOVERY_ATTEMPTS,
+    bi_lookup_alert,
     bi_delete_clip,
     finish_job,
     get_session,
@@ -36,6 +39,8 @@ if os.path.dirname(LOG_FILE):
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 logger = setup_service_logger("bi_downloader", LOG_FILE)
+
+MAX_DOWNLOAD_REEXPORT_ATTEMPTS = 2
 
 
 def _download_export(job):
@@ -108,6 +113,53 @@ def _download_export(job):
     return True, None, success_elapsed, final_size
 
 
+def _queue_download_reexport(job, tag, refresh_metadata=False):
+    retry_request = dict(job["request"])
+    retry_request["queued_at"] = time.time()
+    retry_request["_export_attempts"] = job.get("export_attempts", 1)
+    retry_request["_recovery_attempts"] = job.get("recovery_attempts", 0)
+    retry_request["_previous_target_path"] = job.get("target_path")
+    retry_request["_original_submitted_at"] = retry_request.get(
+        "_original_submitted_at",
+        job.get("submitted_at"),
+    )
+    retry_request["_original_monitor_started_at"] = retry_request.get(
+        "_original_monitor_started_at",
+        job.get("monitor_started_at", job.get("submitted_at")),
+    )
+    retry_request["_original_queue_ack_at"] = retry_request.get(
+        "_original_queue_ack_at",
+        job.get("queue_ack_at"),
+    )
+    retry_request["_download_reexport_attempts"] = int(retry_request.get("_download_reexport_attempts", 0)) + 1
+    retry_request["_refresh_before_export"] = bool(refresh_metadata)
+
+    if refresh_metadata:
+        trigger_filename = retry_request.get("trigger_filename")
+        if not trigger_filename:
+            return False, "missing trigger_filename for download metadata refresh"
+        lookup = bi_lookup_alert(
+            job["bi_url"],
+            job["bi_user"],
+            job["bi_pass"],
+            trigger_filename,
+            tag,
+        )
+        if lookup is None:
+            return False, "download metadata refresh found no matching alert"
+        retry_request["clip_path"] = lookup.get("export_source_path")
+        retry_request["offset"] = lookup.get("offset", 0)
+        retry_request["duration"] = lookup.get("msec", 10000)
+
+    job["status"] = "retry_queued"
+    job["last_error"] = "download failed (file not ready)"
+    job["last_transition_at"] = time.time()
+    job["request"] = retry_request
+    save_job(job)
+    r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(retry_request))
+    return True, None
+
+
 def _process_download_request(request_id):
     job = load_job(request_id)
     if not job:
@@ -143,6 +195,28 @@ def _process_download_request(request_id):
                 delivery_queue_depth=queue_depth_before + 1,
             )
         return
+
+    if error_msg == "download failed (file not ready)":
+        reexport_attempts = int(job.get("request", {}).get("_download_reexport_attempts", 0))
+        if reexport_attempts < MAX_DOWNLOAD_REEXPORT_ATTEMPTS:
+            refresh_metadata = reexport_attempts >= 1
+            try:
+                requeued, requeue_error = _queue_download_reexport(job, tag, refresh_metadata=refresh_metadata)
+            except Exception as exc:
+                requeued, requeue_error = False, safe_error_summary(exc)
+            if requeued:
+                log_job_event(
+                    logging.WARNING,
+                    f"{tag} download unreadable; re-requesting BI export",
+                    load_job(job["request_id"]) or job,
+                    logger=logger,
+                    phase="download_retry",
+                    error=error_msg,
+                    error_code="download_not_ready",
+                    retry_reason="same_metadata" if not refresh_metadata else "refreshed_metadata",
+                )
+                return
+            error_msg = requeue_error or error_msg
 
     if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS and trigger_bi_recovery(
         job.get("restart_url", ""),
