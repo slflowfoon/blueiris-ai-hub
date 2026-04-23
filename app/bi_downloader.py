@@ -147,6 +147,8 @@ def _queue_download_reexport(job, tag, refresh_metadata=False):
         )
         if lookup is None:
             return False, "download metadata refresh found no matching alert"
+        if not lookup.get("export_source_path"):
+            return False, "download metadata refresh: alert has no exportable path"
         retry_request["clip_path"] = lookup.get("export_source_path")
         retry_request["offset"] = lookup.get("offset", 0)
         retry_request["duration"] = lookup.get("msec", 10000)

@@ -616,6 +616,61 @@ class TestDownloader:
         assert retry_req.get("_download_reexport_attempts") == 2
         assert retry_req.get("_refresh_before_export") is True
 
+    def test_second_download_failure_with_no_export_source_path_does_not_queue_reexport(self, monkeypatch):
+        payload = _request_payload(
+            clip_path="@queued",
+            offset=111,
+            duration=22222,
+            trigger_filename="Garden.20260418_170000.11995.3-1.jpg",
+        )
+        job = {
+            "request_id": payload["request_id"],
+            "config_name": payload["config_name"],
+            "request": dict(payload, _download_reexport_attempts=1),
+            "bi_url": payload["bi_url"],
+            "bi_user": payload["bi_user"],
+            "bi_pass": payload["bi_pass"],
+            "output_path": payload["output_path"],
+            "target_path": "@queued",
+            "relative_uri": "Clipboard/foo.mp4",
+            "delete_after": False,
+            "restart_url": "",
+            "restart_token": "",
+            "status": "ready",
+            "export_attempts": 2,
+            "recovery_attempts": 0,
+            "download_attempts": 1,
+        }
+        bi_export_shared.save_job(job)
+        monkeypatch.setattr(
+            bi_downloader,
+            "_download_export",
+            lambda current_job: (False, "download failed (file not ready)", None, None),
+        )
+        monkeypatch.setattr(bi_downloader, "trigger_bi_recovery", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            bi_downloader,
+            "bi_lookup_alert",
+            lambda *args, **kwargs: {
+                "camera": "Garden",
+                "file": "Garden.20260418_170000.11995.3-1.jpg",
+                "path": None,
+                "clip": None,
+                "offset": 11995,
+                "msec": 42557,
+                "lookup_match_type": "exact_file",
+                "export_source_path": None,
+                "export_source_field": None,
+            },
+        )
+
+        bi_downloader._process_download_request(job["request_id"])
+
+        assert _r.blpop(bi_export_shared.EXPORT_REQUEST_QUEUE, timeout=1) is None
+        stored = bi_export_shared.load_job(job["request_id"])
+        assert stored["status"] == "failed"
+        assert stored["error"] == "download metadata refresh: alert has no exportable path"
+
 
 class TestSharedSessionCache:
     def setup_method(self):
