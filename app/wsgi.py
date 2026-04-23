@@ -1158,6 +1158,16 @@ def delete_plate_audit():
 
 # --- Webhook ---
 
+def _dedup_time_bucket(filename, bucket_sec=10):
+    """Bucket a BI alert filename timestamp to suppress burst frames from a single motion event."""
+    m = re.search(r'(\d{8}_\d{6})', filename)
+    if not m:
+        return filename
+    ts = datetime.strptime(m.group(1), '%Y%m%d_%H%M%S')
+    bucketed = ts.replace(second=(ts.second // bucket_sec) * bucket_sec)
+    return bucketed.strftime('%Y%m%d_%H%M%S')
+
+
 @app.route('/webhook/<config_id>', methods=['POST'])
 def webhook(config_id):
     if 'image' not in request.files:
@@ -1186,8 +1196,9 @@ def webhook(config_id):
 
     bvr = request.form.get('bvr', '').strip()
     if bvr:
-        dedup_key = f"clip_dedup:{bvr}"
-        if not r.set(dedup_key, 1, nx=True, ex=600):
+        ts_bucket = _dedup_time_bucket(config['trigger_filename'])
+        dedup_key = f"clip_dedup:{bvr}:{ts_bucket}"
+        if not r.set(dedup_key, 1, nx=True, ex=30):
             app.logger.info(f"{tag} Duplicate webhook for clip {bvr} — skipping.")
             return jsonify({"status": "duplicate", "camera": config['name']}), 200
         config['bvr_clip'] = bvr

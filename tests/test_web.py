@@ -19,13 +19,13 @@ def _fake_image():
     return (io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 16), "alert_20240101_120000.jpg")
 
 
-def test_webhook_dedup_same_bvr_returns_duplicate(client):
-    """Second request with the same bvr (any trigger filename) returns duplicate and does not enqueue."""
+def test_webhook_dedup_same_bvr_same_bucket_returns_duplicate(client):
+    """Burst frames within the same 10-second window on the same bvr are deduplicated."""
     config_id = uuid.uuid4().hex
     _insert_config(config_id)
 
     fake_redis = MagicMock()
-    fake_redis.set.side_effect = [1, None]  # first succeeds, second blocked
+    fake_redis.set.side_effect = [1, None]  # first sets key, second is blocked
     fake_queue = MagicMock()
 
     with patch.object(wsgi, "r", fake_redis), patch.object(wsgi, "q", fake_queue):
@@ -38,16 +38,49 @@ def test_webhook_dedup_same_bvr_returns_duplicate(client):
         assert r1.status_code == 200
         assert r1.get_json()["status"] == "queued"
 
+        # 3 seconds later — same 10-second bucket, so same dedup key
         img2, _ = _fake_image()
         r2 = client.post(
             f"/webhook/{config_id}",
-            data={"image": (img2, "alert_20240101_120040.jpg"), "bvr": "20240101_clip.bvr"},
+            data={"image": (img2, "alert_20240101_120003.jpg"), "bvr": "20240101_clip.bvr"},
             content_type="multipart/form-data",
         )
         assert r2.status_code == 200
         assert r2.get_json()["status"] == "duplicate"
 
     assert fake_queue.enqueue.call_count == 1
+
+
+def test_webhook_dedup_same_bvr_different_bucket_both_queue(client):
+    """Two distinct events on the same bvr clip (>10 s apart) both queue normally."""
+    config_id = uuid.uuid4().hex
+    _insert_config(config_id)
+
+    fake_redis = MagicMock()
+    fake_redis.set.return_value = 1  # always succeeds — different time-bucket keys
+    fake_queue = MagicMock()
+
+    with patch.object(wsgi, "r", fake_redis), patch.object(wsgi, "q", fake_queue):
+        img1, _ = _fake_image()
+        r1 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img1, "alert_20240101_120000.jpg"), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r1.status_code == 200
+        assert r1.get_json()["status"] == "queued"
+
+        # 45 seconds later — different 10-second bucket → distinct event, must not be suppressed
+        img2, _ = _fake_image()
+        r2 = client.post(
+            f"/webhook/{config_id}",
+            data={"image": (img2, "alert_20240101_120045.jpg"), "bvr": "20240101_clip.bvr"},
+            content_type="multipart/form-data",
+        )
+        assert r2.status_code == 200
+        assert r2.get_json()["status"] == "queued"
+
+    assert fake_queue.enqueue.call_count == 2
 
 
 def test_webhook_dedup_different_bvr_both_queue(client):
