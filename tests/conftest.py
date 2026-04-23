@@ -2,7 +2,7 @@ import pytest
 import os
 import tempfile
 
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
+os.environ["REDIS_URL"] = "redis://localhost:6379/15"
 
 import wsgi
 import settings_store
