@@ -1,11 +1,21 @@
 import pytest
 import os
 import tempfile
+import redis
 
 os.environ["REDIS_URL"] = "redis://localhost:6379/15"
 
+_test_redis = redis.from_url(os.environ["REDIS_URL"])
+
 import wsgi
 import settings_store
+
+
+@pytest.fixture(autouse=True)
+def isolate_redis_db():
+    _test_redis.flushdb()
+    yield
+    _test_redis.flushdb()
 
 @pytest.fixture
 def client():
