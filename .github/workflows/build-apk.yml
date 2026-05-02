@@ -41,7 +41,7 @@ jobs:
 
       - name: Upload debug APK artifact
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: android-tv-overlay-debug-apk
           path: android-tv-overlay/app/build/outputs/apk/debug/app-debug.apk
