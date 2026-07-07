@@ -3,7 +3,7 @@ requests
 gunicorn
 redis
 rq
-pillow>=12.2.0
+pillow>=12.3.0
 wheel>=0.47.0
 jaraco.context>=6.1.2
 pytest
