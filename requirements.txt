@@ -4,7 +4,7 @@ gunicorn
 redis
 rq
 pillow>=12.2.0
-wheel>=0.47.0
+wheel>=0.48.0
 jaraco.context>=6.1.2
 pytest
 psutil
