@@ -579,7 +579,7 @@ def analyze_image_groq(config, encoded_image, prompt):
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": "meta-llama/llama-4-scout-17b-16e-instruct", "max_tokens": 200, "messages": [{"role": "user", "content": [
+            json={"model": "qwen/qwen3.8-27b", "max_tokens": 200, "messages": [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
             ]}]},
