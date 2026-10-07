@@ -6,6 +6,7 @@ Shared helpers for the staged Blue Iris export pipeline.
 import hashlib
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -557,8 +558,8 @@ def requeue_delivery(job, reason):
     r.rpush(VIDEO_DELIVERY_QUEUE, job["request_id"])
 
 
-def queue_retry(job, reason):
-    """Requeue an export submission attempt using the original request payload."""
+def queue_retry(job, reason, *, expected_job=None):
+    """Requeue using the original payload; watchdog callers supply their snapshot."""
     retry_request = dict(job["request"])
     retry_request["queued_at"] = time.time()
     retry_request["_export_attempts"] = job.get("export_attempts", 1)
@@ -581,9 +582,271 @@ def queue_retry(job, reason):
     job["last_error"] = reason
     job["last_transition_at"] = time.time()
     job["request"] = retry_request
+    if expected_job is not None:
+        return replace_export_job(expected_job, job, request_queue=EXPORT_REQUEST_QUEUE)
     save_job(job)
     r.srem(ACTIVE_EXPORT_SET, job["request_id"])
     r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(retry_request))
+    return job
+
+
+def is_pending_export_request(job, request):
+    """Only an absent job or its exact persisted retry may be consumed.
+
+    Compare the whole original payload, including legacy retry metadata. Preparation
+    can refresh clip metadata or defer a request, so callers keep an unmodified copy.
+    """
+    return job is None or (
+        job.get("status") == "retry_queued" and job.get("request") == request
+    )
+
+
+def _legacy_openbvr_base(job):
+    """Old deferral left an enriched retry unchanged, without a queue marker."""
+    if not job or job.get("status") != "retry_queued" or "retry_queue" in job:
+        return None
+    request = job.get("request")
+    if not isinstance(request, dict) or request.get("request_id") != job.get("request_id"):
+        return None
+    if request.get("_openbvr_deferred_attempts", 0) != 0:
+        return None
+    # These fields identify the saved export generation, not just its enqueue time.
+    if (
+        request.get("_export_attempts") != job.get("export_attempts", 1)
+        or request.get("_recovery_attempts") != job.get("recovery_attempts", 0)
+        or "_previous_target_path" not in request
+        or request["_previous_target_path"] != job.get("target_path")
+    ):
+        return None
+    return request
+
+
+def _is_legacy_openbvr_deferral(job, deferred):
+    request = _legacy_openbvr_base(job)
+    if request is None or not isinstance(deferred, dict):
+        return False
+    if type(deferred.get("_openbvr_deferred_attempts")) is not int or deferred["_openbvr_deferred_attempts"] != 1:
+        return False
+    old_time, new_time = request.get("queued_at"), deferred.get("queued_at")
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in (old_time, new_time)):
+        return False
+    if not 0 < old_time <= new_time <= time.time():
+        return False
+    expected = dict(request, queued_at=new_time, _openbvr_deferred_attempts=1)
+    if deferred == expected:
+        return True
+    # A retry already refreshed while idle refreshed metadata again before its
+    # first deferral. Only that old lookup transformation may differ from saved P.
+    refreshed = request.get("_openbvr_refreshed_attempts", 0)
+    if type(refreshed) is not int or refreshed <= 0:
+        return False
+    fields = (
+        "clip_path", "offset", "duration", "_lookup_file", "_lookup_path",
+        "_lookup_clip", "_lookup_match_type", "_export_source_field",
+    )
+    if any(field not in deferred for field in fields):
+        return False
+    source = deferred.get("_lookup_path") or deferred.get("_lookup_clip")
+    source_field = "path" if deferred.get("_lookup_path") else "clip"
+    if (
+        not isinstance(source, str) or not source
+        or deferred["clip_path"] != source
+        or deferred["_export_source_field"] != source_field
+        or deferred["_lookup_file"] != request.get("trigger_filename")
+        or deferred["_lookup_match_type"] not in ("exact_file", "exact_file_duplicate_first")
+    ):
+        return False
+    try:
+        int(deferred["offset"] or 0)
+        int(deferred["duration"] or 10000)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    expected.update({field: deferred[field] for field in fields})
+    return deferred == expected
+
+
+def _queued_legacy_openbvr_deferral(pipe, job):
+    if _legacy_openbvr_base(job) is None:
+        return None
+    pipe.watch(OPENBVR_RETRY_QUEUE)
+    for raw in pipe.lrange(OPENBVR_RETRY_QUEUE, 0, -1):
+        try:
+            deferred = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if _is_legacy_openbvr_deferral(job, deferred):
+            return deferred
+    return None
+
+
+def _adopt_legacy_openbvr_deferral(job, deferred):
+    return dict(job, request=deferred, retry_queue=OPENBVR_RETRY_QUEUE, updated_at=time.time())
+
+
+def reconcile_legacy_export_request(request):
+    """Adopt an old deferral before intake can reject its older main-queue copy.
+
+    A popped deferral is validated against the watched job. An older request also
+    watches queue membership; a concurrent pop aborts intake rather than failing it.
+    Neither path submits early, enqueues another copy or refreshes request age.
+    """
+    key = job_key(request["request_id"])
+    while True:
+        with r.pipeline() as pipe:
+            direct_deferral = False
+            try:
+                pipe.watch(key)
+                raw = pipe.get(key)
+                current = json.loads(raw) if raw else None
+                direct_deferral = _is_legacy_openbvr_deferral(current, request)
+                if direct_deferral:
+                    deferred = request
+                elif is_pending_export_request(current, request):
+                    deferred = _queued_legacy_openbvr_deferral(pipe, current)
+                else:
+                    return False
+                if deferred is None:
+                    return True
+                updated = _adopt_legacy_openbvr_deferral(current, deferred)
+                pipe.multi()
+                pipe.set(key, json.dumps(updated))
+                pipe.execute()
+                return direct_deferral
+            except redis.WatchError:
+                if not direct_deferral:
+                    return False
+                # A popped deferral has no queue copy to recover. Revalidate the
+                # live job after a conflict; never overwrite settlement/new progress.
+                continue
+
+
+def transition_export_request(request, job=None, *, error_msg=None, deferred_request=None):
+    """Commit a matching export outcome and its queue/result effects together.
+
+    A failed job is retained even for an initial rejection without a saved job:
+    result consumers/expiry must not erase the duplicate-suppression record.
+    """
+    request_id = request["request_id"]
+    key = job_key(request_id)
+    while True:
+        with r.pipeline() as pipe:
+            legacy_pending = False
+            legacy_deferred = None
+            try:
+                pipe.watch(key)
+                raw = pipe.get(key)
+                current = json.loads(raw) if raw else None
+                if not is_pending_export_request(current, request):
+                    return None
+                legacy_pending = _legacy_openbvr_base(current) is not None
+                legacy_deferred = _queued_legacy_openbvr_deferral(pipe, current)
+                if legacy_deferred is not None:
+                    # Close the gap between intake and outcome: a legacy deferral
+                    # queued meanwhile must win over rejection of the old request.
+                    pipe.multi()
+                    pipe.set(key, json.dumps(_adopt_legacy_openbvr_deferral(current, legacy_deferred)))
+                    pipe.execute()
+                    return None
+                updated = job if job is not None else current or {
+                    "request_id": request_id,
+                    "alert_request_id": request.get("alert_request_id"),
+                    "config_name": request.get("config_name", "?"),
+                    "request": request,
+                    "output_path": request.get("output_path"),
+                }
+                now = time.time()
+                updated["updated_at"] = now
+                if job is None:
+                    updated["last_transition_at"] = now
+                    if deferred_request is not None:
+                        updated["status"] = "retry_queued"
+                        updated["request"] = deferred_request
+                        updated["retry_queue"] = OPENBVR_RETRY_QUEUE
+                    else:
+                        updated["status"] = "failed"
+                        updated["error"] = error_msg
+                pipe.multi()
+                pipe.set(key, json.dumps(updated))
+                if job is not None:
+                    pipe.sadd(ACTIVE_EXPORT_SET, request_id)
+                else:
+                    pipe.srem(ACTIVE_EXPORT_SET, request_id)
+                    if deferred_request is not None:
+                        pipe.rpush(OPENBVR_RETRY_QUEUE, json.dumps(deferred_request))
+                    else:
+                        pipe.rpush(result_key(request_id), json.dumps({
+                            "ok": False, "path": None, "error": error_msg,
+                        }))
+                        pipe.expire(result_key(request_id), RESULT_KEY_TTL)
+                pipe.execute()
+                return updated
+            except redis.WatchError:
+                if legacy_pending and (
+                    (job is None and deferred_request is None) or legacy_deferred is not None
+                ):
+                    # A queue pop may now own the deferral. Drop this obsolete
+                    # intake instead of retrying rejection against its older payload.
+                    return None
+                # Keep an already prepared success or new deferral across harmless conflicts.
+                # Recheck the live request and deferral queue without calling BI again.
+                continue
+
+
+def replace_export_job(snapshot, replacement, *, active=False, request_queue=None, error_msg=None):
+    """Commit a watchdog export transition only while its snapshot is current."""
+    request_id = snapshot["request_id"]
+    key = job_key(request_id)
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key)
+            raw = pipe.get(key)
+            current = json.loads(raw) if raw else None
+            if current != snapshot:
+                return None
+            request_payload = None
+            if request_queue is not None:
+                legacy_deferred = _queued_legacy_openbvr_deferral(pipe, current)
+                if legacy_deferred is not None:
+                    replacement = _adopt_legacy_openbvr_deferral(replacement, legacy_deferred)
+                    request_queue = OPENBVR_RETRY_QUEUE
+                request_payload = json.dumps(replacement["request"])
+                if request_queue == OPENBVR_RETRY_QUEUE:
+                    # Busy BI leaves deferrals queued. Watch membership with the job
+                    # so a concurrent pop/push cannot invalidate the enqueue decision.
+                    pipe.watch(request_queue)
+                    if pipe.lpos(request_queue, request_payload) is not None:
+                        request_payload = None
+            replacement["updated_at"] = time.time()
+            pipe.multi()
+            pipe.set(key, json.dumps(replacement))
+            if active:
+                pipe.sadd(ACTIVE_EXPORT_SET, request_id)
+            else:
+                pipe.srem(ACTIVE_EXPORT_SET, request_id)
+            if request_payload is not None:
+                pipe.rpush(request_queue, request_payload)
+            if error_msg is not None:
+                pipe.rpush(result_key(request_id), json.dumps({
+                    "ok": False, "path": None, "error": error_msg,
+                }))
+                pipe.expire(result_key(request_id), RESULT_KEY_TTL)
+            pipe.execute()
+            return replacement
+        except redis.WatchError:
+            # Another writer owns progress; a later watchdog scan uses fresh state.
+            return None
+
+
+def requeue_export_retry(snapshot, now):
+    """Requeue only an unchanged retry snapshot, atomically with its timestamp."""
+    if snapshot.get("status") != "retry_queued":
+        return None
+    replacement = dict(snapshot, last_transition_at=now)
+    queue = (
+        OPENBVR_RETRY_QUEUE if snapshot.get("retry_queue") == OPENBVR_RETRY_QUEUE
+        else EXPORT_REQUEST_QUEUE
+    )
+    return replace_export_job(snapshot, replacement, request_queue=queue)
 
 
 def iter_job_ids():

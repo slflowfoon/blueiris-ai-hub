@@ -3,7 +3,6 @@
 Watchdog for repairing stranded BI export and delivery jobs.
 """
 
-import json
 import logging
 import os
 import time
@@ -21,6 +20,8 @@ from bi_export_shared import (
     VIDEO_DELIVERY_QUEUE,
     WATCHDOG_INTERVAL,
     WATCHDOG_STALE_BUFFER,
+    requeue_export_retry,
+    replace_export_job,
     delivery_heartbeat_age,
     finish_delivery,
     iter_job_ids,
@@ -33,7 +34,6 @@ from bi_export_shared import (
     r,
     save_job,
     setup_service_logger,
-    write_result,
 )
 from service_health import start_heartbeat_thread
 
@@ -56,6 +56,9 @@ def _repair_job(job):
     transition_age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
 
     if status in {"submitted", "queued"} and not r.sismember(ACTIVE_EXPORT_SET, request_id):
+        updated = dict(job, next_poll_at=0, last_transition_at=now)
+        if replace_export_job(job, updated, active=True) is None:
+            return
         log_job_event(
             logging.WARNING,
             f"{tag} watchdog reattaching active export",
@@ -64,10 +67,6 @@ def _repair_job(job):
             phase="watchdog_reattach",
             error_code="active_export_missing",
         )
-        r.sadd(ACTIVE_EXPORT_SET, request_id)
-        job["next_poll_at"] = 0
-        job["last_transition_at"] = now
-        save_job(job)
         return
 
     if status == "submitted" and submitted_age >= (EXPORT_QUEUE_ACK_TIMEOUT + WATCHDOG_STALE_BUFFER):
@@ -81,13 +80,14 @@ def _repair_job(job):
                 age=f"{submitted_age:.1f}s",
                 error_code="queue_ack_timeout",
             )
-            queue_retry(job, "watchdog: export acknowledgement stale")
+            queue_retry(job, "watchdog: export acknowledgement stale", expected_job=dict(job))
         else:
+            snapshot = dict(job)
             job["status"] = "failed"
             job["error"] = "watchdog: export acknowledgement stale"
             job["last_transition_at"] = now
-            save_job(job)
-            r.srem(ACTIVE_EXPORT_SET, request_id)
+            if replace_export_job(snapshot, job, error_msg=job["error"]) is None:
+                return
             log_terminal_diagnosis(
                 logger,
                 tag,
@@ -97,7 +97,6 @@ def _repair_job(job):
                 age=f"{submitted_age:.1f}s",
                 error=job["error"],
             )
-            write_result(request_id, job["output_path"], False, job["error"])
         return
 
     if status == "queued" and submitted_age >= (EXPORT_QUEUE_TIMEOUT + WATCHDOG_STALE_BUFFER):
@@ -111,13 +110,14 @@ def _repair_job(job):
                 age=f"{submitted_age:.1f}s",
                 error_code="queue_timeout",
             )
-            queue_retry(job, "watchdog: export queue stale")
+            queue_retry(job, "watchdog: export queue stale", expected_job=dict(job))
         else:
+            snapshot = dict(job)
             job["status"] = "failed"
             job["error"] = "watchdog: export queue stale"
             job["last_transition_at"] = now
-            save_job(job)
-            r.srem(ACTIVE_EXPORT_SET, request_id)
+            if replace_export_job(snapshot, job, error_msg=job["error"]) is None:
+                return
             log_terminal_diagnosis(
                 logger,
                 tag,
@@ -127,7 +127,6 @@ def _repair_job(job):
                 age=f"{submitted_age:.1f}s",
                 error=job["error"],
             )
-            write_result(request_id, job["output_path"], False, job["error"])
         return
 
     if status == "ready" and transition_age >= (DOWNLOAD_TIMEOUT + WATCHDOG_STALE_BUFFER):
@@ -147,18 +146,19 @@ def _repair_job(job):
         return
 
     if status == "retry_queued" and transition_age >= RETRY_QUEUE_STALE_AGE:
+        updated = requeue_export_retry(job, now)
+        if updated is None:
+            return
+
         log_job_event(
             logging.WARNING,
             f"{tag} watchdog requeueing stalled export retry",
-            job,
+            updated,
             logger=logger,
             phase="watchdog_retry_requeue",
             age=f"{transition_age:.1f}s",
             error_code="retry_queue_stale",
         )
-        job["last_transition_at"] = now
-        save_job(job)
-        r.rpush("bi:export:requests", json.dumps(job["request"]))
         return
 
     if status == "downloaded":
