@@ -9,7 +9,9 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pip is only needed to install dependencies. Remove it so its bundled copies of
+# msgpack/urllib3/setuptools (pip/_vendor/vendor.txt) are not shipped or scanned.
+RUN pip install --no-cache-dir -r requirements.txt && pip uninstall -y pip
 
 COPY --chown=appuser:appuser app /app
 COPY --chown=appuser:appuser android-tv-overlay/dist/android-tv-overlay-debug.apk /app/tv-overlay/android-tv-overlay-debug.apk
