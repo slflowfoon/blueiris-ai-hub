@@ -132,6 +132,15 @@ CAPTION_PROMPTS = {
     ),
 }
 
+# Appended to every analysis prompt to prevent Gemini from speculating on
+# vehicle make/model when no plate is visible — the root cause of photo/video
+# caption conflicts described in issue #159.
+_NO_VEHICLE_SPECULATION = (
+    " Do not state a vehicle make or model unless you can clearly read"
+    " the number plate in the image or video."
+)
+
+# Stricter guard, added only for cameras with a DVLA key (DVLA supplies the make).
 DVLA_PROMPT_GUARD = (
     " If a vehicle registration is visible, include the registration but do not guess "
     "vehicle make or model; say car, van, or vehicle instead. DVLA will add official "
@@ -315,10 +324,10 @@ def build_prompt(config):
     dvla_note = DVLA_PROMPT_GUARD if (config.get('dvla_api_key') or '').strip() else ""
 
     if mode != 'normal' and mode in CAPTION_PROMPTS:
-        return CAPTION_PROMPTS[mode] + plate_note + dvla_note
+        return CAPTION_PROMPTS[mode] + plate_note + _NO_VEHICLE_SPECULATION + dvla_note
 
     base = config.get('prompt', 'Describe any motion detected by this CCTV camera in one sentence.')
-    return base + plate_note + dvla_note
+    return base + plate_note + _NO_VEHICLE_SPECULATION + dvla_note
 
 
 def is_muted(config):
