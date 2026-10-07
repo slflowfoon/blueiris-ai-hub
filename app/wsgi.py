@@ -1316,7 +1316,7 @@ HTML_TEMPLATE = r"""
                                 <div class="col-md-6 mb-3"><label class="form-label">Telegram Chat ID</label><input type="text" name="chat_id" class="form-control" required></div>
                                 <div class="col-md-6 mb-3"><label class="form-label">Message Thread ID <span class="text-muted small">(optional)</span></label><input type="text" name="message_thread_id" class="form-control" placeholder="Topic/thread ID"></div>
                             </div>
-                            <div class="mb-3"><label class="form-label">AI Prompt</label><textarea name="prompt" class="form-control" rows="3" required>The CCTV has detected motion. Describe any motion in a single sentence (max 145 characters) — vehicles (colour, make, plate), people, or deliveries. Do not describe static objects.</textarea></div>
+                            <div class="mb-3"><label class="form-label">AI Prompt</label><textarea name="prompt" class="form-control" rows="3" required>The CCTV has detected motion. Describe any motion in a single sentence (max 145 characters): vehicles (colour and plate if readable), people, or deliveries. Do not guess vehicle make or model. Do not describe static objects.</textarea></div>
                             <hr>
                             <h6 class="text-primary">Video Export</h6>
                             <div class="row">
