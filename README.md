@@ -261,6 +261,10 @@ graph LR
     bi_watchdog -. monitors .-> VP
 ```
 
+## Container Image
+
+The image installs and checks `requirements.txt` at build time, then removes `pip` and the `ensurepip` bootstrap. `pip` and the default venv pip bootstrap are unavailable at runtime, so dependency changes require editing `requirements.txt` and rebuilding the image with `docker build --pull -t blueiris-ai-hub:local .`.
+
 ## Delivery Scaling
 
 The follow-up video delivery stage can be scaled independently when Telegram video replacements start queueing behind:
