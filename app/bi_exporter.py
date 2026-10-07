@@ -3,6 +3,7 @@
 Exporter service for staged Blue Iris clip processing.
 """
 
+from copy import deepcopy
 import json
 import logging
 import os
@@ -25,10 +26,10 @@ from bi_export_shared import (
     log_job_event,
     log_terminal_diagnosis,
     r,
+    reconcile_legacy_export_request,
     safe_error_summary,
-    save_job,
+    transition_export_request,
     setup_service_logger,
-    write_result,
 )
 from service_health import start_heartbeat_thread
 
@@ -42,6 +43,7 @@ logger = setup_service_logger("bi_exporter", LOG_FILE)
 
 
 def _defer_openbvr_retry(req, tag, clip_path):
+    # Prepare the deferred payload; _process_request commits it with the saved job.
     active_exports = r.scard(ACTIVE_EXPORT_SET)
     if active_exports == 0:
         return False
@@ -53,7 +55,6 @@ def _defer_openbvr_retry(req, tag, clip_path):
     req["_openbvr_deferred_attempts"] = deferred_attempts + 1
     req["queued_at"] = time.time()
     queue_depth_before = r.llen(OPENBVR_RETRY_QUEUE)
-    r.rpush(OPENBVR_RETRY_QUEUE, json.dumps(req))
     logger.warning(
         f"{tag} Deferring OpenBVR retry until BI export queue is idle | "
         f"bi_instance={bi_instance_label(req['bi_url'])} phase=export_submit_deferred "
@@ -319,10 +320,15 @@ def _process_request(raw):
     except Exception:
         return
 
-    request_id = req.get("request_id", "unknown")
+    request_id = req.get("request_id")
+    if not request_id or not reconcile_legacy_export_request(req):
+        return
+    original_request = deepcopy(req)
     tag = job_tag(req)
     queued_at = req.get("queued_at", 0)
     if queued_at and (time.time() - queued_at) > STALE_REQUEST_AGE:
+        if transition_export_request(original_request, error_msg="stale request") is None:
+            return
         log_terminal_diagnosis(
             logger,
             tag,
@@ -331,10 +337,11 @@ def _process_request(raw):
             "stale_request",
             error="stale request",
         )
-        write_result(request_id, req.get("output_path"), False, "stale request")
         return
 
     if int(req.get("_export_attempts", 0)) >= MAX_EXPORT_ATTEMPTS:
+        if transition_export_request(original_request, error_msg="export retry limit reached") is None:
+            return
         log_terminal_diagnosis(
             logger,
             tag,
@@ -343,7 +350,6 @@ def _process_request(raw):
             "retry_limit_reached",
             error="export retry limit reached",
         )
-        write_result(request_id, req.get("output_path"), False, "export retry limit reached")
         return
 
     job, error_msg = _prepare_export(req, tag)
@@ -360,6 +366,9 @@ def _process_request(raw):
         elif error_msg and error_msg.startswith("BI export failed after refreshed OpenBVR retry"):
             error_code = "openbvr_failed_after_refresh"
         elif error_msg == "openbvr deferred retry queued":
+            transition_export_request(original_request, deferred_request=req)
+            return
+        if transition_export_request(original_request, error_msg=error_msg) is None:
             return
         log_terminal_diagnosis(
             logger,
@@ -369,11 +378,10 @@ def _process_request(raw):
             error_code,
             error=error_msg,
         )
-        write_result(request_id, req.get("output_path"), False, error_msg)
         return
 
-    save_job(job)
-    r.sadd(ACTIVE_EXPORT_SET, request_id)
+    if transition_export_request(original_request, job=job) is None:
+        return
     log_job_event(
         logging.INFO,
         f"{tag} export submitted",
