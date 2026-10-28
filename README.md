@@ -101,7 +101,7 @@ Once running, send these commands in your alert chat:
 
 Each alert tries AI providers in order until one succeeds:
 
-1. **Gemini** (rotates across keys and models: `gemini-2.5-flash` → `gemini-2.5-flash-lite`)
+1. **Gemini** (rotates across keys and models: `gemini-3.5-flash` → `gemini-2.5-flash` → `gemini-3.5-flash-lite`)
 2. **Grok** (`grok-4-0709`) — optional, add key in configuration
 3. **Groq** (`meta-llama/llama-4-scout-17b-16e-instruct`) — optional, add key in configuration
 
