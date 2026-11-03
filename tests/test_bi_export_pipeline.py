@@ -2512,3 +2512,13 @@ def test_run_exporter_only_drains_openbvr_retry_queue_when_idle(monkeypatch, act
     assert ("scard", bi_export_shared.ACTIVE_EXPORT_SET) in calls
     assert (("blpop", bi_export_shared.OPENBVR_RETRY_QUEUE, 1) in calls) == (active_exports == 0)
     assert (("process", b'{"request_id":"deferred"}') in calls) == (active_exports == 0)
+
+
+def test_shared_redis_client_outlasts_idle_blpop():
+    """redis-py 8 defaults socket_timeout to 5s; an idle blpop(timeout=5) must not time out the socket."""
+    kwargs = bi_export_shared.r.connection_pool.connection_kwargs
+
+    assert kwargs["socket_timeout"] > 5
+    started = time.monotonic()
+    assert bi_export_shared.r.blpop("bi:test:idle-queue", timeout=5) is None
+    assert time.monotonic() - started >= 5

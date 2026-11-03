@@ -100,6 +100,45 @@ def test_update_telegram_caption_logs_source_and_change(monkeypatch, caplog):
     assert "message_id=654" in caplog.text
 
 
+def test_build_prompt_adds_dvla_vehicle_identity_guard(monkeypatch):
+    monkeypatch.setattr(tasks.r, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {})
+
+    prompt = tasks.build_prompt(
+        {
+            "chat_id": "chat",
+            "prompt": "Describe motion.",
+            "dvla_api_key": "test-key",
+        }
+    )
+
+    assert "Describe motion." in prompt
+    assert "do not guess vehicle make or model" in prompt
+    assert "DVLA will add official make, colour, and year" in prompt
+
+
+def test_build_prompt_adds_dvla_guard_to_caption_modes(monkeypatch):
+    monkeypatch.setattr(
+        tasks.r,
+        "get",
+        lambda *_args, **_kwargs: (
+            b'{"mode": "witty", "expires": "2999-01-01T00:00:00"}'
+        ),
+    )
+    monkeypatch.setattr(tasks, "load_known_plates", lambda: {})
+
+    prompt = tasks.build_prompt(
+        {
+            "chat_id": "chat",
+            "prompt": "Describe motion.",
+            "dvla_api_key": "test-key",
+        }
+    )
+
+    assert "witty" in prompt
+    assert "do not guess vehicle make or model" in prompt
+
+
 def test_process_alert_does_not_log_dvla_enrichment_without_key(tmp_path, monkeypatch, caplog):
     image_path = tmp_path / "alert.jpg"
     image_path.write_bytes(b"fake-image")

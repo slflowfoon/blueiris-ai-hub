@@ -110,7 +110,7 @@ DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
 PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+GEMINI_MODELS = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 CAPTION_PROMPTS = {
@@ -138,6 +138,13 @@ CAPTION_PROMPTS = {
 _NO_VEHICLE_SPECULATION = (
     " Do not state a vehicle make or model unless you can clearly read"
     " the number plate in the image or video."
+)
+
+# Stricter guard, added only for cameras with a DVLA key (DVLA supplies the make).
+DVLA_PROMPT_GUARD = (
+    " If a vehicle registration is visible, include the registration but do not guess "
+    "vehicle make or model; say car, van, or vehicle instead. DVLA will add official "
+    "make, colour, and year."
 )
 
 
@@ -314,11 +321,13 @@ def build_prompt(config):
     plate_hint = "; ".join(f"{p} = {n}" for p, n in plates.items()) if plates else ""
     plate_note = f" Known plates: {plate_hint}." if plate_hint else ""
 
+    dvla_note = DVLA_PROMPT_GUARD if (config.get('dvla_api_key') or '').strip() else ""
+
     if mode != 'normal' and mode in CAPTION_PROMPTS:
-        return CAPTION_PROMPTS[mode] + plate_note + _NO_VEHICLE_SPECULATION
+        return CAPTION_PROMPTS[mode] + plate_note + _NO_VEHICLE_SPECULATION + dvla_note
 
     base = config.get('prompt', 'Describe any motion detected by this CCTV camera in one sentence.')
-    return base + plate_note + _NO_VEHICLE_SPECULATION
+    return base + plate_note + _NO_VEHICLE_SPECULATION + dvla_note
 
 
 def is_muted(config):
