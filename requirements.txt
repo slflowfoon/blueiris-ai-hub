@@ -1,10 +1,10 @@
 flask
 requests
 gunicorn
-redis
+redis>=8.1,<9
 rq
-pillow>=12.2.0
-wheel>=0.47.0
+pillow>=12.3.0
+wheel>=0.48.0
 jaraco.context>=6.1.2
 pytest
 psutil

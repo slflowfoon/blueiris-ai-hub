@@ -101,7 +101,7 @@ Once running, send these commands in your alert chat:
 
 Each alert tries AI providers in order until one succeeds:
 
-1. **Gemini** (rotates across keys and models: `gemini-2.5-flash` → `gemini-2.5-flash-lite`)
+1. **Gemini** (rotates across keys and models: `gemini-3.5-flash` → `gemini-2.5-flash` → `gemini-3.5-flash-lite`)
 2. **Grok** (`grok-4-0709`) — optional, add key in configuration
 3. **Groq** (`qwen/qwen3.8-27b`) — optional, add key in configuration
 
@@ -260,6 +260,10 @@ graph LR
     mute_bot -->|/mute /unmute /caption| TG
     bi_watchdog -. monitors .-> VP
 ```
+
+## Container Image
+
+The image installs and checks `requirements.txt` at build time, then removes `pip` and the `ensurepip` bootstrap. `pip` and the default venv pip bootstrap are unavailable at runtime, so dependency changes require editing `requirements.txt` and rebuilding the image with `docker build --pull -t blueiris-ai-hub:local .`.
 
 ## Delivery Scaling
 
