@@ -10,7 +10,7 @@ def test_node24_ready_action_versions_are_pinned():
 
     assert "actions/checkout@v6" in build_apk
     assert "actions/setup-java@v5" in build_apk
-    assert "actions/cache@v5" in build_apk
+    assert "actions/cache@v6" in build_apk
     assert "actions/upload-artifact@v7" in build_apk
     assert "softprops/action-gh-release@v3" in build_apk
 
