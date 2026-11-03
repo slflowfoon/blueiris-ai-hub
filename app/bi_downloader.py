@@ -3,7 +3,6 @@
 Downloader service for staged Blue Iris exports.
 """
 
-import json
 import logging
 import os
 import time
@@ -16,16 +15,18 @@ from bi_export_shared import (
     MAX_RECOVERY_ATTEMPTS,
     bi_lookup_alert,
     bi_delete_clip,
-    finish_job,
+    claim_download_attempt,
+    commit_download_outcome,
     get_session,
+    has_delivery_claim,
+    is_download_claim_current,
     job_tag,
     log_job_event,
     log_terminal_diagnosis,
     load_job,
-    mark_delivery_queued,
     r,
+    replace_export_job,
     safe_error_summary,
-    save_job,
     setup_service_logger,
     trigger_bi_recovery,
     queue_retry,
@@ -45,6 +46,8 @@ MAX_DOWNLOAD_REEXPORT_ATTEMPTS = 2
 
 def _download_export(job):
     tag = job_tag(job)
+    if not is_download_claim_current(job):
+        return False, "stale download attempt", None, None
     sess, sid = get_session(job["bi_url"], job["bi_user"], job["bi_pass"], tag)
     if not sid:
         return False, "BI login failed", None, None
@@ -56,6 +59,8 @@ def _download_export(job):
     success_elapsed = None
 
     while time.time() - dl_start < DOWNLOAD_TIMEOUT:
+        if not is_download_claim_current(job):
+            return False, "stale download attempt", None, None
         attempt_elapsed = time.time() - dl_start
         try:
             with sess.get(mp4_url, stream=True, timeout=60) as dl:
@@ -104,144 +109,235 @@ def _download_export(job):
             time.sleep(2)
 
     if not downloaded:
-        bi_delete_clip(sess, job["bi_url"], sid, job["target_path"], tag)
+        if is_download_claim_current(job):
+            bi_delete_clip(sess, job["bi_url"], sid, job["target_path"], tag)
         return False, "download failed (file not ready)", None, None
 
-    if job.get("delete_after", True):
+    if job.get("delete_after", True) and is_download_claim_current(job):
         bi_delete_clip(sess, job["bi_url"], sid, job["target_path"], tag)
 
     return True, None, success_elapsed, final_size
 
 
-def _queue_download_reexport(job, tag, refresh_metadata=False):
-    retry_request = dict(job["request"])
+def _cleanup_attempt_file(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _queue_download_reexport(claimed, tag, refresh_metadata=False):
+    """Requeue a claimed download attempt as a fresh export, iff the claim is
+    still current. Returns ("requeued"|"stale"|"error", message_or_none)."""
+    if not is_download_claim_current(claimed):
+        return "stale", None
+    retry_request = dict(claimed["request"])
     retry_request["queued_at"] = time.time()
-    retry_request["_export_attempts"] = job.get("export_attempts", 1)
-    retry_request["_recovery_attempts"] = job.get("recovery_attempts", 0)
-    retry_request["_previous_target_path"] = job.get("target_path")
+    retry_request["_export_attempts"] = claimed.get("export_attempts", 1)
+    retry_request["_recovery_attempts"] = claimed.get("recovery_attempts", 0)
+    retry_request["_previous_target_path"] = claimed.get("target_path")
     retry_request["_original_submitted_at"] = retry_request.get(
         "_original_submitted_at",
-        job.get("submitted_at"),
+        claimed.get("submitted_at"),
     )
     retry_request["_original_monitor_started_at"] = retry_request.get(
         "_original_monitor_started_at",
-        job.get("monitor_started_at", job.get("submitted_at")),
+        claimed.get("monitor_started_at", claimed.get("submitted_at")),
     )
     retry_request["_original_queue_ack_at"] = retry_request.get(
         "_original_queue_ack_at",
-        job.get("queue_ack_at"),
+        claimed.get("queue_ack_at"),
     )
     retry_request["_download_reexport_attempts"] = int(retry_request.get("_download_reexport_attempts", 0)) + 1
     retry_request["_refresh_before_export"] = bool(refresh_metadata)
 
     if refresh_metadata:
+        if not is_download_claim_current(claimed):
+            return "stale", None
         trigger_filename = retry_request.get("trigger_filename")
         if not trigger_filename:
-            return False, "missing trigger_filename for download metadata refresh"
+            return "error", "missing trigger_filename for download metadata refresh"
         lookup = bi_lookup_alert(
-            job["bi_url"],
-            job["bi_user"],
-            job["bi_pass"],
+            claimed["bi_url"],
+            claimed["bi_user"],
+            claimed["bi_pass"],
             trigger_filename,
             tag,
         )
         if lookup is None:
-            return False, "download metadata refresh found no matching alert"
+            return "error", "download metadata refresh found no matching alert"
         if not lookup.get("export_source_path"):
-            return False, "download metadata refresh: alert has no exportable path"
+            return "error", "download metadata refresh: alert has no exportable path"
         retry_request["clip_path"] = lookup.get("export_source_path")
         retry_request["offset"] = lookup.get("offset", 0)
         retry_request["duration"] = lookup.get("msec", 10000)
 
-    job["status"] = "retry_queued"
-    job["last_error"] = "download failed (file not ready)"
-    job["last_transition_at"] = time.time()
-    job["request"] = retry_request
-    save_job(job)
-    r.rpush(EXPORT_REQUEST_QUEUE, json.dumps(retry_request))
-    return True, None
+    updated = dict(claimed)
+    updated["status"] = "retry_queued"
+    updated["last_error"] = "download failed (file not ready)"
+    updated["last_transition_at"] = time.time()
+    updated["request"] = retry_request
+    if has_delivery_claim(claimed["request_id"]):
+        return "stale", None
+    if replace_export_job(claimed, updated, request_queue=EXPORT_REQUEST_QUEUE) is None:
+        return "stale", None
+    return "requeued", None
 
 
 def _process_download_request(request_id):
-    job = load_job(request_id)
-    if not job:
+    claimed = claim_download_attempt(request_id)
+    if claimed is None:
+        job = load_job(request_id)
+        tag = job_tag(job) if job else f"[?][{request_id[:8]}]"
+        log_job_event(
+            logging.INFO,
+            f"{tag} stale or duplicate download item skipped",
+            job,
+            logger=logger,
+            phase="download_stale_skip",
+            error_code="download_stale_duplicate",
+        )
         return
 
-    job["download_attempts"] = int(job.get("download_attempts", 0)) + 1
-    job["last_transition_at"] = time.time()
-    save_job(job)
-    tag = job_tag(job)
+    tag = job_tag(claimed)
+    ok, error_msg, wait_elapsed, final_size = _download_export(claimed)
 
-    ok, error_msg, wait_elapsed, final_size = _download_export(job)
     if ok:
-        finish_job(job, True, None)
-        completed_job = load_job(job["request_id"]) or job
+        updated = commit_download_outcome(claimed, True, None)
+        if updated is None:
+            log_job_event(
+                logging.WARNING,
+                f"{tag} download succeeded but claim is stale; discarding attempt file",
+                claimed,
+                logger=logger,
+                phase="download_stale_discard",
+                error_code="download_stale_duplicate",
+            )
+            _cleanup_attempt_file(claimed["output_path"])
+            return
         log_job_event(
             logging.INFO,
             f"{tag} download complete",
-            completed_job,
+            updated,
             logger=logger,
             phase="downloaded",
             wait_elapsed=f"{wait_elapsed:.1f}s" if wait_elapsed is not None else None,
             size=final_size,
         )
-        if job.get("delivery_context"):
-            queue_depth_before = r.llen(VIDEO_DELIVERY_QUEUE)
-            mark_delivery_queued(completed_job)
+        if updated.get("delivery_status") == "queued":
             log_job_event(
                 logging.INFO,
                 f"{tag} delivery queued after download",
-                load_job(job["request_id"]) or job,
+                updated,
                 logger=logger,
                 phase="delivery_queued",
-                delivery_queue_depth=queue_depth_before + 1,
+                delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
             )
         return
 
+    if not is_download_claim_current(claimed):
+        log_job_event(
+            logging.INFO,
+            f"{tag} stale download claim superseded while download was in flight",
+            claimed,
+            logger=logger,
+            phase="download_stale_discard",
+            error_code="download_stale_duplicate",
+        )
+        _cleanup_attempt_file(claimed["output_path"])
+        return
+
     if error_msg == "download failed (file not ready)":
-        reexport_attempts = int(job.get("request", {}).get("_download_reexport_attempts", 0))
+        reexport_attempts = int(claimed.get("request", {}).get("_download_reexport_attempts", 0))
         if reexport_attempts < MAX_DOWNLOAD_REEXPORT_ATTEMPTS:
             refresh_metadata = reexport_attempts >= 1
             try:
-                requeued, requeue_error = _queue_download_reexport(job, tag, refresh_metadata=refresh_metadata)
+                outcome, requeue_error = _queue_download_reexport(claimed, tag, refresh_metadata=refresh_metadata)
             except Exception as exc:
-                requeued, requeue_error = False, safe_error_summary(exc)
-            if requeued:
+                outcome, requeue_error = "error", safe_error_summary(exc)
+            if outcome == "requeued":
                 log_job_event(
                     logging.WARNING,
                     f"{tag} download unreadable; re-requesting BI export",
-                    load_job(job["request_id"]) or job,
+                    load_job(claimed["request_id"]) or claimed,
                     logger=logger,
                     phase="download_retry",
                     error=error_msg,
                     error_code="download_not_ready",
                     retry_reason="same_metadata" if not refresh_metadata else "refreshed_metadata",
                 )
+                _cleanup_attempt_file(claimed["output_path"])
+                return
+            if outcome == "stale":
+                log_job_event(
+                    logging.INFO,
+                    f"{tag} stale download claim superseded during re-export requeue",
+                    claimed,
+                    logger=logger,
+                    phase="download_stale_discard",
+                    error_code="download_stale_duplicate",
+                )
+                _cleanup_attempt_file(claimed["output_path"])
                 return
             error_msg = requeue_error or error_msg
 
-    if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS and trigger_bi_recovery(
-        job.get("restart_url", ""),
-        job.get("restart_token", ""),
-        tag,
+    if (
+        claimed.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS
+        and is_download_claim_current(claimed)
+        and trigger_bi_recovery(
+            claimed.get("restart_url", ""),
+            claimed.get("restart_token", ""),
+            tag,
+        )
     ):
+        candidate = dict(claimed)
+        candidate["request"] = dict(claimed["request"])
+        candidate["recovery_attempts"] = claimed.get("recovery_attempts", 0) + 1
+        candidate["request"]["_recovery_attempts"] = claimed.get("recovery_attempts", 0) + 1
+        if has_delivery_claim(claimed["request_id"]):
+            result = None
+        else:
+            result = queue_retry(candidate, error_msg or "download failed", expected_job=claimed)
+        _cleanup_attempt_file(claimed["output_path"])
+        if result is None:
+            log_job_event(
+                logging.INFO,
+                f"{tag} stale download claim superseded during recovery requeue",
+                claimed,
+                logger=logger,
+                phase="download_stale_discard",
+                error_code="download_stale_duplicate",
+            )
+            return
         log_job_event(
             logging.WARNING,
             f"{tag} download failed; retrying export after recovery",
-            job,
+            result,
             logger=logger,
             phase="download_retry",
             error=error_msg,
             error_code="download_not_ready",
         )
-        job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
-        queue_retry(job, error_msg or "download failed")
+        return
+
+    updated = commit_download_outcome(claimed, False, error_msg)
+    _cleanup_attempt_file(claimed["output_path"])
+    if updated is None:
+        log_job_event(
+            logging.INFO,
+            f"{tag} stale download claim superseded before terminal failure commit",
+            claimed,
+            logger=logger,
+            phase="download_stale_discard",
+            error_code="download_stale_duplicate",
+        )
         return
 
     log_job_event(
         logging.ERROR,
         f"{tag} download failed",
-        job,
+        updated,
         logger=logger,
         phase="download_failed",
         error=error_msg,
@@ -250,12 +346,11 @@ def _process_download_request(request_id):
     log_terminal_diagnosis(
         logger,
         tag,
-        job,
+        updated,
         "download_failed",
         "download_not_ready",
         error=error_msg,
     )
-    finish_job(job, False, error_msg)
 
 
 def run_downloader():

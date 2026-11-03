@@ -214,6 +214,20 @@ The default `docker-compose.yml` now enables Redis append-only persistence and m
 
 That means normal container restarts and `docker compose down` / `up -d` cycles keep BI pipeline state intact. If you remove Docker volumes, you also remove Redis state and may orphan in-flight BI jobs.
 
+BI stages before delivery remain single-replica. Each claimed download uses a unique attempt file; a stale attempt can discard only its own file. State, result and delivery queue handoff are committed together only while the download snapshot still matches and no delivery claim or heartbeat exists. Unreadable downloads retain the two re-export retries (original metadata, then refreshed metadata), existing export/recovery limits and original job ages.
+
+| Export `status` | `delivery_status` | Meaning |
+| --- | --- | --- |
+| `failed` | absent / `pending` | Export or download failed; video delivery is not recorded as successful |
+| `downloaded` | absent / `pending` / `queued` / `retry_queued` / `processing` | Download finished; delivery has not reached a terminal outcome |
+| `completed` | `completed` | Delivery worker recorded successful video delivery |
+| `delivery_failed` | `failed` | Delivery reached a terminal failure |
+| Other inconsistent pairs | e.g. `failed` with `processing` or `completed` | Retained contradiction; historical delivery outcome is unknown |
+
+`/status` and `/metrics` expose `pipeline.contradictory_jobs`, a count of inconsistent export/delivery state pairs. These records are excluded from actionable `stale_jobs`; `failed_jobs.export` still counts every retained `status=failed` record, including contradictory ones. A fresh delivery heartbeat suppresses stale processing counts. `stale_jobs.downloading` counts attempts beyond the download claim timeout. Summaries contain counts only and become null when Redis is unavailable; service-health and HTTP status semantics are unchanged.
+
+On upgrade, stop old pipeline workers before starting the new versions so old unconditional writers cannot bypass the guards. Redis records survive restarts: ordinary queued work continues, and the watchdog can requeue an expired `downloading` claim with a fresh attempt file. A live delivery claim/heartbeat prevents that recovery. Files left by a crashed attempt may remain; recovery does not delete another attempt's files. Contradictory records are reported without automatic repair or replay, and no delivery success is inferred from them. This does not provide exactly-once external sends or pipeline-wide concurrency guarantees; production state repair requires a separate investigation.
+
 ## Health and Status
 
 The hub now exposes:

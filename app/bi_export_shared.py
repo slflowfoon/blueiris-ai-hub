@@ -10,6 +10,7 @@ import math
 import os
 import socket
 import time
+import uuid
 from urllib.parse import urljoin, urlparse
 from logging.handlers import RotatingFileHandler
 
@@ -49,6 +50,10 @@ WATCHDOG_INTERVAL        = 15
 WATCHDOG_STALE_BUFFER    = 10
 RETRY_QUEUE_STALE_AGE    = 30
 DELIVERY_QUEUE_STALE_AGE = 45
+# A claimed download attempt can legitimately run close to DOWNLOAD_TIMEOUT, plus the
+# final in-flight HTTP request's own timeout and a trailing clip-delete call. Only a
+# crashed/zombie claim is still "downloading" past this margin.
+DOWNLOAD_CLAIM_STALE_AGE = DOWNLOAD_TIMEOUT * 2 + WATCHDOG_STALE_BUFFER
 
 # Must exceed the longest blocking pop (blpop timeout=5): redis-py 8 defaults socket_timeout
 # to 5s, which makes an idle blpop raise TimeoutError and crash the service.
@@ -474,14 +479,21 @@ def claim_delivery(request_id, owner, ttl=DELIVERY_CLAIM_TTL):
 
 def refresh_delivery_claim(request_id, owner, ttl=DELIVERY_CLAIM_TTL):
     key = delivery_claim_key(request_id)
-    current = r.get(key)
-    if isinstance(current, bytes):
-        current = current.decode()
-    if current != owner:
-        return False
-    r.expire(key, ttl)
-    touch_delivery_heartbeat(request_id, ttl=ttl)
-    return True
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key)
+            current = pipe.get(key)
+            if isinstance(current, bytes):
+                current = current.decode()
+            if current != owner:
+                return False
+            pipe.multi()
+            pipe.expire(key, ttl)
+            pipe.setex(delivery_heartbeat_key(request_id), ttl, str(time.time()))
+            pipe.execute()
+            return True
+        except redis.WatchError:
+            return False
 
 
 def touch_delivery_heartbeat(request_id, ttl=DELIVERY_CLAIM_TTL):
@@ -509,56 +521,269 @@ def clear_delivery_claim(request_id, owner=None):
         r.delete(key, delivery_heartbeat_key(request_id))
         return
 
-    current = r.get(key)
-    if isinstance(current, bytes):
-        current = current.decode()
-    if current == owner:
-        r.delete(key, delivery_heartbeat_key(request_id))
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key)
+            current = pipe.get(key)
+            if isinstance(current, bytes):
+                current = current.decode()
+            if current != owner:
+                return
+            pipe.multi()
+            pipe.delete(key, delivery_heartbeat_key(request_id))
+            pipe.execute()
+        except redis.WatchError:
+            return
 
 
-def finish_job(job, ok, error_msg=None):
-    request_id = job["request_id"]
-    if ok:
-        job["status"] = "downloaded"
-    else:
-        job["status"] = "failed"
-        job["error"] = error_msg
-    job["last_transition_at"] = time.time()
-    save_job(job)
-    r.srem(ACTIVE_EXPORT_SET, request_id)
-    write_result(request_id, job.get("output_path"), ok, error_msg)
+def _download_attempt_output_path(base_path, token):
+    """Use a unique file per attempt, including across export counter resets."""
+    root, ext = os.path.splitext(base_path)
+    return f"{root}.dl-{token}{ext}"
 
 
-def mark_delivery_queued(job):
-    clear_delivery_claim(job["request_id"])
-    job["delivery_status"] = "queued"
-    job["delivery_queued_at"] = time.time()
-    job["last_transition_at"] = job["delivery_queued_at"]
-    save_job(job)
-    r.rpush(VIDEO_DELIVERY_QUEUE, job["request_id"])
+def claim_download_attempt(request_id):
+    """Claim an unchanged ready job with no delivery owner, using a unique file."""
+    key = job_key(request_id)
+    claim_key = delivery_claim_key(request_id)
+    heartbeat_key = delivery_heartbeat_key(request_id)
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key, claim_key, heartbeat_key)
+            raw = pipe.get(key)
+            current = json.loads(raw) if raw else None
+            if not current or current.get("status") != "ready":
+                return None
+            if current.get("delivery_status") not in (None, "pending"):
+                return None
+            if pipe.exists(claim_key) or pipe.exists(heartbeat_key):
+                return None
+            attempt = int(current.get("download_attempts", 0)) + 1
+            base_path = current.get("download_base_path") or current.get("output_path")
+            token = uuid.uuid4().hex
+            claimed = dict(current)
+            claimed["download_base_path"] = base_path
+            claimed["download_attempts"] = attempt
+            claimed["download_attempt_token"] = token
+            claimed["output_path"] = _download_attempt_output_path(base_path, token)
+            claimed["status"] = "downloading"
+            claimed["last_transition_at"] = time.time()
+            pipe.multi()
+            pipe.set(key, json.dumps(claimed))
+            pipe.execute()
+            return claimed
+        except redis.WatchError:
+            return None
 
 
-def finish_delivery(job, ok, error_msg=None):
-    clear_delivery_claim(job["request_id"])
-    if ok:
-        job["delivery_status"] = "completed"
-        job["status"] = "completed"
-    else:
-        job["delivery_status"] = "failed"
-        job["status"] = "delivery_failed"
-        job["delivery_error"] = error_msg
-    job["last_transition_at"] = time.time()
-    save_job(job)
+def is_download_claim_current(claimed):
+    """Revalidate state and delivery ownership before external download actions."""
+    return load_job(claimed["request_id"]) == claimed and not has_delivery_claim(claimed["request_id"])
 
 
-def requeue_delivery(job, reason):
-    clear_delivery_claim(job["request_id"])
-    job["delivery_status"] = "retry_queued"
-    job["delivery_error"] = reason
-    job["delivery_attempts"] = int(job.get("delivery_attempts", 0))
-    job["last_transition_at"] = time.time()
-    save_job(job)
-    r.rpush(VIDEO_DELIVERY_QUEUE, job["request_id"])
+def has_delivery_claim(request_id):
+    """Best-effort precheck; commits must also WATCH claim and heartbeat keys."""
+    return bool(r.exists(delivery_claim_key(request_id)) or r.exists(delivery_heartbeat_key(request_id)))
+
+
+def commit_download_outcome(expected, ok, error_msg=None):
+    """Atomically commit the exact download snapshot, result and delivery handoff."""
+    if expected.get("status") != "downloading" or expected.get("delivery_status") not in (None, "pending"):
+        return None
+    request_id = expected["request_id"]
+    key = job_key(request_id)
+    claim_key = delivery_claim_key(request_id)
+    heartbeat_key = delivery_heartbeat_key(request_id)
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key, claim_key, heartbeat_key)
+            raw = pipe.get(key)
+            current = json.loads(raw) if raw else None
+            if current != expected:
+                return None
+            if pipe.exists(claim_key) or pipe.exists(heartbeat_key):
+                return None
+            updated = dict(current)
+            now = time.time()
+            if ok:
+                updated["status"] = "downloaded"
+            else:
+                updated["status"] = "failed"
+                updated["error"] = error_msg
+            updated["last_transition_at"] = now
+            updated["updated_at"] = now
+            queue_delivery = ok and bool(updated.get("delivery_context"))
+            if queue_delivery:
+                updated["delivery_status"] = "queued"
+                updated["delivery_queued_at"] = now
+            pipe.multi()
+            pipe.set(key, json.dumps(updated))
+            pipe.srem(ACTIVE_EXPORT_SET, request_id)
+            pipe.rpush(result_key(request_id), json.dumps({
+                "ok": ok,
+                "path": updated.get("output_path") if ok else None,
+                "error": error_msg,
+            }))
+            pipe.expire(result_key(request_id), RESULT_KEY_TTL)
+            if queue_delivery:
+                pipe.rpush(VIDEO_DELIVERY_QUEUE, request_id)
+            pipe.execute()
+            return updated
+        except redis.WatchError:
+            return None
+
+
+def requeue_stale_download(snapshot, now):
+    """Requeue an unchanged ready/crashed download only without a delivery owner."""
+    if snapshot.get("status") not in {"ready", "downloading"}:
+        return None
+    replacement = dict(snapshot, status="ready", last_transition_at=now)
+    request_id = snapshot["request_id"]
+    key = job_key(request_id)
+    claim_key = delivery_claim_key(request_id)
+    heartbeat_key = delivery_heartbeat_key(request_id)
+    with r.pipeline() as pipe:
+        try:
+            pipe.watch(key, claim_key, heartbeat_key)
+            raw = pipe.get(key)
+            current = json.loads(raw) if raw else None
+            if current != snapshot:
+                return None
+            if pipe.exists(claim_key) or pipe.exists(heartbeat_key):
+                return None
+            pipe.multi()
+            pipe.set(key, json.dumps(replacement))
+            pipe.rpush(DOWNLOAD_REQUEST_QUEUE, request_id)
+            pipe.execute()
+            return replacement
+        except redis.WatchError:
+            return None
+
+
+# A live owner's own heartbeat thread touches the claim/heartbeat keys (EXPIRE /
+# SETEX) roughly every 15s while a commit below is in flight, which is a benign
+# self-conflict, not a real ownership/state change. Bound the retry so a handful
+# of re-validated attempts absorb that race without masking a genuine one.
+_DELIVERY_COMMIT_RETRIES = 5
+
+
+def _commit_delivery_transition(expected, owner, build_replacement, *, enqueue=False, release_claim=True):
+    """Commit an exact snapshot only for its delivery owner (or absent ownership).
+
+    Retry heartbeat WATCH conflicts with fresh ownership checks, without repeating
+    external I/O. A real state/owner change rejects the transition."""
+    if not is_actionable_for_delivery(expected):
+        return None
+    request_id = expected["request_id"]
+    key = job_key(request_id)
+    claim_key = delivery_claim_key(request_id)
+    heartbeat_key = delivery_heartbeat_key(request_id)
+    for _attempt in range(_DELIVERY_COMMIT_RETRIES):
+        with r.pipeline() as pipe:
+            try:
+                pipe.watch(key, claim_key, heartbeat_key)
+                raw = pipe.get(key)
+                current = json.loads(raw) if raw else None
+                if current != expected:
+                    return None
+                claim_value = pipe.get(claim_key)
+                if isinstance(claim_value, bytes):
+                    claim_value = claim_value.decode()
+                if owner is None:
+                    if claim_value is not None or pipe.exists(heartbeat_key):
+                        return None
+                elif claim_value != owner:
+                    return None
+                replacement = build_replacement(current)
+                pipe.multi()
+                pipe.set(key, json.dumps(replacement))
+                if release_claim:
+                    pipe.delete(claim_key, heartbeat_key)
+                if enqueue:
+                    pipe.rpush(VIDEO_DELIVERY_QUEUE, request_id)
+                pipe.execute()
+                return replacement
+            except redis.WatchError:
+                continue
+    return None
+
+
+def update_delivery_progress(expected, replacement, owner):
+    """Persist admitted progress/message ID without releasing the owner's claim."""
+    return _commit_delivery_transition(
+        expected, owner, lambda _current: dict(replacement), release_claim=False,
+    )
+
+
+def mark_delivery_queued(expected):
+    """Requeue an unchanged downloaded job only without a live delivery owner."""
+    def _build(current):
+        now = time.time()
+        updated = dict(current)
+        updated["delivery_status"] = "queued"
+        updated["delivery_queued_at"] = now
+        updated["last_transition_at"] = now
+        return updated
+    return _commit_delivery_transition(expected, None, _build, enqueue=True)
+
+
+def finish_delivery(expected, ok, error_msg=None, *, owner=None):
+    """Settle the exact delivery snapshot only while ownership still matches."""
+    def _build(current):
+        updated = dict(current)
+        now = time.time()
+        if ok:
+            updated["delivery_status"] = "completed"
+            updated["status"] = "completed"
+        else:
+            updated["delivery_status"] = "failed"
+            updated["status"] = "delivery_failed"
+            updated["delivery_error"] = error_msg
+        updated["last_transition_at"] = now
+        return updated
+    return _commit_delivery_transition(expected, owner, _build)
+
+
+def requeue_delivery(expected, reason, *, owner=None):
+    """Retry the exact delivery snapshot only while ownership still matches."""
+    def _build(current):
+        updated = dict(current)
+        now = time.time()
+        updated["delivery_status"] = "retry_queued"
+        updated["delivery_error"] = reason
+        updated["delivery_attempts"] = int(current.get("delivery_attempts", 0))
+        updated["last_transition_at"] = now
+        return updated
+    return _commit_delivery_transition(expected, owner, _build, enqueue=True)
+
+
+# A job with no delivery yet (export in progress/retry, or download failed) must
+# carry one of these delivery_status values; anything else is a contradictory
+# persisted pair (e.g. a delivery claim/status against a never-downloaded export).
+NO_DELIVERY_YET_STATUSES = (None, "pending")
+# A `downloaded` job's delivery_status while delivery legitimately has not
+# finished yet -- covers a fresh handoff, an explicit requeue, and a watchdog- or
+# worker-restart recovery of a stalled `processing` attempt.
+DOWNLOADED_DELIVERY_IN_PROGRESS_STATUSES = (None, "pending", "queued", "processing", "retry_queued")
+
+
+def is_actionable_for_delivery(job):
+    """Whether the persisted pair can legitimately begin or resume delivery."""
+    return (
+        job.get("status") == "downloaded"
+        and job.get("delivery_status") in DOWNLOADED_DELIVERY_IN_PROGRESS_STATUSES
+    )
+
+
+def is_contradictory_delivery_pair(job):
+    """Report inconsistent persisted state pairs without repairing or replaying them."""
+    status = job.get("status")
+    delivery_status = job.get("delivery_status")
+    if status in ("completed", "delivery_failed"):
+        return delivery_status != ("completed" if status == "completed" else "failed")
+    if status == "downloaded":
+        return delivery_status not in DOWNLOADED_DELIVERY_IN_PROGRESS_STATUSES
+    return delivery_status not in NO_DELIVERY_YET_STATUSES
 
 
 def queue_retry(job, reason, *, expected_job=None):
@@ -795,13 +1020,24 @@ def transition_export_request(request, job=None, *, error_msg=None, deferred_req
                 continue
 
 
-def replace_export_job(snapshot, replacement, *, active=False, request_queue=None, error_msg=None):
-    """Commit a watchdog export transition only while its snapshot is current."""
+def replace_export_job(
+    snapshot, replacement, *, active=False, request_queue=None, download_queue=False, error_msg=None,
+):
+    """Commit a watchdog/queue-monitor export transition only while its snapshot
+    is current. `download_queue=True` atomically promotes the job to the download
+    stage: it is mutually exclusive with `request_queue` (there is no caller that
+    needs both)."""
     request_id = snapshot["request_id"]
     key = job_key(request_id)
     with r.pipeline() as pipe:
         try:
             pipe.watch(key)
+            if snapshot.get("status") in {"ready", "downloading"}:
+                claim_key = delivery_claim_key(request_id)
+                heartbeat_key = delivery_heartbeat_key(request_id)
+                pipe.watch(claim_key, heartbeat_key)
+                if pipe.exists(claim_key) or pipe.exists(heartbeat_key):
+                    return None
             raw = pipe.get(key)
             current = json.loads(raw) if raw else None
             if current != snapshot:
@@ -828,6 +1064,8 @@ def replace_export_job(snapshot, replacement, *, active=False, request_queue=Non
                 pipe.srem(ACTIVE_EXPORT_SET, request_id)
             if request_payload is not None:
                 pipe.rpush(request_queue, request_payload)
+            if download_queue:
+                pipe.rpush(DOWNLOAD_REQUEST_QUEUE, request_id)
             if error_msg is not None:
                 pipe.rpush(result_key(request_id), json.dumps({
                     "ok": False, "path": None, "error": error_msg,
