@@ -110,7 +110,7 @@ DB_FILE = os.path.join(DATA_DIR, "configs.db")
 KNOWN_PLATES_FILE = f"{DATA_DIR}/known_plates.json"
 PLATE_IMAGES_DIR = os.path.join(DATA_DIR, "plate_images")
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+GEMINI_MODELS = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 CAPTION_PROMPTS = {
