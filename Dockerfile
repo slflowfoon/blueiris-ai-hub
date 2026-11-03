@@ -9,7 +9,13 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pip carries its own vendored dependencies and isn't needed once requirements
+# are installed, so it (and the ensurepip bootstrap) is removed after the build.
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip check && \
+    python3 -m pip uninstall --yes pip && \
+    python3 -c "import pathlib, shutil, sysconfig; shutil.rmtree(pathlib.Path(sysconfig.get_paths()['stdlib']) / 'ensurepip')" && \
+    rm -f /usr/local/bin/pip
 
 COPY --chown=appuser:appuser app /app
 COPY --chown=appuser:appuser android-tv-overlay/dist/android-tv-overlay-debug.apk /app/tv-overlay/android-tv-overlay-debug.apk

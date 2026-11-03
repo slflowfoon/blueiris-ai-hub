@@ -49,7 +49,10 @@ WATCHDOG_STALE_BUFFER    = 10
 RETRY_QUEUE_STALE_AGE    = 30
 DELIVERY_QUEUE_STALE_AGE = 45
 
-r = redis.from_url(REDIS_URL)
+# Must exceed the longest blocking pop (blpop timeout=5): redis-py 8 defaults socket_timeout
+# to 5s, which makes an idle blpop raise TimeoutError and crash the service.
+REDIS_SOCKET_TIMEOUT = 30
+r = redis.from_url(REDIS_URL, socket_timeout=REDIS_SOCKET_TIMEOUT, health_check_interval=30)
 _session_cache = {}
 _bi_instance_logging_cache = {"checked_at": 0.0, "enabled": True}
 INSTANCE_ID = os.getenv("HOSTNAME") or socket.gethostname()
