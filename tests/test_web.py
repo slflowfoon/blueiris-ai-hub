@@ -1,8 +1,10 @@
 import io
 import importlib
 import sqlite3
+import time
 import uuid
 from unittest.mock import MagicMock, patch
+import redis
 import wsgi
 from settings_store import get_global_settings
 
@@ -947,6 +949,7 @@ def test_status_endpoint(client, monkeypatch):
                 "retry_queued": 0,
                 "delivery_processing": 0,
             },
+            "failed_jobs": {"export": 2},
             "services": {"worker": {"status": "ok", "age_seconds": 1.0}},
         },
     )
@@ -956,3 +959,107 @@ def test_status_endpoint(client, monkeypatch):
     assert data["status"] == "ok"
     assert data["redis"]["status"] == "ok"
     assert data["pipeline"]["queue_depths"]["export_requests"] == 1
+    assert data["pipeline"]["failed_jobs"] == {"export": 2}
+
+
+def test_metrics_endpoint_propagates_failed_jobs(client, monkeypatch):
+    """Test that /metrics surfaces the pipeline's failed_jobs summary unchanged."""
+    monkeypatch.setattr(
+        wsgi,
+        "get_pipeline_status",
+        lambda: {
+            "queue_depths": {
+                "export_requests": 0,
+                "download_requests": 0,
+                "video_delivery_requests": 0,
+                "active_exports": 0,
+            },
+            "stale_jobs": {
+                "submitted": 0,
+                "queued": 0,
+                "ready": 0,
+                "retry_queued": 0,
+                "delivery_processing": 0,
+            },
+            "failed_jobs": {"export": 3},
+            "services": {"worker": {"status": "ok", "age_seconds": 1.0}},
+        },
+    )
+    response = client.get('/metrics')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["pipeline"]["failed_jobs"] == {"export": 3}
+
+
+def test_get_pipeline_status_healthy_idle_reports_zero_failed_jobs(client, monkeypatch):
+    """An idle pipeline with no persisted jobs reports a zero failed export count."""
+    monkeypatch.setattr(wsgi, "iter_job_ids", lambda: iter(()))
+    result = wsgi.get_pipeline_status()
+    assert result["failed_jobs"] == {"export": 0}
+
+
+def test_get_pipeline_status_counts_failed_jobs_including_minimal_records(client, monkeypatch):
+    """Both fully-populated failed jobs and minimal initial-rejection records count."""
+    now = time.time()
+    jobs = {
+        "full-failed": {
+            "request_id": "full-failed",
+            "status": "failed",
+            "error": "export timed out",
+            "last_transition_at": now,
+        },
+        "retried-then-failed": {
+            "request_id": "retried-then-failed",
+            "status": "failed",
+            "error": "bi export rejected",
+            "last_transition_at": now - 120,
+        },
+        # A minimal record saved for an initial rejection before any job existed:
+        # only status is guaranteed, no last_transition_at/updated_at/request.
+        "minimal-rejection": {
+            "status": "failed",
+        },
+    }
+    monkeypatch.setattr(wsgi, "iter_job_ids", lambda: iter(jobs.keys()))
+    monkeypatch.setattr(wsgi, "load_job", lambda request_id: jobs[request_id])
+    result = wsgi.get_pipeline_status()
+    assert result["failed_jobs"] == {"export": 3}
+
+
+def test_get_pipeline_status_excludes_nonfailed_statuses(client, monkeypatch):
+    """Jobs in progress, retrying, or terminally successful are not export failures."""
+    now = time.time()
+    jobs = {
+        "submitted": {"request_id": "submitted", "status": "submitted", "last_transition_at": now},
+        "queued": {"request_id": "queued", "status": "queued", "last_transition_at": now},
+        "retry_queued": {"request_id": "retry_queued", "status": "retry_queued", "last_transition_at": now},
+        "completed": {"request_id": "completed", "status": "completed", "last_transition_at": now},
+        "downloaded": {"request_id": "downloaded", "status": "downloaded", "last_transition_at": now},
+        # Delivery-stage failure is a distinct terminal state from export failure.
+        "delivery_failed": {"request_id": "delivery_failed", "status": "delivery_failed", "last_transition_at": now},
+    }
+    monkeypatch.setattr(wsgi, "iter_job_ids", lambda: iter(jobs.keys()))
+    monkeypatch.setattr(wsgi, "load_job", lambda request_id: jobs[request_id])
+    result = wsgi.get_pipeline_status()
+    assert result["failed_jobs"] == {"export": 0}
+
+
+def test_get_pipeline_status_returns_null_failed_jobs_when_redis_unavailable(client, monkeypatch):
+    """A Redis queue query failure reports failed_jobs as null, not zero or an error."""
+    def _boom(*_args, **_kwargs):
+        raise redis.exceptions.ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(wsgi.r, "llen", _boom)
+    result = wsgi.get_pipeline_status()
+    assert result["queue_depths"] is None
+    assert result["stale_jobs"] is None
+    assert result["failed_jobs"] is None
+    assert set(result["services"]) == {
+        "worker",
+        "mute_bot",
+        "bi_exporter",
+        "bi_queue_monitor",
+        "bi_downloader",
+        "bi_watchdog",
+        "video_delivery_worker",
+    }
