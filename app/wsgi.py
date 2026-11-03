@@ -674,6 +674,7 @@ def get_pipeline_status():
         return {
             "queue_depths": None,
             "stale_jobs": None,
+            "failed_jobs": None,
             "services": services,
         }
 
@@ -683,6 +684,9 @@ def get_pipeline_status():
         "ready": 0,
         "retry_queued": 0,
         "delivery_processing": 0,
+    }
+    failed_jobs = {
+        "export": 0,
     }
     now = datetime.now().timestamp()
     for request_id in iter_job_ids():
@@ -702,10 +706,13 @@ def get_pipeline_status():
             stale_jobs["retry_queued"] += 1
         if delivery_status == "processing" and age > (HEARTBEAT_STALE_AFTER * 2):
             stale_jobs["delivery_processing"] += 1
+        if status == "failed":
+            failed_jobs["export"] += 1
 
     return {
         "queue_depths": queue_depths,
         "stale_jobs": stale_jobs,
+        "failed_jobs": failed_jobs,
         "services": services,
     }
 
