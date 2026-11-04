@@ -996,6 +996,8 @@ def test_get_pipeline_status_healthy_idle_reports_zero_failed_jobs(client, monke
     monkeypatch.setattr(wsgi, "iter_job_ids", lambda: iter(()))
     result = wsgi.get_pipeline_status()
     assert result["failed_jobs"] == {"export": 0}
+    assert result["contradictory_jobs"] == 0
+    assert result["stale_jobs"]["downloading"] == 0
 
 
 def test_get_pipeline_status_counts_failed_jobs_including_minimal_records(client, monkeypatch):
@@ -1054,6 +1056,7 @@ def test_get_pipeline_status_returns_null_failed_jobs_when_redis_unavailable(cli
     assert result["queue_depths"] is None
     assert result["stale_jobs"] is None
     assert result["failed_jobs"] is None
+    assert result["contradictory_jobs"] is None
     assert set(result["services"]) == {
         "worker",
         "mute_bot",
@@ -1063,3 +1066,141 @@ def test_get_pipeline_status_returns_null_failed_jobs_when_redis_unavailable(cli
         "bi_watchdog",
         "video_delivery_worker",
     }
+
+
+def test_pipeline_contradictions_are_counted_without_mutating_or_replaying(client):
+    import bi_export_shared as shared
+
+    now = time.time()
+    pairs = [
+        ("failed", "processing"), ("failed", "completed"),
+        ("submitted", "processing"), ("queued", "completed"),
+        ("ready", "processing"), ("downloading", "completed"),
+        ("retry_queued", "processing"), ("downloaded", "completed"),
+        ("completed", "processing"), ("delivery_failed", "processing"),
+        ("failed", "pending"),
+    ]
+    before = {}
+    for index, (status, delivery_status) in enumerate(pairs):
+        job = {
+            "request_id": f"synthetic-contradiction-{index}",
+            "status": status, "delivery_status": delivery_status,
+            "last_transition_at": now - 10000,
+        }
+        shared.save_job(job)
+        key = shared.job_key(job["request_id"])
+        before[key] = shared.r.get(key)
+    for _ in range(2):
+        result = wsgi.get_pipeline_status()
+        assert result["contradictory_jobs"] == 10
+        assert result["failed_jobs"] == {"export": 3}
+        assert all(value == 0 for value in result["stale_jobs"].values())
+        assert set(result) == {"queue_depths", "stale_jobs", "failed_jobs", "contradictory_jobs", "services"}
+    assert {key: shared.r.get(key) for key in before} == before
+    assert all(result["queue_depths"][name] == 0 for name in result["queue_depths"])
+
+
+def test_pipeline_stale_processing_respects_heartbeat_and_download_claim_age(client):
+    import bi_export_shared as shared
+
+    now = time.time()
+    for request_id, status, delivery_status, age in [
+        ("synthetic-live", "downloaded", "processing", 10000),
+        ("synthetic-dead", "downloaded", "processing", 10000),
+        ("synthetic-stale-heartbeat", "downloaded", "processing", 10000),
+        ("synthetic-downloading-old", "downloading", "pending", shared.DOWNLOAD_CLAIM_STALE_AGE + 10),
+        ("synthetic-downloading-new", "downloading", "pending", shared.DOWNLOAD_CLAIM_STALE_AGE - 10),
+    ]:
+        shared.save_job({
+            "request_id": request_id, "status": status, "delivery_status": delivery_status,
+            "last_transition_at": now - age,
+        })
+    shared.r.set(shared.delivery_heartbeat_key("synthetic-live"), str(now), ex=300)
+    shared.r.set(
+        shared.delivery_heartbeat_key("synthetic-stale-heartbeat"),
+        str(now - shared.DELIVERY_QUEUE_STALE_AGE - 10), ex=300,
+    )
+    result = wsgi.get_pipeline_status()
+    assert result["contradictory_jobs"] == 0
+    assert result["stale_jobs"]["delivery_processing"] == 2
+    assert result["stale_jobs"]["downloading"] == 1
+    assert result["failed_jobs"] == {"export": 0}
+
+
+def test_pipeline_redis_scan_failure_returns_null_summaries(client, monkeypatch):
+    def unavailable():
+        raise redis.exceptions.ConnectionError("synthetic unavailable")
+
+    monkeypatch.setattr(wsgi, "iter_job_ids", unavailable)
+    result = wsgi.get_pipeline_status()
+    for field in ("queue_depths", "stale_jobs", "failed_jobs", "contradictory_jobs"):
+        assert result[field] is None
+    assert result["services"]
+
+
+def test_pipeline_redis_heartbeat_failure_returns_null_summaries(client, monkeypatch):
+    import bi_export_shared as shared
+
+    shared.save_job({
+        "request_id": "synthetic-processing", "status": "downloaded", "delivery_status": "processing",
+        "last_transition_at": time.time() - 10000,
+    })
+
+    def unavailable(*args, **kwargs):
+        raise redis.exceptions.ConnectionError("synthetic unavailable")
+
+    monkeypatch.setattr(wsgi, "delivery_heartbeat_age", unavailable)
+    result = wsgi.get_pipeline_status()
+    for field in ("queue_depths", "stale_jobs", "failed_jobs", "contradictory_jobs"):
+        assert result[field] is None
+    assert result["services"]
+
+
+def test_status_and_metrics_report_contradictions_without_changing_health_semantics(client, monkeypatch):
+    import bi_export_shared as shared
+
+    services = {"worker": {"status": "missing", "age_seconds": None}}
+    monkeypatch.setattr(wsgi, "get_service_health", lambda: services)
+    shared.save_job({
+        "request_id": "synthetic-retained", "status": "failed", "delivery_status": "completed",
+        "last_transition_at": time.time() - 10000,
+    })
+    for endpoint in ("/status", "/metrics"):
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        data = response.get_json()
+        if endpoint == "/status":
+            assert data["status"] == "ok"
+            assert data["redis"]["status"] == "ok"
+        assert data["pipeline"]["services"] == services
+        assert data["pipeline"]["contradictory_jobs"] == 1
+        assert data["pipeline"]["failed_jobs"] == {"export": 1}
+        assert all(value == 0 for value in data["pipeline"]["stale_jobs"].values())
+        assert "synthetic-retained" not in response.get_data(as_text=True)
+
+
+def test_download_staleness_uses_token_progress_in_status_and_metrics(client):
+    import bi_export_shared as shared
+
+    now = time.time()
+    snapshots = {}
+    for suffix, age, heartbeat_age in [
+        ("long-stream", 10000, 20),
+        ("stalled-stream", 10000, shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1),
+        ("recent-stall", 10, shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1),
+    ]:
+        request_id = f"synthetic-{suffix}"
+        job = {
+            "request_id": request_id, "status": "downloading", "delivery_status": "pending",
+            "download_attempt_token": suffix, "last_transition_at": now - age,
+        }
+        shared.save_job(job)
+        shared.r.setex(shared.download_heartbeat_key(request_id, suffix), 600, str(now - heartbeat_age))
+        snapshots[shared.job_key(request_id)] = shared.r.get(shared.job_key(request_id))
+    for endpoint in ("/status", "/metrics"):
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        pipeline = response.get_json()["pipeline"]
+        assert pipeline["stale_jobs"]["downloading"] == 2
+        assert pipeline["contradictory_jobs"] == 0
+    assert {key: shared.r.get(key) for key in snapshots} == snapshots

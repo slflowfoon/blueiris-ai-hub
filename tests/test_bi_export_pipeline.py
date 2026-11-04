@@ -81,6 +81,14 @@ def _retry_queued_job(payload, **overrides):
     return job
 
 
+def _seed_actionable_export():
+    payload = _request_payload(request_id="synthetic-other-export")
+    bi_export_shared.save_job(_retry_queued_job(
+        payload, status="queued", submitted_at=time.time(), next_poll_at=time.time() + 10,
+    ))
+    _r.sadd(bi_export_shared.ACTIVE_EXPORT_SET, payload["request_id"])
+
+
 def _legacy_openbvr_retry(*, original_age=800, deferred_age=10, refreshed=False):
     """Seed the old persisted representation, without using new deferral code."""
     now = time.time()
@@ -245,7 +253,7 @@ class TestExporter:
         assert bi_export_shared._legacy_openbvr_base(bi_export_shared.load_job(request_id)) == request
         posted = []
         if outcome == "deferral":
-            _r.sadd(bi_export_shared.ACTIVE_EXPORT_SET, "synthetic-other-export")
+            _seed_actionable_export()
         monkeypatch.setattr(bi_exporter.time, "sleep", lambda *_args: None)
 
         class Session:
@@ -1814,6 +1822,7 @@ def test_openbvr_idle_second_failure_refreshes_and_retries(monkeypatch):
             return R({"result": "success", "data": {"path": "@22842", "uri": "Clipboard\\new.mp4"}})
 
     monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "count_actionable_active_exports", lambda: 0)
     monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
 
     job, error = bi_exporter._prepare_export(payload, "[T]")
@@ -1886,6 +1895,7 @@ def test_openbvr_refresh_then_export_failure_uses_specific_terminal_error(monkey
 
     terminal = {}
     monkeypatch.setattr(bi_exporter, "r", FakeRedis())
+    monkeypatch.setattr(bi_exporter, "count_actionable_active_exports", lambda: 0)
     monkeypatch.setattr(bi_exporter, "get_session", lambda *args, **kwargs: (FakeSession(), "sid"))
     monkeypatch.setattr(
         bi_exporter,
@@ -2415,7 +2425,7 @@ def test_defers_openbvr_retry_when_active_exports_running(monkeypatch, saved, su
         "offset": 222, "msec": 33333, "lookup_match_type": "exact_file",
         "export_source_path": "@clip/refreshed", "export_source_field": "path",
     })
-    _r.sadd(bi_export_shared.ACTIVE_EXPORT_SET, "synthetic-other-export")
+    _seed_actionable_export()
     posted = []
     class Session:
         def post(self, _url, json=None, **_kwargs):
@@ -2491,11 +2501,11 @@ def test_run_exporter_only_drains_openbvr_retry_queue_when_idle(monkeypatch, act
                 return (key, b'{"request_id":"deferred"}')
             raise AssertionError(f"unexpected queue {key}")
 
-        def scard(self, key):
-            calls.append(("scard", key))
-            assert key == bi_export_shared.ACTIVE_EXPORT_SET
-            return active_exports
+    def active_count():
+        calls.append(("actionable_exports", active_exports))
+        return active_exports
 
+    monkeypatch.setattr(bi_exporter, "count_actionable_active_exports", active_count)
     monkeypatch.setattr(bi_exporter, "r", FakeRedis())
     monkeypatch.setattr(bi_exporter, "start_heartbeat_thread", lambda *_args, **_kwargs: None)
 
@@ -2509,7 +2519,7 @@ def test_run_exporter_only_drains_openbvr_retry_queue_when_idle(monkeypatch, act
     except RuntimeError as exc:
         assert str(exc) == "stop"
 
-    assert ("scard", bi_export_shared.ACTIVE_EXPORT_SET) in calls
+    assert ("actionable_exports", active_exports) in calls
     assert (("blpop", bi_export_shared.OPENBVR_RETRY_QUEUE, 1) in calls) == (active_exports == 0)
     assert (("process", b'{"request_id":"deferred"}') in calls) == (active_exports == 0)
 
@@ -2522,3 +2532,114 @@ def test_shared_redis_client_outlasts_idle_blpop():
     started = time.monotonic()
     assert bi_export_shared.r.blpop("bi:test:idle-queue", timeout=5) is None
     assert time.monotonic() - started >= 5
+
+
+@pytest.mark.parametrize("status,delivery_status", [
+    ("retry_queued", "processing"), ("retry_queued", "completed"),
+    ("failed", "pending"), ("failed", "completed"), ("completed", "completed"),
+])
+@pytest.mark.parametrize("request_kind", ["fresh", "stale", "export_cap"])
+def test_persisted_export_items_and_final_helpers_cannot_replay_history(
+    monkeypatch, status, delivery_status, request_kind,
+):
+    payload = _request_payload(
+        queued_at=time.time() - (700 if request_kind == "stale" else 5),
+        _export_attempts=3 if request_kind == "export_cap" else 1,
+    )
+    job = _retry_queued_job(payload, status=status, delivery_status=delivery_status)
+    bi_export_shared.save_job(job)
+    request_id = job["request_id"]
+    key = bi_export_shared.job_key(request_id)
+    result_key = bi_export_shared.result_key(request_id)
+    bi_export_shared.write_result(request_id, None, False, "retained synthetic outcome")
+    _r.expire(result_key, 50)
+    before = _r.get(key)
+    results = _r.lrange(result_key, 0, -1)
+    _r.sadd(bi_export_shared.ACTIVE_EXPORT_SET, request_id)
+    monkeypatch.setattr(bi_exporter, "_prepare_export", lambda *_a: pytest.fail("historical request prepared"))
+    for queue in (bi_export_shared.EXPORT_REQUEST_QUEUE, bi_export_shared.OPENBVR_RETRY_QUEUE):
+        _r.rpush(queue, json.dumps(payload))
+        bi_exporter._process_request(_r.lpop(queue))
+        assert _r.llen(queue) == 0
+    assert bi_export_shared.transition_export_request(payload, error_msg="duplicate") is None
+    assert bi_export_shared.transition_export_request(payload, job=dict(job, status="submitted")) is None
+    assert bi_export_shared.queue_retry(job, "duplicate") is None
+    assert bi_export_shared.queue_retry(dict(job), "duplicate", expected_job=dict(job)) is None
+    assert bi_export_shared.requeue_export_retry(job, time.time()) is None
+    assert bi_export_shared.replace_export_job(job, dict(job, status="failed"), error_msg="duplicate") is None
+    assert _r.get(key) == before
+    assert _r.lrange(result_key, 0, -1) == results
+    assert 0 < _r.ttl(result_key) <= 50
+    assert _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, request_id)
+    assert _r.llen(bi_export_shared.EXPORT_REQUEST_QUEUE) == 0
+    assert _r.llen(bi_export_shared.OPENBVR_RETRY_QUEUE) == 0
+
+
+@pytest.mark.parametrize("delivery_status", ["processing", "completed"])
+def test_legacy_deferral_never_adopts_contradictory_retry(monkeypatch, delivery_status):
+    original, deferred, job = _legacy_openbvr_retry(original_age=50)
+    job["delivery_status"] = delivery_status
+    bi_export_shared.save_job(job)
+    key = bi_export_shared.job_key(job["request_id"])
+    before = _r.get(key)
+    queue = bi_export_shared.OPENBVR_RETRY_QUEUE
+    _r.rpush(queue, json.dumps(deferred))
+    monkeypatch.setattr(bi_exporter, "_prepare_export", lambda *_a: pytest.fail("legacy contradiction prepared"))
+    assert bi_export_shared._legacy_openbvr_base(job) is None
+    assert not bi_export_shared.reconcile_legacy_export_request(original)
+    assert not bi_export_shared.reconcile_legacy_export_request(deferred)
+    _r.rpush(bi_export_shared.EXPORT_REQUEST_QUEUE, json.dumps(original))
+    bi_exporter._process_request(_r.lpop(bi_export_shared.EXPORT_REQUEST_QUEUE))
+    assert _r.lrange(queue, 0, -1) == [json.dumps(deferred).encode()]
+    bi_exporter._process_request(_r.lpop(queue))
+    bi_watchdog._repair_job(job)
+    assert _r.get(key) == before
+    assert _r.llen(bi_export_shared.result_key(job["request_id"])) == 0
+    assert _r.llen(bi_export_shared.EXPORT_REQUEST_QUEUE) == 0
+    assert _r.llen(queue) == 0
+
+
+@pytest.mark.parametrize("contradictory", [True, False])
+def test_retained_active_record_does_not_starve_healthy_deferred_export(monkeypatch, contradictory):
+    active = _request_payload(request_id="synthetic-active")
+    bi_export_shared.save_job(_retry_queued_job(
+        active, status="queued", delivery_status="completed" if contradictory else "pending",
+    ))
+    _r.sadd(bi_export_shared.ACTIVE_EXPORT_SET, active["request_id"])
+    before = _r.get(bi_export_shared.job_key(active["request_id"]))
+    deferred = _request_payload(_openbvr_deferred_attempts=1)
+    bi_export_shared.save_job(_retry_queued_job(deferred, retry_queue=bi_export_shared.OPENBVR_RETRY_QUEUE))
+    _r.rpush(bi_export_shared.OPENBVR_RETRY_QUEUE, json.dumps(deferred))
+    assert bi_export_shared.count_actionable_active_exports() == (0 if contradictory else 1)
+    if contradictory:
+        monkeypatch.setattr(bi_queue_monitor.time, "sleep", lambda *_a: None)
+        monkeypatch.setattr(bi_queue_monitor, "get_session", lambda *_a: pytest.fail("historical export polled"))
+        bi_queue_monitor._poll_active_exports()
+    pops, prepared = [], []
+
+    class StopLoop(Exception):
+        pass
+
+    def pop(queue, timeout=0):
+        pops.append(queue)
+        if len(pops) > 2:
+            raise StopLoop()
+        raw = _r.lpop(queue)
+        return (queue, raw) if raw else None
+
+    def prepare(req, _tag):
+        prepared.append(req)
+        return _retry_queued_job(req, status="submitted", export_attempts=2), None
+
+    monkeypatch.setattr(bi_exporter.r, "blpop", pop)
+    monkeypatch.setattr(bi_exporter, "_prepare_export", prepare)
+    monkeypatch.setattr(bi_exporter, "start_heartbeat_thread", lambda *_a: None)
+    with pytest.raises(StopLoop):
+        bi_exporter.run_exporter()
+    assert prepared == ([deferred] if contradictory else [])
+    assert bi_export_shared.load_job(deferred["request_id"])["status"] == (
+        "submitted" if contradictory else "retry_queued"
+    )
+    assert _r.llen(bi_export_shared.OPENBVR_RETRY_QUEUE) == (0 if contradictory else 1)
+    assert _r.get(bi_export_shared.job_key(active["request_id"])) == before
+    assert _r.sismember(bi_export_shared.ACTIVE_EXPORT_SET, active["request_id"])

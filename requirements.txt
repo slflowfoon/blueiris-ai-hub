@@ -1,5 +1,6 @@
 flask
 requests
+urllib3>=2.2
 gunicorn
 redis>=8.1,<9
 rq

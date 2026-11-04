@@ -11,7 +11,6 @@ import time
 from urllib.parse import urljoin
 
 from bi_export_shared import (
-    ACTIVE_EXPORT_SET,
     EXPORT_REQUEST_QUEUE,
     MAX_OPENBVR_DEFER_ATTEMPTS,
     MAX_EXPORT_ATTEMPTS,
@@ -21,6 +20,7 @@ from bi_export_shared import (
     bi_get_export_queue,
     bi_instance_label,
     bi_resolve_export_target,
+    count_actionable_active_exports,
     get_session,
     job_tag,
     log_job_event,
@@ -44,7 +44,7 @@ logger = setup_service_logger("bi_exporter", LOG_FILE)
 
 def _defer_openbvr_retry(req, tag, clip_path):
     # Prepare the deferred payload; _process_request commits it with the saved job.
-    active_exports = r.scard(ACTIVE_EXPORT_SET)
+    active_exports = count_actionable_active_exports()
     if active_exports == 0:
         return False
 
@@ -403,7 +403,7 @@ def run_exporter():
             _process_request(item[1])
             continue
 
-        if r.scard(ACTIVE_EXPORT_SET) != 0:
+        if count_actionable_active_exports() != 0:
             continue
 
         deferred_item = r.blpop(OPENBVR_RETRY_QUEUE, timeout=1)

@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 
@@ -16,6 +17,7 @@ from bi_export_shared import (
     claim_delivery,
     clear_delivery_claim,
     finish_delivery,
+    is_actionable_for_delivery,
     refresh_delivery_claim,
     job_tag,
     log_job_event,
@@ -23,7 +25,7 @@ from bi_export_shared import (
     load_job,
     requeue_delivery,
     r,
-    save_job,
+    update_delivery_progress,
     setup_service_logger,
 )
 from service_health import start_heartbeat_thread
@@ -83,6 +85,20 @@ def _process_delivery_request(request_id):
     heartbeat_thread = None
 
     try:
+        # Reload and validate after acquiring the claim, not from the pre-claim
+        # snapshot: status/delivery_status can have moved on (or never been
+        # `downloaded` at all) by the time this queue item is actually admitted,
+        # and claiming must not itself be treated as proof of eligibility.
+        job = load_job(request_id)
+        if job is None or not is_actionable_for_delivery(job):
+            status = job.get("status") if job else None
+            delivery_status = job.get("delivery_status") if job else None
+            logger.info(
+                f"{job_tag(job) if job else f'[?][{request_id[:8]}]'} delivery queue item rejected at admission "
+                f"(status={status}, delivery_status={delivery_status}); not actionable or contradictory"
+            )
+            return
+
         delivery = job.get("delivery_context") or {}
         config = delivery.get("config") or {}
         if not config or not config.get("telegram_token") or not config.get("chat_id"):
@@ -94,21 +110,21 @@ def _process_delivery_request(request_id):
                 "missing_delivery_context",
                 error="missing Telegram delivery context",
             )
-            finish_delivery(job, False, "missing Telegram delivery context")
-            return
-
-        if job.get("delivery_status") == "completed" or job.get("status") == "completed":
-            logger.info(f"{job_tag(job)} delivery already completed; skipping duplicate queue item")
+            finish_delivery(job, False, "missing Telegram delivery context", owner=claim_owner)
             return
 
         tag = job_tag(job)
         raw_mp4 = job["output_path"]
         optimised_mp4 = _optimised_path(raw_mp4)
 
+        expected = deepcopy(job)
         job["delivery_attempts"] = int(job.get("delivery_attempts", 0)) + 1
         job["delivery_status"] = "processing"
         job["last_transition_at"] = time.time()
-        save_job(job)
+        job = update_delivery_progress(expected, job, claim_owner)
+        if job is None:
+            return
+        expected = deepcopy(job)
         heartbeat_stop, heartbeat_thread = _start_delivery_heartbeat(request_id, claim_owner)
         log_job_event(
             logging.INFO,
@@ -136,7 +152,8 @@ def _process_delivery_request(request_id):
                 "downloaded_video_missing",
                 error="downloaded video missing from disk",
             )
-            finish_delivery(job, False, "downloaded video missing from disk")
+            if finish_delivery(job, False, "downloaded video missing from disk", owner=claim_owner) is None:
+                logger.warning(f"{tag} lost delivery claim before missing-video outcome could be committed")
             return
 
         if optimize_video_for_telegram(raw_mp4, optimised_mp4, tag, service_logger=logger):
@@ -163,7 +180,10 @@ def _process_delivery_request(request_id):
 
         # Persist config.last_msg_id back onto the job so that a crash/restart
         # after a successful fallback sendAnimation doesn't trigger a duplicate send.
-        save_job(job)
+        job = update_delivery_progress(expected, job, claim_owner)
+        if job is None:
+            logger.warning(f"{tag} delivery progress superseded; leaving state and files untouched")
+            return
 
         if not media_ok:
             if job["delivery_attempts"] < MAX_DELIVERY_ATTEMPTS:
@@ -175,7 +195,8 @@ def _process_delivery_request(request_id):
                     phase="delivery_retry",
                     error_code="telegram_replace_failed",
                 )
-                requeue_delivery(job, "telegram media replace failed")
+                if requeue_delivery(job, "telegram media replace failed", owner=claim_owner) is None:
+                    logger.warning(f"{tag} lost delivery claim before telegram-retry outcome could be committed")
             else:
                 log_job_event(
                     logging.ERROR,
@@ -193,8 +214,10 @@ def _process_delivery_request(request_id):
                     "telegram_replace_failed",
                     error="telegram media replace failed",
                 )
-                finish_delivery(job, False, "telegram media replace failed")
-                _cleanup_paths(optimised_mp4, raw_mp4)
+                if finish_delivery(job, False, "telegram media replace failed", owner=claim_owner) is None:
+                    logger.warning(f"{tag} lost delivery claim before telegram-failure outcome could be committed")
+                else:
+                    _cleanup_paths(optimised_mp4, raw_mp4)
             return
 
         video_caption = caption_future.result()
@@ -262,12 +285,18 @@ def _process_delivery_request(request_id):
                 message_id=config.get("last_msg_id"),
             )
 
+        finished = finish_delivery(job, True, None, owner=claim_owner)
+        if finished is None:
+            logger.warning(
+                f"{tag} delivery to Telegram succeeded but the claim was lost before the outcome "
+                f"could be committed; leaving job state and files untouched for the current owner"
+            )
+            return
         _cleanup_paths(optimised_mp4, raw_mp4)
-        finish_delivery(load_job(request_id) or job, True, None)
         log_job_event(
             logging.INFO,
             f"{tag} delivery completed",
-            load_job(request_id) or job,
+            finished,
             logger=logger,
             phase="delivery_completed",
             final_status="video_delivered",

@@ -12,7 +12,12 @@ from collections import deque
 from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from db_utils import connect as sqlite_connect
-from bi_export_shared import ACTIVE_EXPORT_SET, DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE, iter_job_ids, load_job
+from bi_export_shared import (
+    ACTIVE_EXPORT_SET, DELIVERY_QUEUE_STALE_AGE,
+    DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE,
+    delivery_heartbeat_age, is_contradictory_delivery_pair, is_download_attempt_live,
+    iter_job_ids, load_job,
+)
 from service_health import HEARTBEAT_STALE_AFTER, heartbeat_status
 from settings_store import (
     get_global_settings,
@@ -670,51 +675,62 @@ def get_pipeline_status():
             "video_delivery_requests": r.llen(VIDEO_DELIVERY_QUEUE),
             "active_exports": r.scard(ACTIVE_EXPORT_SET),
         }
+        stale_jobs = {
+            "submitted": 0,
+            "queued": 0,
+            "ready": 0,
+            "downloading": 0,
+            "retry_queued": 0,
+            "delivery_processing": 0,
+        }
+        failed_jobs = {"export": 0}
+        contradictory_jobs = 0
+        now = datetime.now().timestamp()
+        for request_id in iter_job_ids():
+            job = load_job(request_id)
+            if not job:
+                continue
+            status = job.get("status")
+            if status == "failed":
+                failed_jobs["export"] += 1
+            if is_contradictory_delivery_pair(job):
+                contradictory_jobs += 1
+                continue
+            age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
+            delivery_status = job.get("delivery_status")
+            if status == "submitted" and age > 30:
+                stale_jobs["submitted"] += 1
+            elif status == "queued" and age > 60:
+                stale_jobs["queued"] += 1
+            elif status == "ready" and age > 60:
+                stale_jobs["ready"] += 1
+            elif status == "downloading" and not is_download_attempt_live(
+                request_id, job.get("download_attempt_token"), now=now,
+                started_at=job.get("last_transition_at", job.get("updated_at")),
+            ):
+                stale_jobs["downloading"] += 1
+            elif status == "retry_queued" and age > 30:
+                stale_jobs["retry_queued"] += 1
+            if delivery_status == "processing" and age > (HEARTBEAT_STALE_AFTER * 2):
+                heartbeat_age = delivery_heartbeat_age(request_id, now=now)
+                if heartbeat_age is None or heartbeat_age >= DELIVERY_QUEUE_STALE_AGE:
+                    stale_jobs["delivery_processing"] += 1
+
+        return {
+            "queue_depths": queue_depths,
+            "stale_jobs": stale_jobs,
+            "failed_jobs": failed_jobs,
+            "contradictory_jobs": contradictory_jobs,
+            "services": services,
+        }
     except Exception:
         return {
             "queue_depths": None,
             "stale_jobs": None,
             "failed_jobs": None,
+            "contradictory_jobs": None,
             "services": services,
         }
-
-    stale_jobs = {
-        "submitted": 0,
-        "queued": 0,
-        "ready": 0,
-        "retry_queued": 0,
-        "delivery_processing": 0,
-    }
-    failed_jobs = {
-        "export": 0,
-    }
-    now = datetime.now().timestamp()
-    for request_id in iter_job_ids():
-        job = load_job(request_id)
-        if not job:
-            continue
-        age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
-        status = job.get("status")
-        delivery_status = job.get("delivery_status")
-        if status == "submitted" and age > 30:
-            stale_jobs["submitted"] += 1
-        elif status == "queued" and age > 60:
-            stale_jobs["queued"] += 1
-        elif status == "ready" and age > 60:
-            stale_jobs["ready"] += 1
-        elif status == "retry_queued" and age > 30:
-            stale_jobs["retry_queued"] += 1
-        if delivery_status == "processing" and age > (HEARTBEAT_STALE_AFTER * 2):
-            stale_jobs["delivery_processing"] += 1
-        if status == "failed":
-            failed_jobs["export"] += 1
-
-    return {
-        "queue_depths": queue_depths,
-        "stale_jobs": stale_jobs,
-        "failed_jobs": failed_jobs,
-        "services": services,
-    }
 
 
 def load_known_plates():
