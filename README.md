@@ -147,12 +147,15 @@ Configs without a Recovery URL set skip this step and the export fails gracefull
 
 ## Updating
 
-When a new version is released, the web UI shows an update banner. Run:
+When a new version is released, the web UI shows an update banner. From your existing Compose directory, stop all five BI pipeline services before pulling and starting the new version. Old workers can write delivery state unconditionally, so overlapping old and new workers can replay a completed delivery.
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose stop bi_exporter bi_queue_monitor bi_downloader bi_watchdog video_delivery_worker &&
+  docker compose pull &&
+  docker compose up -d
 ```
+
+The `&&` chain starts the new containers only after every listed service has stopped and the pull succeeds. Stopping these services preserves Redis and the media volume; incoming work may queue while the pipeline is stopped. If a step fails, resolve the failure before continuing this sequence; do not restart a mixture of old and new pipeline workers.
 
 Do not run `docker compose down -v` unless you intentionally want to delete persisted Redis state, including staged BI export jobs.
 
@@ -226,7 +229,7 @@ BI stages before delivery remain single-replica. Each claimed download uses a un
 
 `/status` and `/metrics` expose `pipeline.contradictory_jobs`, a count of inconsistent export/delivery state pairs. These records are excluded from actionable `stale_jobs`; `failed_jobs.export` still counts every retained `status=failed` record, including contradictory ones. A fresh delivery heartbeat suppresses stale processing counts. `stale_jobs.downloading` counts attempts with stale progress heartbeats (180 seconds); pre-heartbeat records retain a bounded 130-second grace from their last transition. Summaries contain counts only and become null when Redis is unavailable; service-health and HTTP status semantics are unchanged.
 
-On upgrade, stop old pipeline workers before starting the new versions so old unconditional writers cannot bypass the guards. Redis records survive restarts: ordinary queued work continues, and the watchdog can requeue a `downloading` attempt whose progress heartbeat has expired with a fresh attempt file. A live delivery claim/heartbeat prevents that recovery. Files left by crashed attempts or still referenced by retained state/results may remain; recovery does not delete another attempt's files. Contradictory records are reported without automatic repair or replay, retained contradictory active-set entries do not block deferred export scheduling, and no delivery success is inferred from them. This does not provide exactly-once external sends or pipeline-wide concurrency guarantees; production state repair requires a separate investigation.
+On upgrade, follow the [Updating](#updating) stop-then-start sequence so old unconditional writers cannot bypass the guards. Redis records survive restarts: ordinary queued work continues, and the watchdog can requeue a `downloading` attempt whose progress heartbeat has expired with a fresh attempt file. A live delivery claim/heartbeat prevents that recovery. Files left by crashed attempts or still referenced by retained state/results may remain; recovery does not delete another attempt's files. Contradictory records are reported without automatic repair or replay, retained contradictory active-set entries do not block deferred export scheduling, and no delivery success is inferred from them. This does not provide exactly-once external sends or pipeline-wide concurrency guarantees; production state repair requires a separate investigation.
 
 ## Health and Status
 
