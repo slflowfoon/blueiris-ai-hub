@@ -10,7 +10,6 @@ import time
 from bi_export_shared import (
     ACTIVE_EXPORT_SET,
     DELIVERY_QUEUE_STALE_AGE,
-    DOWNLOAD_CLAIM_STALE_AGE,
     DOWNLOAD_REQUEST_QUEUE,
     DOWNLOAD_TIMEOUT,
     EXPORT_QUEUE_ACK_TIMEOUT,
@@ -27,6 +26,7 @@ from bi_export_shared import (
     delivery_heartbeat_age,
     finish_delivery,
     is_contradictory_delivery_pair,
+    is_download_attempt_live,
     iter_job_ids,
     job_tag,
     log_job_event,
@@ -154,7 +154,15 @@ def _repair_job(job):
         )
         return
 
-    if status == "downloading" and transition_age >= DOWNLOAD_CLAIM_STALE_AGE:
+    if status == "downloading":
+        # Liveness, not elapsed time: a healthy streaming transfer legitimately
+        # runs well past DOWNLOAD_CLAIM_STALE_AGE. Only an attempt whose own
+        # heartbeat has actually gone stale (crashed/hung) is reclaimable.
+        if is_download_attempt_live(
+            request_id, job.get("download_attempt_token"), now=now,
+            started_at=job.get("last_transition_at", job.get("updated_at")),
+        ):
+            return
         updated = requeue_stale_download(job, now)
         if updated is None:
             return

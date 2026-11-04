@@ -54,7 +54,9 @@ def job_at(tmp_path, status, delivery_status):
 def test_duplicate_download_is_side_effect_free(tmp_path, monkeypatch, status, delivery_status):
     job = job_at(tmp_path, status, delivery_status)
     shared.save_job(job)
-    shared.claim_delivery(job["request_id"], "existing-worker")
+    # Model a retained pre-upgrade claim, including contradictory terminal pairs.
+    shared.r.set(shared.delivery_claim_key(job["request_id"]), "existing-worker", ex=300)
+    shared.touch_delivery_heartbeat(job["request_id"])
     before = shared.r.get(shared.job_key(job["request_id"]))
     claim = shared.r.get(shared.delivery_claim_key(job["request_id"]))
     heartbeat = shared.r.get(shared.delivery_heartbeat_key(job["request_id"]))
@@ -108,7 +110,8 @@ def test_delivery_completion_wins_over_inflight_download(tmp_path, monkeypatch, 
         current = shared.load_job(job["request_id"])
         current.update(status="completed", delivery_status="completed", output_path=job["output_path"])
         shared.save_job(current)
-        shared.claim_delivery(job["request_id"], "winning-owner")
+        shared.r.set(shared.delivery_claim_key(job["request_id"]), "winning-owner", ex=300)
+        shared.touch_delivery_heartbeat(job["request_id"])
         winning["job"] = shared.r.get(shared.job_key(job["request_id"]))
         winning["heartbeat"] = shared.r.get(shared.delivery_heartbeat_key(job["request_id"]))
         Path(job["output_path"]).write_bytes(b"winning-media")
@@ -184,7 +187,8 @@ def test_stale_watchdog_ready_snapshot_cannot_reopen_completed_delivery(tmp_path
     stale = shared.load_job(job["request_id"])
     current = dict(stale, status="completed", delivery_status="completed")
     shared.save_job(current)
-    shared.claim_delivery(job["request_id"], "winner")
+    shared.r.set(shared.delivery_claim_key(job["request_id"]), "winner", ex=300)
+    shared.touch_delivery_heartbeat(job["request_id"])
     before = shared.r.get(shared.job_key(job["request_id"]))
     heartbeat = shared.r.get(shared.delivery_heartbeat_key(job["request_id"]))
     watchdog._repair_job(stale)
@@ -638,6 +642,7 @@ def test_delivery_admission_progress_race_rejects_io(tmp_path, monkeypatch):
 @pytest.mark.parametrize("operation", ["refresh", "clear"])
 def test_old_delivery_owner_cannot_touch_replaced_claim_during_watch(tmp_path, monkeypatch, operation):
     job = job_at(tmp_path, "downloaded", "processing")
+    shared.save_job(job)
     assert shared.claim_delivery(job["request_id"], "old-owner")
     claim_key = shared.delivery_claim_key(job["request_id"])
     heartbeat_key = shared.delivery_heartbeat_key(job["request_id"])
@@ -761,3 +766,323 @@ def test_watchdog_does_not_reclaim_download_before_claim_timeout(tmp_path):
     watchdog._run_once()
     assert shared.r.get(shared.job_key(job["request_id"])) == before
     assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 0
+
+
+def test_progressing_stream_outlives_130_seconds(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    job["delete_after"] = False
+    shared.save_job(job)
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Length": "12288"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, _size):
+            for _ in range(6):
+                clock[0] += 40
+                watchdog._repair_job(shared.load_job(job["request_id"]))
+                yield b"x" * 2048
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(downloader, "get_session", lambda *_a: (Session(), "synthetic-session"))
+    monkeypatch.setattr(downloader, "trigger_bi_recovery", lambda *_a: pytest.fail("healthy transfer restarted BI"))
+    downloader._process_download_request(job["request_id"])
+    current = shared.load_job(job["request_id"])
+    assert clock[0] == 1240
+    assert current["status"] == "downloaded" and current["delivery_status"] == "queued"
+    assert Path(current["output_path"]).stat().st_size == 12288
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 1
+    assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 0
+    assert shared.r.llen(shared.result_key(job["request_id"])) == 1
+
+
+@pytest.mark.parametrize("phase", ["login", "metadata", "recovery"])
+def test_bounded_calls_renew_download_liveness(tmp_path, monkeypatch, phase):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    job["recovery_attempts"] = 0
+    job["request"]["_download_reexport_attempts"] = 1 if phase == "metadata" else 2
+    shared.save_job(job)
+    observed = []
+
+    def bounded_call(*_args):
+        clock[0] += 75 if phase == "recovery" else 50
+        current = shared.load_job(job["request_id"])
+        assert clock[0] - current["submitted_at"] > 130
+        watchdog._repair_job(current)
+        assert shared.load_job(job["request_id"])["status"] == "downloading"
+        assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 0
+        observed.append(True)
+        return (None, None) if phase == "login" else None
+
+    if phase == "login":
+        claimed = shared.claim_download_attempt(job["request_id"])
+        clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE - 20
+        monkeypatch.setattr(downloader, "get_session", bounded_call)
+        assert downloader._download_export(claimed)[0] is False
+    else:
+        def failure(_claimed):
+            clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE - 20
+            return False, "download failed (file not ready)" if phase == "metadata" else "synthetic error", None, None
+
+        monkeypatch.setattr(downloader, "_download_export", failure)
+        monkeypatch.setattr(downloader, "bi_lookup_alert", bounded_call)
+        monkeypatch.setattr(
+            downloader, "trigger_bi_recovery", bounded_call if phase == "recovery" else lambda *_a: False,
+        )
+        downloader._process_download_request(job["request_id"])
+    assert observed == [True]
+
+
+def test_watchdog_heartbeat_renewal_during_reclaim_aborts_cas(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+    before = shared.r.get(shared.job_key(job["request_id"]))
+    fired = _before_exec(
+        monkeypatch, lambda pipe: _sets_job(pipe, job, "ready"),
+        lambda: shared.touch_download_heartbeat(job["request_id"], claimed["download_attempt_token"]),
+    )
+    watchdog._repair_job(claimed)
+    assert fired
+    assert shared.r.get(shared.job_key(job["request_id"])) == before
+    assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 0
+    # The same attempt remains reclaimable once actual progress stops.
+    clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+    watchdog._repair_job(claimed)
+    assert shared.load_job(job["request_id"])["status"] == "ready"
+    assert shared.r.lrange(shared.DOWNLOAD_REQUEST_QUEUE, 0, -1) == [job["request_id"].encode()]
+
+
+def test_old_token_heartbeat_cannot_mask_crashed_new_attempt(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    old = shared.claim_download_attempt(job["request_id"])
+    clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+    watchdog._repair_job(old)
+    new = shared.claim_download_attempt(job["request_id"])
+    assert new["download_attempt_token"] != old["download_attempt_token"]
+    clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+    shared.touch_download_heartbeat(job["request_id"], old["download_attempt_token"])
+    watchdog._repair_job(new)
+    assert shared.load_job(job["request_id"])["status"] == "ready"
+
+
+def test_recovery_allowance_is_durable_before_external_call_crashes(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    job["recovery_attempts"] = 0
+    job["request"]["_recovery_attempts"] = 0
+    job["next_poll_at"] = 0
+    shared.save_job(job)
+    calls = []
+
+    class Crash(BaseException):
+        pass
+
+    def restart(*_args):
+        current = shared.load_job(job["request_id"])
+        assert current["recovery_attempts"] == current["request"]["_recovery_attempts"] == 1
+        assert current["submitted_at"] == job["submitted_at"]
+        calls.append(True)
+        raise Crash()
+
+    monkeypatch.setattr(downloader, "_download_export", lambda *_a: (False, "synthetic failure", None, None))
+    monkeypatch.setattr(downloader, "trigger_bi_recovery", restart)
+    with pytest.raises(Crash):
+        downloader._process_download_request(job["request_id"])
+    clock[0] += 1000
+    watchdog._repair_job(shared.load_job(job["request_id"]))
+    downloader._process_download_request(job["request_id"])
+    assert calls == [True]
+    assert shared.load_job(job["request_id"])["status"] == "failed"
+
+
+def test_stale_delivery_item_overlapping_download_success_never_claims(tmp_path, monkeypatch):
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    touched = []
+    pipeline_type = type(shared.r.pipeline())
+    execute = pipeline_type.execute
+
+    def record(pipe, *args, **kwargs):
+        assert not any(
+            command[0] in ("SET", "SETEX") and command[1] == shared.delivery_claim_key(job["request_id"])
+            for command, _options in pipe.command_stack
+        )
+        return execute(pipe, *args, **kwargs)
+
+    def download(claimed):
+        Path(claimed["output_path"]).write_bytes(b"x" * 2048)
+        return True, None, 1.0, 2048
+
+    def stale_item():
+        delivery._process_delivery_request(job["request_id"])
+        assert not shared.has_delivery_claim(job["request_id"])
+        touched.append(True)
+
+    monkeypatch.setattr(pipeline_type, "execute", record)
+    monkeypatch.setattr(downloader, "_download_export", download)
+    fired = _before_exec(monkeypatch, lambda pipe: _sets_job(pipe, job, "downloaded"), stale_item)
+    downloader._process_download_request(job["request_id"])
+    assert fired and touched
+    current = shared.load_job(job["request_id"])
+    assert current["status"] == "downloaded" and current["delivery_status"] == "queued"
+    assert Path(current["output_path"]).stat().st_size == 2048
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 1
+
+
+@pytest.mark.parametrize("operation", ["download", "delivery_claim", "recovery", "reexport"])
+def test_harmless_watch_conflict_retries_same_snapshot(tmp_path, monkeypatch, operation):
+    job = job_at(tmp_path, "downloaded" if operation == "delivery_claim" else "ready", "pending")
+    job["recovery_attempts"] = 0
+    shared.save_job(job)
+    claimed = job if operation == "delivery_claim" else shared.claim_download_attempt(job["request_id"])
+    key = shared.job_key(job["request_id"])
+    before = shared.r.get(key)
+
+    def identical_write():
+        assert shared.r.get(key) == before
+        shared.r.set(key, before)
+
+    predicate = (
+        (lambda pipe: any(args[0] == "SET" and args[1] == shared.delivery_claim_key(job["request_id"])
+                          for args, _kw in pipe.command_stack))
+        if operation == "delivery_claim" else
+        (lambda pipe: _sets_job(pipe, job, {"download": "downloaded", "recovery": "downloading",
+                                         "reexport": "retry_queued"}[operation]))
+    )
+    fired = _before_exec(monkeypatch, predicate, identical_write)
+    if operation == "delivery_claim":
+        assert shared.claim_delivery(job["request_id"], "synthetic-owner")
+    elif operation == "recovery":
+        reserved = shared.reserve_recovery_attempt(claimed)
+        assert reserved["recovery_attempts"] == reserved["request"]["_recovery_attempts"] == 1
+    elif operation == "reexport":
+        assert downloader._queue_download_reexport(claimed, "[Synthetic]")[0] == "requeued"
+        assert shared.r.llen(shared.EXPORT_REQUEST_QUEUE) == 1
+    else:
+        Path(claimed["output_path"]).write_bytes(b"x" * 2048)
+        monkeypatch.setattr(downloader, "_download_export", lambda *_a: (True, None, 1.0, 2048))
+        # Exercise the worker's cleanup branch as well as the commit helper.
+        monkeypatch.setattr(downloader, "claim_download_attempt", lambda *_a: claimed)
+        downloader._process_download_request(job["request_id"])
+        current = shared.load_job(job["request_id"])
+        assert current["status"] == "downloaded"
+        assert Path(current["output_path"]).exists()
+        assert shared.r.llen(shared.result_key(job["request_id"])) == 1
+        assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 1
+    assert fired
+
+
+@pytest.mark.parametrize("reference", ["job", "result", "none"])
+def test_rejected_download_keeps_referenced_attempt_file(tmp_path, monkeypatch, reference):
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    paths = []
+
+    def download(claimed):
+        paths.append(claimed["output_path"])
+        Path(claimed["output_path"]).write_bytes(b"x" * 2048)
+        winner = dict(claimed, status="completed", delivery_status="completed")
+        if reference != "job":
+            winner["output_path"] = job["output_path"]
+        shared.save_job(winner)
+        if reference == "result":
+            shared.write_result(job["request_id"], claimed["output_path"], True)
+        return True, None, 1.0, 2048
+
+    monkeypatch.setattr(downloader, "_download_export", download)
+    downloader._process_download_request(job["request_id"])
+    assert Path(paths[0]).exists() is (reference != "none")
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 0
+
+
+def test_reclaim_winning_before_clip_delete_rejects_external_io(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    at_delete = []
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Length": "2048"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            # A process pause after transfer but before the external delete.
+            clock[0] += shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+            at_delete.append(True)
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, _size):
+            yield b"x" * 2048
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(downloader, "get_session", lambda *_a: (Session(), "synthetic-session"))
+    monkeypatch.setattr(downloader, "bi_delete_clip", lambda *_a: pytest.fail("stale external delete"))
+    fired = _before_exec(
+        monkeypatch,
+        lambda pipe: at_delete and any(
+            args[0] == "SETEX" and args[1] == shared.download_heartbeat_key(
+                job["request_id"], claimed["download_attempt_token"],
+            ) for args, _kw in pipe.command_stack
+        ),
+        lambda: watchdog._repair_job(claimed),
+    )
+    assert downloader._download_export(claimed)[0] is True
+    assert fired
+    assert shared.load_job(job["request_id"])["status"] == "ready"
+    assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 1
+    assert shared.commit_download_outcome(claimed, True) is None
+    downloader._cleanup_attempt_file(claimed)
+    assert Path(claimed["output_path"]).exists()
+
+
+@pytest.mark.parametrize("status", ["submitted", "queued"])
+def test_export_recovery_reservation_survives_watchdog_retry(tmp_path, status):
+    job = job_at(tmp_path, status, "pending")
+    job["export_attempts"] = 1
+    job["recovery_attempts"] = 0
+    shared.save_job(job)
+    reserved = shared.reserve_recovery_attempt(job)
+    assert reserved["recovery_attempts"] == reserved["request"]["_recovery_attempts"] == 1
+    assert reserved["submitted_at"] == job["submitted_at"]
+    assert shared.reserve_recovery_attempt(reserved) is None
+    # Model a crash before/during the external call. Reattachment and timeout
+    # repair must propagate the already-spent reservation in the next request.
+    shared.r.sadd(shared.ACTIVE_EXPORT_SET, job["request_id"])
+    watchdog._repair_job(reserved)
+    request = json.loads(shared.r.lpop(shared.EXPORT_REQUEST_QUEUE))
+    assert request["_recovery_attempts"] == shared.MAX_RECOVERY_ATTEMPTS
+    assert request["_original_submitted_at"] == job["submitted_at"]

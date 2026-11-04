@@ -1177,3 +1177,30 @@ def test_status_and_metrics_report_contradictions_without_changing_health_semant
         assert data["pipeline"]["failed_jobs"] == {"export": 1}
         assert all(value == 0 for value in data["pipeline"]["stale_jobs"].values())
         assert "synthetic-retained" not in response.get_data(as_text=True)
+
+
+def test_download_staleness_uses_token_progress_in_status_and_metrics(client):
+    import bi_export_shared as shared
+
+    now = time.time()
+    snapshots = {}
+    for suffix, age, heartbeat_age in [
+        ("long-stream", 10000, 20),
+        ("stalled-stream", 10000, shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1),
+        ("recent-stall", 10, shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1),
+    ]:
+        request_id = f"synthetic-{suffix}"
+        job = {
+            "request_id": request_id, "status": "downloading", "delivery_status": "pending",
+            "download_attempt_token": suffix, "last_transition_at": now - age,
+        }
+        shared.save_job(job)
+        shared.r.setex(shared.download_heartbeat_key(request_id, suffix), 600, str(now - heartbeat_age))
+        snapshots[shared.job_key(request_id)] = shared.r.get(shared.job_key(request_id))
+    for endpoint in ("/status", "/metrics"):
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        pipeline = response.get_json()["pipeline"]
+        assert pipeline["stale_jobs"]["downloading"] == 2
+        assert pipeline["contradictory_jobs"] == 0
+    assert {key: shared.r.get(key) for key in snapshots} == snapshots

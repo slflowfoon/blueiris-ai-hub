@@ -26,6 +26,7 @@ from bi_export_shared import (
     queue_poll_interval,
     r,
     replace_export_job,
+    reserve_recovery_attempt,
     safe_error_summary,
     setup_service_logger,
     trigger_bi_recovery,
@@ -212,11 +213,17 @@ def _poll_active_exports():
                 continue
 
             if elapsed >= EXPORT_QUEUE_TIMEOUT:
-                if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS and trigger_bi_recovery(
-                    job.get("restart_url", ""),
-                    job.get("restart_token", ""),
-                    tag,
-                ):
+                if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS:
+                    reserved = reserve_recovery_attempt(job)
+                    if reserved is None:
+                        continue
+                    job = reserved
+                    recovered = trigger_bi_recovery(
+                        job.get("restart_url", ""), job.get("restart_token", ""), tag,
+                    )
+                else:
+                    recovered = False
+                if recovered:
                     log_job_event(
                         logging.WARNING,
                         f"{tag} export queue timeout; retrying after recovery",
@@ -229,7 +236,7 @@ def _poll_active_exports():
                     )
                     candidate = dict(job)
                     candidate["request"] = dict(job["request"])
-                    candidate["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
+                    candidate["request"]["_recovery_attempts"] = job["recovery_attempts"]
                     if queue_retry(candidate, "timed out waiting for BI queue", expected_job=job) is None:
                         logger.info(f"{tag} queue poll: stale snapshot during queue-timeout recovery retry, skipping")
                 else:

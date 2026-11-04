@@ -13,9 +13,10 @@ from rq import Queue
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, flash, send_file, abort
 from db_utils import connect as sqlite_connect
 from bi_export_shared import (
-    ACTIVE_EXPORT_SET, DELIVERY_QUEUE_STALE_AGE, DOWNLOAD_CLAIM_STALE_AGE,
+    ACTIVE_EXPORT_SET, DELIVERY_QUEUE_STALE_AGE,
     DOWNLOAD_REQUEST_QUEUE, EXPORT_REQUEST_QUEUE, VIDEO_DELIVERY_QUEUE,
-    delivery_heartbeat_age, is_contradictory_delivery_pair, iter_job_ids, load_job,
+    delivery_heartbeat_age, is_contradictory_delivery_pair, is_download_attempt_live,
+    iter_job_ids, load_job,
 )
 from service_health import HEARTBEAT_STALE_AFTER, heartbeat_status
 from settings_store import (
@@ -703,7 +704,10 @@ def get_pipeline_status():
                 stale_jobs["queued"] += 1
             elif status == "ready" and age > 60:
                 stale_jobs["ready"] += 1
-            elif status == "downloading" and age >= DOWNLOAD_CLAIM_STALE_AGE:
+            elif status == "downloading" and not is_download_attempt_live(
+                request_id, job.get("download_attempt_token"), now=now,
+                started_at=job.get("last_transition_at", job.get("updated_at")),
+            ):
                 stale_jobs["downloading"] += 1
             elif status == "retry_queued" and age > 30:
                 stale_jobs["retry_queued"] += 1
