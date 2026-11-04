@@ -3,10 +3,13 @@
 Downloader service for staged Blue Iris exports.
 """
 
+import io
 import json
 import logging
 import os
 import time
+
+import urllib3
 
 from bi_export_shared import (
     DOWNLOAD_HEARTBEAT_INTERVAL,
@@ -47,6 +50,45 @@ if os.path.dirname(LOG_FILE):
 logger = setup_service_logger("bi_downloader", LOG_FILE)
 
 MAX_DOWNLOAD_REEXPORT_ATTEMPTS = 2
+
+# Matches the prior iter_content chunk size; read1 never blocks to fill it, so
+# this only bounds one transport read's maximum size, not its latency.
+_DOWNLOAD_READ_CHUNK_SIZE = 8192
+
+
+class _StaleDownloadAttempt(Exception):
+    """Stop decoder input as soon as a transport heartbeat loses ownership."""
+
+
+class _TransportProgressReader(io.RawIOBase):
+    """Feeds a shadow, decode-only HTTPResponse from the real transport.
+
+    Each read pulls one raw, undecoded chunk directly off the wire via the real
+    response's read1(decode_content=False), which returns as soon as any bytes
+    arrive instead of blocking to fill a chunk or to let a decoder produce
+    output. `renew` is called for every non-empty transport read -- including
+    ones the decoder consumes without yet emitting anything -- so heartbeat
+    renewal tracks actual wire progress, not decoded output.
+    """
+
+    def __init__(self, raw, renew):
+        super().__init__()
+        self._raw = raw
+        self._renew = renew
+
+    def readable(self):
+        return True
+
+    def read(self, size=-1):
+        amt = size if size and size > 0 else _DOWNLOAD_READ_CHUNK_SIZE
+        chunk = self._raw.read1(amt, decode_content=False)
+        if chunk and not self._renew():
+            raise _StaleDownloadAttempt()
+        return chunk
+
+    # HTTPResponse.read1 needs the body to expose read1 as well as read.
+    def read1(self, size=-1):
+        return self.read(size)
 
 
 def _touch_heartbeat(job):
@@ -106,15 +148,41 @@ def _download_export(job):
                 if not _touch_heartbeat(job):
                     return False, "stale download attempt", None, None
                 last_heartbeat = time.time()
-                with open(job["output_path"], "wb") as fh:
-                    for chunk in dl.iter_content(8192):
+
+                def _renew():
+                    nonlocal last_heartbeat
+                    now_chunk = time.time()
+                    if now_chunk - last_heartbeat < DOWNLOAD_HEARTBEAT_INTERVAL:
+                        return True
+                    if not _touch_heartbeat(job):
+                        return False
+                    last_heartbeat = now_chunk
+                    return True
+
+                # Decode through a second, synthetic HTTPResponse fed only the
+                # real transport's undecoded bytes (read1(decode_content=False)).
+                # This keeps heartbeat renewal tied to real wire progress even
+                # while the decoder itself is still buffering input (e.g. a long
+                # gzip header) with no decoded output yet to return -- renewing
+                # via decode_content=True's own read1 would only check ownership
+                # once decoded output is ready, which a slow/stalled decode input
+                # could delay well past the heartbeat staleness window.
+                content_encoding = dl.raw.headers.get("Content-Encoding")
+                decode_headers = urllib3.HTTPHeaderDict()
+                if content_encoding:
+                    decode_headers["Content-Encoding"] = content_encoding
+                decoding_response = urllib3.HTTPResponse(
+                    body=_TransportProgressReader(dl.raw, _renew),
+                    headers=decode_headers,
+                    preload_content=False,
+                    decode_content=True,
+                )
+                with decoding_response, open(job["output_path"], "wb") as fh:
+                    while True:
+                        chunk = decoding_response.read1(_DOWNLOAD_READ_CHUNK_SIZE, decode_content=True)
                         if not chunk:
-                            continue
+                            break
                         fh.write(chunk)
-                        now_chunk = time.time()
-                        if now_chunk - last_heartbeat >= DOWNLOAD_HEARTBEAT_INTERVAL:
-                            _touch_heartbeat(job)
-                            last_heartbeat = now_chunk
 
                 final_size = os.path.getsize(job["output_path"])
                 if final_size > 1024:
@@ -122,6 +190,8 @@ def _download_export(job):
                     success_elapsed = attempt_elapsed
                     break
                 time.sleep(2)
+        except _StaleDownloadAttempt:
+            return False, "stale download attempt", None, None
         except Exception as exc:
             log_job_event(
                 logging.WARNING,
@@ -146,30 +216,58 @@ def _download_export(job):
     return True, None, success_elapsed, final_size
 
 
-def _cleanup_attempt_file(claimed):
-    """Discard only this token's superseded file, never retained job/result media.
+# These transitions retain output_path, but cannot deliver that attempt. A new
+# claim always mints a different token/path; other references still prevent removal.
+_CLEANUP_SAME_TOKEN_EXCEPTION_STATUSES = frozenset({"failed", "retry_queued", "ready"})
 
-    Unique attempt paths are never reused by the pipeline. Be conservative if a
-    competing state change still references this file (or settlement was rejected
-    without any ownership change); a later orphan cleanup is safer than data loss.
+# Absent/pending: no delivery has been queued/claimed against this record yet.
+_CLEANUP_SAFE_DELIVERY_STATUSES = (None, "pending")
+
+
+def _cleanup_attempt_file(claimed):
+    """Discard only this token's own file, and only once the saved record proves
+    it is unambiguously non-deliverable.
+
+    Unique attempt paths are never reused. Only a same-token non-deliverable
+    record without delivery ownership can disregard its copied output_path.
+    Base/request/result references always retain the file. An older token's
+    unreferenced path can still be removed after a newer attempt has claimed
+    a different file. Unknown records retain media conservatively.
     """
     path = claimed.get("output_path")
     token = claimed.get("download_attempt_token")
     if not path or not token or f".dl-{token}" not in path:
         return
-    current = load_job(claimed["request_id"])
-    if current is None or current == claimed:
+    request_id = claimed["request_id"]
+    try:
+        current = load_job(request_id)
+    except (ValueError, TypeError):
         return
-    if path in (
-        current.get("output_path"), current.get("download_base_path"),
-        (current.get("request") or {}).get("output_path"),
-    ):
+    if not isinstance(current, dict) or current.get("status") not in {
+        "submitted", "queued", "retry_queued", "ready", "downloading", "downloaded", "completed", "failed",
+    }:
         return
-    for raw in r.lrange(result_key(claimed["request_id"]), 0, -1):
+
+    same_token_exception = (
+        current.get("download_attempt_token") == token
+        and current.get("status") in _CLEANUP_SAME_TOKEN_EXCEPTION_STATUSES
+        and current.get("delivery_status") in _CLEANUP_SAFE_DELIVERY_STATUSES
+        and not has_delivery_claim(request_id)
+    )
+    if not same_token_exception and current.get("output_path") == path:
+        return
+    if current.get("download_base_path") == path:
+        return
+    request = current.get("request") or {}
+    if not isinstance(request, dict) or request.get("output_path") == path:
+        return
+    for raw in r.lrange(result_key(request_id), 0, -1):
         try:
-            if json.loads(raw).get("path") == path:
-                return
+            entry = json.loads(raw)
+            matches = entry.get("path") == path
         except (ValueError, TypeError, AttributeError):
+            return
+        if matches:
             return
     try:
         if os.path.exists(path):

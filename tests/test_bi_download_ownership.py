@@ -1,16 +1,66 @@
 """Download/delivery ownership regressions using conftest's isolated Redis DB."""
 
+import gzip
+import io
 import json
 import time
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import requests
+from urllib3.exceptions import ReadTimeoutError
+from urllib3.response import HTTPResponse
 import bi_export_shared as shared
 import bi_downloader as downloader
 import bi_watchdog as watchdog
 import bi_queue_monitor as monitor
 import video_delivery_worker as delivery
+
+
+class _ReceivingBody(io.BytesIO):
+    """A receive makes 1 KiB available; read(n) aggregates receives to fill n."""
+
+    def __init__(self, payload, receive=lambda _count: None):
+        super().__init__(payload)
+        self.length = len(payload)
+        self.receive = receive
+        self.receives = 0
+        self.read_calls = 0
+
+    def read1(self, size=-1):
+        if self.tell() >= self.length:
+            return b""
+        self.receives += 1
+        self.receive(self.receives)
+        return super().read1(min(1024, size) if size >= 0 else 1024)
+
+    def read(self, size=-1):
+        self.read_calls += 1
+        chunks = []
+        remaining = size
+        while self.tell() < self.length and remaining != 0:
+            chunk = self.read1(remaining)
+            chunks.append(chunk)
+            if remaining > 0:
+                remaining -= len(chunk)
+        return b"".join(chunks)
+
+
+def _http_response(body, headers):
+    response = requests.Response()
+    response.status_code = 200
+    response.headers.update(headers)
+    response.raw = HTTPResponse(body=body, headers=headers, preload_content=False)
+    return response
+
+
+def _gzip_with_long_header(payload):
+    encoded = io.BytesIO()
+    # No decoded output until more than eight slow receives have arrived.
+    with gzip.GzipFile(fileobj=encoded, mode="wb", filename="x" * 8192, mtime=0) as stream:
+        stream.write(payload)
+    return encoded.getvalue()
 
 
 def job_at(tmp_path, status, delivery_status):
@@ -357,6 +407,10 @@ def test_bi_delete_is_skipped_after_download_ownership_changes(tmp_path, monkeyp
         status_code = 200
         headers = {"Content-Length": "2048"}
 
+        def __init__(self):
+            self.sent = False
+            self.raw = self
+
         def __enter__(self):
             return self
 
@@ -366,9 +420,13 @@ def test_bi_delete_is_skipped_after_download_ownership_changes(tmp_path, monkeyp
         def raise_for_status(self):
             pass
 
-        def iter_content(self, size):
+        def read1(self, size, decode_content=True):
+            assert size >= 2048 and decode_content is False
+            if self.sent:
+                return b""
+            self.sent = True
             advance()
-            yield b"x" * 2048
+            return b"x" * 2048
 
     class Session:
         def get(self, *args, **kwargs):
@@ -779,6 +837,10 @@ def test_progressing_stream_outlives_130_seconds(tmp_path, monkeypatch):
         status_code = 200
         headers = {"Content-Length": "12288"}
 
+        def __init__(self):
+            self.remaining = 6
+            self.raw = self
+
         def __enter__(self):
             return self
 
@@ -788,11 +850,14 @@ def test_progressing_stream_outlives_130_seconds(tmp_path, monkeypatch):
         def raise_for_status(self):
             pass
 
-        def iter_content(self, _size):
-            for _ in range(6):
-                clock[0] += 40
-                watchdog._repair_job(shared.load_job(job["request_id"]))
-                yield b"x" * 2048
+        def read1(self, size, decode_content=True):
+            assert size >= 2048 and decode_content is False
+            if not self.remaining:
+                return b""
+            self.remaining -= 1
+            clock[0] += 40
+            watchdog._repair_job(shared.load_job(job["request_id"]))
+            return b"x" * 2048
 
     class Session:
         def get(self, *_args, **_kwargs):
@@ -1031,6 +1096,10 @@ def test_reclaim_winning_before_clip_delete_rejects_external_io(tmp_path, monkey
         status_code = 200
         headers = {"Content-Length": "2048"}
 
+        def __init__(self):
+            self.sent = False
+            self.raw = self
+
         def __enter__(self):
             return self
 
@@ -1042,8 +1111,12 @@ def test_reclaim_winning_before_clip_delete_rejects_external_io(tmp_path, monkey
         def raise_for_status(self):
             pass
 
-        def iter_content(self, _size):
-            yield b"x" * 2048
+        def read1(self, size, decode_content=True):
+            assert size >= 2048 and decode_content is False
+            if self.sent:
+                return b""
+            self.sent = True
+            return b"x" * 2048
 
     class Session:
         def get(self, *_args, **_kwargs):
@@ -1066,7 +1139,12 @@ def test_reclaim_winning_before_clip_delete_rejects_external_io(tmp_path, monkey
     assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 1
     assert shared.commit_download_outcome(claimed, True) is None
     downloader._cleanup_attempt_file(claimed)
-    assert Path(claimed["output_path"]).exists()
+    # Reclaim retained the old token/path, but the ready/pending pair cannot
+    # deliver it. A fresh claim must use a different path and token.
+    assert not Path(claimed["output_path"]).exists()
+    successor = shared.claim_download_attempt(job["request_id"])
+    assert successor["output_path"] != claimed["output_path"]
+    assert successor["download_attempt_token"] != claimed["download_attempt_token"]
 
 
 @pytest.mark.parametrize("status", ["submitted", "queued"])
@@ -1086,3 +1164,230 @@ def test_export_recovery_reservation_survives_watchdog_retry(tmp_path, status):
     request = json.loads(shared.r.lpop(shared.EXPORT_REQUEST_QUEUE))
     assert request["_recovery_attempts"] == shared.MAX_RECOVERY_ATTEMPTS
     assert request["_original_submitted_at"] == job["submitted_at"]
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_real_http_transport_progress_survives_buffering(tmp_path, monkeypatch, compressed):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    monkeypatch.setattr(shared.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    job = job_at(tmp_path, "ready", "pending")
+    job["delete_after"] = False
+    shared.save_job(job)
+    payload = b"x" * 16384
+    wire = _gzip_with_long_header(payload) if compressed else payload
+    headers = {"Content-Length": str(len(wire))}
+    if compressed:
+        headers["Content-Encoding"] = "gzip"
+
+    def receive(_count):
+        clock[0] += 30
+        watchdog._repair_job(shared.load_job(job["request_id"]))
+        assert shared.load_job(job["request_id"])["status"] == "downloading"
+
+    body = _ReceivingBody(wire, receive)
+    response = _http_response(body, headers)
+    session = type("Session", (), {"get": lambda *_a, **_kw: response})()
+    monkeypatch.setattr(downloader, "get_session", lambda *_a: (session, "synthetic-session"))
+    monkeypatch.setattr(downloader, "trigger_bi_recovery", lambda *_a: pytest.fail("healthy transfer recovery"))
+    downloader._process_download_request(job["request_id"])
+    current = shared.load_job(job["request_id"])
+    assert current["status"] == "downloaded" and current["delivery_status"] == "queued"
+    assert Path(current["output_path"]).read_bytes() == payload
+    assert body.read_calls == 0
+    assert body.receives == (len(wire) + 1023) // 1024
+    assert clock[0] == 1000 + body.receives * 30
+    if not compressed:
+        assert clock[0] == 1480  # 480 seconds, beyond the 180-second heartbeat window.
+    assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 0
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 1
+    results = shared.r.lrange(shared.result_key(job["request_id"]), 0, -1)
+    assert len(results) == 1 and json.loads(results[0])["ok"] is True
+    assert body.closed
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+@pytest.mark.parametrize("ending", ["timeout", "late_bytes"])
+def test_real_http_stall_reclaimed_and_late_owner_stops(tmp_path, monkeypatch, compressed, ending):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    monkeypatch.setattr(shared.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    job = job_at(tmp_path, "ready", "pending")
+    job["delete_after"] = False
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    payload = b"x" * 16384
+    wire = _gzip_with_long_header(payload) if compressed else payload
+    headers = {"Content-Length": str(len(wire))}
+    if compressed:
+        headers["Content-Encoding"] = "gzip"
+
+    def receive(count):
+        clock[0] += 30 if count == 1 else shared.DOWNLOAD_HEARTBEAT_STALE_AGE + 1
+        watchdog._repair_job(shared.load_job(job["request_id"]))
+        if count == 2:
+            assert shared.load_job(job["request_id"])["status"] == "ready"
+            if ending == "timeout":
+                raise ReadTimeoutError(None, "http://invalid.test", "synthetic timeout")
+
+    body = _ReceivingBody(wire, receive)
+    response = _http_response(body, headers)
+    session = type("Session", (), {"get": lambda *_a, **_kw: response})()
+    monkeypatch.setattr(downloader, "get_session", lambda *_a: (session, "synthetic-session"))
+    monkeypatch.setattr(downloader, "bi_delete_clip", lambda *_a: pytest.fail("stale owner delete"))
+    ok, error, *_rest = downloader._download_export(claimed)
+    # A timeout exhausts the polling deadline; late bytes reject the heartbeat.
+    expected_error = "download failed (file not ready)" if ending == "timeout" else "stale download attempt"
+    assert not ok and error == expected_error
+    assert body.receives == 2  # No further receive or write after timeout or ownership loss.
+    assert Path(claimed["output_path"]).read_bytes() == (b"" if compressed else payload[:1024])
+    assert shared.load_job(job["request_id"])["status"] == "ready"
+    assert shared.r.llen(shared.DOWNLOAD_REQUEST_QUEUE) == 1
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 0
+    assert shared.r.llen(shared.result_key(job["request_id"])) == 0
+    assert body.closed
+
+
+@pytest.mark.parametrize("ending", ["eof", "short", "truncated", "empty", "error", "timeout", "bad_gzip"])
+def test_real_http_eof_short_and_errors(tmp_path, monkeypatch, ending):
+    clock = [1000.0]
+    monkeypatch.setattr(shared.time, "time", lambda: clock[0])
+    monkeypatch.setattr(shared.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(downloader, "DOWNLOAD_TIMEOUT", 1)
+    job = job_at(tmp_path, "ready", "pending")
+    job["delete_after"] = False
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    payload = b"x" * (1000 if ending == "short" else 2048)
+    if ending == "empty":
+        payload = b""
+    headers = {"Content-Length": "4096" if ending == "truncated" else str(max(1000, len(payload)))}
+    if ending == "bad_gzip":
+        headers["Content-Encoding"] = "gzip"
+
+    def receive(count):
+        if count == 2 and ending == "error":
+            raise OSError("synthetic transport failure")
+        if count == 2 and ending == "timeout":
+            raise ReadTimeoutError(None, "http://invalid.test", "synthetic timeout")
+
+    body = _ReceivingBody(payload, receive)
+    response = _http_response(body, headers)
+    session = type("Session", (), {"get": lambda *_a, **_kw: response})()
+    monkeypatch.setattr(downloader, "get_session", lambda *_a: (session, "synthetic-session"))
+    monkeypatch.setattr(downloader, "bi_delete_clip", lambda *_a: None)
+    ok, error, _elapsed, size = downloader._download_export(claimed)
+    assert ok is (ending == "eof")
+    if ok:
+        assert error is None and size == len(payload)
+        assert Path(claimed["output_path"]).read_bytes() == payload
+    else:
+        assert error == "download failed (file not ready)"
+    assert body.closed
+    assert shared.load_job(job["request_id"])["status"] == "downloading"
+    assert shared.r.llen(shared.VIDEO_DELIVERY_QUEUE) == 0
+    assert shared.r.llen(shared.result_key(job["request_id"])) == 0
+
+
+@pytest.mark.parametrize("settlement", ["failed", "retry_queued"])
+def test_owned_failed_or_retry_attempt_removes_only_its_file(tmp_path, monkeypatch, settlement):
+    job = job_at(tmp_path, "ready", "pending")
+    job["request"]["_download_reexport_attempts"] = 0 if settlement == "retry_queued" else 2
+    shared.save_job(job)
+    paths = []
+
+    def failure(claimed):
+        paths.append(claimed["output_path"])
+        Path(claimed["output_path"]).write_bytes(b"synthetic-partial-media")
+        return False, "download failed (file not ready)", None, None
+
+    monkeypatch.setattr(downloader, "_download_export", failure)
+    downloader._process_download_request(job["request_id"])
+    current = shared.load_job(job["request_id"])
+    assert current["status"] == settlement
+    assert current["output_path"] == paths[0]  # A copied field alone cannot force a leak.
+    assert not Path(paths[0]).exists()
+    assert Path(job["output_path"]).read_bytes() == b"original-owned-media"
+    assert shared.r.llen(shared.EXPORT_REQUEST_QUEUE) == int(settlement == "retry_queued")
+
+
+@pytest.mark.parametrize("status", ["failed", "retry_queued", "ready"])
+@pytest.mark.parametrize("delivery_status", [None, "pending"])
+def test_unreferenced_same_token_nondeliverable_file_removed(tmp_path, status, delivery_status):
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    path = Path(claimed["output_path"])
+    path.write_bytes(b"synthetic-partial-media")
+    shared.save_job(dict(claimed, status=status, delivery_status=delivery_status))
+    downloader._cleanup_attempt_file(claimed)
+    assert not path.exists()
+    assert Path(job["output_path"]).exists()
+
+
+@pytest.mark.parametrize("protection", [
+    "live", "downloaded", "completed", "delivery_queued", "delivery_processing", "delivery_completed",
+    "delivery_failed", "delivery_retry", "delivery_unknown", "claim", "heartbeat", "base", "request",
+    "result", "failed_result", "malformed_result", "list_result", "null_result", "missing", "unknown",
+    "malformed_job", "list_job", "missing_token", "foreign_token", "new_token", "unknown_status",
+])
+def test_attempt_cleanup_retains_referenced_or_advanced_files(tmp_path, protection):
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    claimed = shared.claim_download_attempt(job["request_id"])
+    path = Path(claimed["output_path"])
+    path.write_bytes(b"synthetic-retained-media")
+    current = dict(claimed, status="failed")
+    if protection in {"live", "downloaded", "completed"}:
+        current["status"] = {"live": "downloading"}.get(protection, protection)
+    elif protection.startswith("delivery_"):
+        current["delivery_status"] = {
+            "delivery_retry": "retry_queued", "delivery_unknown": "unknown",
+        }.get(protection, protection.removeprefix("delivery_"))
+    elif protection in {"claim", "heartbeat"}:
+        _set_delivery_key(job, protection)
+    elif protection == "base":
+        current["download_base_path"] = str(path)
+    elif protection == "request":
+        current["request"] = dict(current["request"], output_path=str(path))
+    elif protection in {"result", "failed_result"}:
+        # Retain any explicit path reference, even a historical failed result.
+        shared.r.rpush(shared.result_key(job["request_id"]), json.dumps({
+            "ok": protection == "result", "path": str(path),
+        }))
+    elif protection.endswith("_result"):
+        raw = {"malformed_result": "{", "list_result": "[]", "null_result": "null"}[protection]
+        shared.r.rpush(shared.result_key(job["request_id"]), raw)
+    elif protection in {"foreign_token", "new_token"}:
+        current["download_attempt_token"] = "synthetic-different-token"
+    elif protection == "missing_token":
+        current.pop("download_attempt_token")
+    elif protection == "unknown_status":
+        current["status"] = "unknown"
+    shared.save_job(current)
+    if protection == "missing":
+        shared.r.delete(shared.job_key(job["request_id"]))
+    elif protection in {"unknown", "malformed_job", "list_job"}:
+        shared.r.set(shared.job_key(job["request_id"]), {
+            "unknown": "{}", "malformed_job": "{", "list_job": "[]",
+        }[protection])
+    downloader._cleanup_attempt_file(claimed)
+    assert path.read_bytes() == b"synthetic-retained-media"
+
+
+def test_superseded_attempt_cleanup_preserves_new_unique_file(tmp_path):
+    job = job_at(tmp_path, "ready", "pending")
+    shared.save_job(job)
+    old = shared.claim_download_attempt(job["request_id"])
+    old_path = Path(old["output_path"])
+    old_path.write_bytes(b"old-incomplete-media")
+    shared.save_job(dict(old, status="ready"))
+    new = shared.claim_download_attempt(job["request_id"])
+    new_path = Path(new["output_path"])
+    new_path.write_bytes(b"new-incomplete-media")
+    assert new["download_attempt_token"] != old["download_attempt_token"]
+    assert new_path != old_path
+    downloader._cleanup_attempt_file(old)
+    assert not old_path.exists()
+    assert new_path.read_bytes() == b"new-incomplete-media"
+    assert shared.load_job(job["request_id"]) == new
