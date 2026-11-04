@@ -21,15 +21,16 @@ from bi_export_shared import (
     job_tag,
     log_job_event,
     log_terminal_diagnosis,
+    is_contradictory_delivery_pair,
     load_job,
     queue_poll_interval,
     r,
+    replace_export_job,
+    reserve_recovery_attempt,
     safe_error_summary,
-    save_job,
     setup_service_logger,
     trigger_bi_recovery,
     queue_retry,
-    write_result,
 )
 from service_health import start_heartbeat_thread
 
@@ -55,6 +56,8 @@ def _poll_active_exports():
         job = load_job(request_id)
         if not job or job.get("status") not in {"submitted", "queued"}:
             continue
+        if is_contradictory_delivery_pair(job):
+            continue
         next_poll_at = job.get("next_poll_at", 0)
         if nearest_poll_at is None or next_poll_at < nearest_poll_at:
             nearest_poll_at = next_poll_at
@@ -79,19 +82,19 @@ def _poll_active_exports():
         if not sid:
             for job in grouped_jobs:
                 if (now - job["submitted_at"]) >= EXPORT_QUEUE_TIMEOUT:
-                    job["status"] = "failed"
-                    job["error"] = "BI login failed"
-                    save_job(job)
-                    r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    replacement = dict(job, status="failed", error="BI login failed", last_transition_at=now)
+                    committed = replace_export_job(job, replacement, error_msg="BI login failed")
+                    if committed is None:
+                        logger.info(f"{job_tag(job)} queue poll: stale snapshot during BI login failure, skipping")
+                        continue
                     log_terminal_diagnosis(
                         logger,
-                        job_tag(job),
-                        job,
+                        job_tag(committed),
+                        committed,
                         "queue_failed",
                         "bi_login_failed",
                         error="BI login failed",
                     )
-                    write_result(job["request_id"], job["output_path"], False, "BI login failed")
             continue
 
         try:
@@ -107,51 +110,64 @@ def _poll_active_exports():
         queue_size = len(active_exports)
 
         for job in grouped_jobs:
+            # `job` is the snapshot read before this group's BI I/O (login + queue
+            # poll, both network calls): every commit below is CAS-protected
+            # against it, so a newer state written while that I/O was in flight
+            # (download/delivery progress, a watchdog repair, a different
+            # generation entirely) is never overwritten.
             tag = job_tag(job)
             elapsed = now - job["submitted_at"]
             if job["target_path"] in active_paths:
+                replacement = dict(job)
                 if job["status"] == "submitted":
-                    job["status"] = "queued"
-                    job["queue_ack_at"] = now
-                    job["last_transition_at"] = now
+                    replacement["status"] = "queued"
+                    replacement["queue_ack_at"] = now
+                    replacement["last_transition_at"] = now
+
+                if (elapsed - job.get("last_progress_log", 0)) >= QUEUE_PROGRESS_LOG_INTERVAL:
+                    replacement["last_progress_log"] = elapsed
+                    log_progress = True
+                else:
+                    log_progress = False
+
+                replacement["next_poll_at"] = now + queue_poll_interval(elapsed)
+                committed = replace_export_job(job, replacement, active=True)
+                if committed is None:
+                    logger.info(f"{tag} queue poll: stale snapshot during progress update, skipping")
+                    continue
+                if job["status"] == "submitted":
                     log_job_event(
                         logging.INFO,
                         f"{tag} export acknowledged",
-                        job,
+                        committed,
                         logger=logger,
                         phase="queue_ack",
                         queue_size=queue_size,
                         target_path=job["target_path"],
                     )
-
-                if (elapsed - job.get("last_progress_log", 0)) >= QUEUE_PROGRESS_LOG_INTERVAL:
+                if log_progress:
                     log_job_event(
                         logging.INFO,
                         f"{tag} export in progress",
-                        job,
+                        committed,
                         logger=logger,
                         phase="queue_progress",
                         elapsed=f"{elapsed:.1f}s",
                         queue_size=queue_size,
                         active_exports=len(request_ids),
                     )
-                    job["last_progress_log"] = elapsed
-
-                job["next_poll_at"] = now + queue_poll_interval(elapsed)
-                save_job(job)
                 continue
 
             if job["status"] == "queued":
-                job["status"] = "ready"
-                job["ready_at"] = now
-                job["last_transition_at"] = now
-                save_job(job)
-                r.srem(ACTIVE_EXPORT_SET, job["request_id"])
-                r.rpush(DOWNLOAD_REQUEST_QUEUE, job["request_id"])
+                replacement = dict(job, status="ready", ready_at=now, last_transition_at=now)
+                committed = replace_export_job(job, replacement, active=False, download_queue=True)
+                if committed is None:
+                    logger.info(f"{tag} queue poll: stale snapshot during ready-for-download promotion, skipping")
+                    continue
                 log_job_event(
                     logging.INFO,
                     f"{tag} export ready for download",
-                    job,
+                    committed,
                     logger=logger,
                     phase="ready_for_download",
                     elapsed=f"{elapsed:.1f}s",
@@ -172,35 +188,42 @@ def _poll_active_exports():
                         queue_size=queue_size,
                         error_code="queue_ack_timeout",
                     )
-                    queue_retry(job, "export not acknowledged by queue monitor")
+                    if queue_retry(dict(job), "export not acknowledged by queue monitor", expected_job=job) is None:
+                        logger.info(f"{tag} queue poll: stale snapshot during ack-timeout retry, skipping")
                 else:
-                    job["status"] = "failed"
-                    job["error"] = "export not acknowledged by queue monitor"
-                    save_job(job)
-                    r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    replacement = dict(
+                        job, status="failed", error="export not acknowledged by queue monitor",
+                        last_transition_at=now,
+                    )
+                    committed = replace_export_job(
+                        job, replacement, error_msg="export not acknowledged by queue monitor",
+                    )
+                    if committed is None:
+                        logger.info(f"{tag} queue poll: stale snapshot during ack-timeout failure, skipping")
+                        continue
                     log_terminal_diagnosis(
                         logger,
                         tag,
-                        job,
+                        committed,
                         "queue_failed",
                         "queue_ack_timeout",
                         elapsed=f"{elapsed:.1f}s",
                         error="export not acknowledged by queue monitor",
                     )
-                    write_result(
-                        job["request_id"],
-                        job["output_path"],
-                        False,
-                        "export not acknowledged by queue monitor",
-                    )
                 continue
 
             if elapsed >= EXPORT_QUEUE_TIMEOUT:
-                if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS and trigger_bi_recovery(
-                    job.get("restart_url", ""),
-                    job.get("restart_token", ""),
-                    tag,
-                ):
+                if job.get("recovery_attempts", 0) < MAX_RECOVERY_ATTEMPTS:
+                    reserved = reserve_recovery_attempt(job)
+                    if reserved is None:
+                        continue
+                    job = reserved
+                    recovered = trigger_bi_recovery(
+                        job.get("restart_url", ""), job.get("restart_token", ""), tag,
+                    )
+                else:
+                    recovered = False
+                if recovered:
                     log_job_event(
                         logging.WARNING,
                         f"{tag} export queue timeout; retrying after recovery",
@@ -211,27 +234,32 @@ def _poll_active_exports():
                         queue_size=queue_size,
                         error_code="queue_timeout",
                     )
-                    job["request"]["_recovery_attempts"] = job.get("recovery_attempts", 0) + 1
-                    queue_retry(job, "timed out waiting for BI queue")
+                    candidate = dict(job)
+                    candidate["request"] = dict(job["request"])
+                    candidate["request"]["_recovery_attempts"] = job["recovery_attempts"]
+                    if queue_retry(candidate, "timed out waiting for BI queue", expected_job=job) is None:
+                        logger.info(f"{tag} queue poll: stale snapshot during queue-timeout recovery retry, skipping")
                 else:
-                    job["status"] = "failed"
-                    job["error"] = "timed out waiting for BI queue"
-                    save_job(job)
-                    r.srem(ACTIVE_EXPORT_SET, job["request_id"])
+                    replacement = dict(
+                        job, status="failed", error="timed out waiting for BI queue", last_transition_at=now,
+                    )
+                    committed = replace_export_job(job, replacement, error_msg="timed out waiting for BI queue")
+                    if committed is None:
+                        logger.info(f"{tag} queue poll: stale snapshot during queue-timeout failure, skipping")
+                        continue
                     log_terminal_diagnosis(
                         logger,
                         tag,
-                        job,
+                        committed,
                         "queue_failed",
                         "queue_timeout",
                         elapsed=f"{elapsed:.1f}s",
                         error="timed out waiting for BI queue",
                     )
-                    write_result(job["request_id"], job["output_path"], False, "timed out waiting for BI queue")
                     log_job_event(
                         logging.ERROR,
                         f"{tag} export failed waiting for queue",
-                        job,
+                        committed,
                         logger=logger,
                         phase="queue_failed",
                         elapsed=f"{elapsed:.1f}s",

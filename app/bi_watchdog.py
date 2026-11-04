@@ -21,9 +21,12 @@ from bi_export_shared import (
     WATCHDOG_INTERVAL,
     WATCHDOG_STALE_BUFFER,
     requeue_export_retry,
+    requeue_stale_download,
     replace_export_job,
     delivery_heartbeat_age,
     finish_delivery,
+    is_contradictory_delivery_pair,
+    is_download_attempt_live,
     iter_job_ids,
     job_tag,
     log_job_event,
@@ -32,7 +35,6 @@ from bi_export_shared import (
     mark_delivery_queued,
     queue_retry,
     r,
-    save_job,
     setup_service_logger,
 )
 from service_health import start_heartbeat_thread
@@ -54,6 +56,13 @@ def _repair_job(job):
     request_id = job["request_id"]
     submitted_age = now - float(job.get("submitted_at", now))
     transition_age = now - float(job.get("last_transition_at", job.get("updated_at", now)))
+
+    # A contradictory persisted status/delivery_status pair is a historical record,
+    # not a stranded job: #189 requires truthful reporting without normalizing or
+    # replaying it, so no repair branch below may touch it (reattach, retry,
+    # requeue, or recovery) -- not just the export-vs-delivery terminal checks.
+    if is_contradictory_delivery_pair(job):
+        return
 
     if status in {"submitted", "queued"} and not r.sismember(ACTIVE_EXPORT_SET, request_id):
         updated = dict(job, next_poll_at=0, last_transition_at=now)
@@ -130,19 +139,43 @@ def _repair_job(job):
         return
 
     if status == "ready" and transition_age >= (DOWNLOAD_TIMEOUT + WATCHDOG_STALE_BUFFER):
+        updated = requeue_stale_download(job, now)
+        if updated is None:
+            return
         log_job_event(
             logging.WARNING,
             f"{tag} watchdog requeueing stale ready download",
-            job,
+            updated,
             logger=logger,
             phase="watchdog_download_requeue",
             age=f"{transition_age:.1f}s",
             download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
             error_code="download_stale",
         )
-        job["last_transition_at"] = now
-        save_job(job)
-        r.rpush(DOWNLOAD_REQUEST_QUEUE, request_id)
+        return
+
+    if status == "downloading":
+        # Liveness, not elapsed time: a healthy streaming transfer legitimately
+        # runs well past DOWNLOAD_CLAIM_STALE_AGE. Only an attempt whose own
+        # heartbeat has actually gone stale (crashed/hung) is reclaimable.
+        if is_download_attempt_live(
+            request_id, job.get("download_attempt_token"), now=now,
+            started_at=job.get("last_transition_at", job.get("updated_at")),
+        ):
+            return
+        updated = requeue_stale_download(job, now)
+        if updated is None:
+            return
+        log_job_event(
+            logging.WARNING,
+            f"{tag} watchdog reclaiming stalled download attempt",
+            updated,
+            logger=logger,
+            phase="watchdog_download_reclaim",
+            age=f"{transition_age:.1f}s",
+            download_queue_depth=r.llen(DOWNLOAD_REQUEST_QUEUE),
+            error_code="download_stale",
+        )
         return
 
     if status == "retry_queued" and transition_age >= RETRY_QUEUE_STALE_AGE:
@@ -164,17 +197,19 @@ def _repair_job(job):
     if status == "downloaded":
         if job.get("delivery_context") and delivery_status in {None, "queued", "retry_queued", "processing"}:
             if delivery_status in {None, "queued", "retry_queued"} and transition_age >= DELIVERY_QUEUE_STALE_AGE:
+                updated = mark_delivery_queued(job)
+                if updated is None:
+                    return
                 log_job_event(
                     logging.WARNING,
                     f"{tag} watchdog requeueing stale delivery job",
-                    job,
+                    updated,
                     logger=logger,
                     phase="watchdog_delivery_requeue",
                     age=f"{transition_age:.1f}s",
                     delivery_queue_depth=r.llen(VIDEO_DELIVERY_QUEUE),
                     error_code="delivery_queue_stale",
                 )
-                mark_delivery_queued(job)
                 return
 
             if delivery_status == "processing" and transition_age >= (DELIVERY_QUEUE_STALE_AGE * 2):
@@ -182,27 +217,31 @@ def _repair_job(job):
                 if heartbeat_age is not None and heartbeat_age < DELIVERY_QUEUE_STALE_AGE:
                     return
                 if int(job.get("delivery_attempts", 0)) < MAX_DELIVERY_ATTEMPTS:
+                    updated = mark_delivery_queued(job)
+                    if updated is None:
+                        return
                     log_job_event(
                         logging.WARNING,
                         f"{tag} watchdog requeueing stuck delivery processing",
-                        job,
+                        updated,
                         logger=logger,
                         phase="watchdog_delivery_processing_requeue",
                         age=f"{transition_age:.1f}s",
                         error_code="delivery_processing_stale",
                     )
-                    mark_delivery_queued(job)
                 else:
+                    updated = finish_delivery(job, False, "watchdog: delivery processing stale")
+                    if updated is None:
+                        return
                     log_terminal_diagnosis(
                         logger,
                         tag,
-                        job,
+                        updated,
                         "delivery_failed",
                         "delivery_processing_stale",
                         age=f"{transition_age:.1f}s",
                         error="watchdog: delivery processing stale",
                     )
-                    finish_delivery(job, False, "watchdog: delivery processing stale")
 
 
 def _run_once():
